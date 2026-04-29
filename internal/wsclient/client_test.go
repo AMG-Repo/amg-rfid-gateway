@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -176,14 +177,14 @@ func TestClient_Reconnect(t *testing.T) {
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
 
-	connectCount := 0
+	var connectCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		connectCount++
+		count := connectCount.Add(1)
 		conn, _ := upgrader.Upgrade(w, r, nil)
 		if conn != nil {
 			defer conn.Close()
 			// Close immediately on first connection
-			if connectCount == 1 {
+			if count == 1 {
 				return
 			}
 			// Keep open on second connection
