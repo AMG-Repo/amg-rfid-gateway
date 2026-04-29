@@ -1,0 +1,25 @@
+# Binaries (root level only)
+/gateway
+/gateway-test
+/tui
+*.exe
+
+# Config with secrets
+configs/config.yaml
+configs/*.local.yaml
+
+# Data directories
+data/
+backup/
+
+# SQLite
+*.db
+*.sqlite
+
+# Go
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp

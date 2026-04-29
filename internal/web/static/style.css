@@ -1,0 +1,337 @@
+/* AMG RFID Gateway - Dark Theme Styles */
+
+:root {
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-tertiary: #21262d;
+    --text-primary: #c9d1d9;
+    --text-secondary: #8b949e;
+    --accent-primary: #58a6ff;
+    --accent-success: #238636;
+    --accent-warning: #d29922;
+    --accent-error: #da3633;
+    --border-color: #30363d;
+    --card-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.6;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Header */
+header {
+    background-color: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+    padding: 1rem 2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+header h1 {
+    font-size: 1.5rem;
+    color: var(--accent-primary);
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+}
+
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: var(--accent-warning);
+    transition: background-color 0.3s;
+}
+
+.status-dot.online {
+    background-color: var(--accent-success);
+    box-shadow: 0 0 8px var(--accent-success);
+}
+
+.status-dot.offline {
+    background-color: var(--accent-error);
+}
+
+/* Main content */
+main {
+    flex: 1;
+    padding: 2rem;
+    max-width: 1200px;
+    width: 100%;
+    margin: 0 auto;
+}
+
+section {
+    margin-bottom: 2rem;
+}
+
+h2 {
+    color: var(--text-primary);
+    margin-bottom: 1rem;
+    font-size: 1.25rem;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 0.5rem;
+}
+
+/* Controls */
+.controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+/* Buttons */
+button {
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.2s;
+}
+
+button:hover {
+    background-color: var(--bg-secondary);
+    border-color: var(--accent-primary);
+}
+
+.btn-refresh {
+    background-color: var(--accent-primary);
+    color: var(--bg-primary);
+    border-color: var(--accent-primary);
+}
+
+.btn-refresh:hover {
+    background-color: #79b8ff;
+}
+
+.btn-confirm {
+    background-color: var(--accent-success);
+    color: white;
+    border-color: var(--accent-success);
+    font-weight: 500;
+}
+
+.btn-confirm:hover {
+    background-color: #2ea043;
+}
+
+.btn-status {
+    background-color: var(--bg-tertiary);
+}
+
+/* Tags container */
+.tags-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1rem;
+}
+
+.loading {
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 2rem;
+    grid-column: 1 / -1;
+}
+
+/* Tag cards */
+.tag-card {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1rem;
+    box-shadow: var(--card-shadow);
+    transition: transform 0.2s, border-color 0.2s;
+    animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.tag-card:hover {
+    border-color: var(--accent-primary);
+    transform: translateY(-2px);
+}
+
+.tag-info h3 {
+    font-size: 0.9rem;
+    color: var(--accent-primary);
+    margin-bottom: 0.25rem;
+    font-family: 'SF Mono', Monaco, monospace;
+}
+
+.tag-info p {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.tag-actions {
+    margin-top: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.radio-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-size: 0.9rem;
+    padding: 0.5rem;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+}
+
+.radio-label:hover {
+    background-color: var(--bg-tertiary);
+}
+
+.radio-label input[type="radio"] {
+    accent-color: var(--accent-primary);
+}
+
+.confirm-result {
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+    min-height: 1.5rem;
+}
+
+.success {
+    color: #3fb950;
+}
+
+.error {
+    color: #f85149;
+}
+
+/* Queue Warning Banner */
+.queue-warning {
+    background-color: var(--accent-warning);
+    color: var(--bg-primary);
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 500;
+    animation: fadeIn 0.3s ease-in;
+}
+
+.queue-warning.hidden {
+    display: none;
+}
+
+.warning-icon {
+    font-size: 1.2rem;
+}
+
+/* Pending section */
+.pending-section {
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1.5rem;
+}
+
+.pending-info {
+    margin-bottom: 1rem;
+    font-size: 1.1rem;
+}
+
+#pending-count {
+    font-weight: bold;
+    color: var(--accent-primary);
+}
+
+#status-result {
+    margin-top: 1rem;
+    padding: 1rem;
+    background-color: var(--bg-tertiary);
+    border-radius: 6px;
+    font-family: 'SF Mono', Monaco, monospace;
+    font-size: 0.85rem;
+    display: none;
+}
+
+#status-result:not(:empty) {
+    display: block;
+}
+
+/* Footer */
+footer {
+    background-color: var(--bg-secondary);
+    border-top: 1px solid var(--border-color);
+    padding: 1rem 2rem;
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    header {
+        padding: 1rem;
+        flex-direction: column;
+        text-align: center;
+    }
+
+    main {
+        padding: 1rem;
+    }
+
+    .controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .tags-container {
+        grid-template-columns: 1fr;
+    }
+
+    .tag-actions {
+        flex-direction: column;
+    }
+}
+
+/* HTMX indicator */
+.htmx-indicator {
+    opacity: 0;
+    transition: opacity 200ms;
+}
+
+.htmx-request .htmx-indicator {
+    opacity: 1;
+}

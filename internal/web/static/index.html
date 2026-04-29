@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AMG RFID Gateway - Verificación Local</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGfztofotfshCXF+/rF7axB81T+UGvnQ9d5xgJ3fJ8aH9tbvbPw7RcvcLQPTfTZZ" crossorigin="anonymous"></script>
+</head>
+<body>
+    <header>
+        <h1>AMG RFID Gateway</h1>
+        <div class="status-indicator" id="status-indicator">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="status-text">Conectando...</span>
+        </div>
+    </header>
+
+    <main>
+        <div id="queue-warning" class="queue-warning hidden">
+            <span class="warning-icon">⚠️</span>
+            <span id="warning-text">Cola de confirmaciones llena</span>
+        </div>
+
+        <section class="controls">
+            <h2>Etiquetas Detectadas</h2>
+            <button hx-get="/api/tags" hx-target="#tags-list" hx-trigger="click, load" class="btn-refresh">
+                Actualizar
+            </button>
+        </section>
+
+        <section id="tags-list" class="tags-container">
+            <p class="loading">Cargando etiquetas...</p>
+        </section>
+
+        <section class="pending-section">
+            <h2>Confirmaciones Pendientes</h2>
+            <div class="pending-info">
+                <span id="pending-count">0</span> confirmaciones en cola
+            </div>
+            <button hx-get="/api/status" hx-target="#status-result" class="btn-status">
+                Ver Estado
+            </button>
+            <div id="status-result"></div>
+        </section>
+    </main>
+
+    <footer>
+        <p>AMG RFID Tools &copy; 2024</p>
+    </footer>
+
+    <script>
+        // SSE Connection for real-time tag detection
+        let eventSource;
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        const tagsList = document.getElementById('tags-list');
+        const pendingCount = document.getElementById('pending-count');
+
+        function connectSSE() {
+            eventSource = new EventSource('/events');
+
+            eventSource.addEventListener('connected', function(e) {
+                console.log('SSE connected:', e.data);
+                updateStatus(true, 'Conectado');
+            });
+
+            eventSource.addEventListener('tag_detected', function(e) {
+                const data = JSON.parse(e.data);
+                console.log('Tag detected:', data);
+                addTagCard(data);
+                refreshTags();
+            });
+
+            eventSource.addEventListener('heartbeat', function(e) {
+                updateStatus(true, 'Conectado');
+            });
+
+            eventSource.onerror = function(e) {
+                console.error('SSE error:', e);
+                updateStatus(false, 'Desconectado');
+                // Try to reconnect after 5 seconds
+                setTimeout(connectSSE, 5000);
+            };
+        }
+
+        function updateStatus(connected, text) {
+            statusDot.className = 'status-dot ' + (connected ? 'online' : 'offline');
+            statusText.textContent = text;
+        }
+
+        // Escape HTML entities to prevent XSS
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function addTagCard(data) {
+            const card = document.createElement('div');
+            card.className = 'tag-card';
+            card.id = 'tag-' + escapeHtml(data.epc);
+            
+            const actionId = 'action-' + data.epc;
+            const escapedActionId = escapeHtml(actionId);
+            const escapedEPC = escapeHtml(data.epc);
+            const escapedEPCShort = escapeHtml(data.epc.substring(0, 16));
+            const escapedRSSI = escapeHtml(String(data.rssi));
+            const escapedAntennaId = escapeHtml(data.antenna_id);
+            
+            // Determine which radio to check based on suggested_action
+            // Default to "entrada" if no suggestion or suggestion is "unknown"
+            let entradaChecked = 'checked';
+            let salidaChecked = '';
+            if (data.suggested_action === 'salida') {
+                entradaChecked = '';
+                salidaChecked = 'checked';
+            }
+            
+            // Store antenna_id for confirmTag
+            const antennaIdData = data.antenna_id ? `data-antenna-id="${escapedAntennaId}"` : '';
+            
+            card.innerHTML = `
+                <div class="tag-info">
+                    <h3>${escapedEPCShort}...</h3>
+                    <p>RSSI: ${escapedRSSI} dBm | Antena: ${escapedAntennaId}</p>
+                </div>
+                <div class="tag-actions" ${antennaIdData}>
+                    <label class="radio-label">
+                        <input type="radio" name="${escapedActionId}" value="entrada" ${entradaChecked}>
+                        <span>Entrada</span>
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="${escapedActionId}" value="salida" ${salidaChecked}>
+                        <span>Salida</span>
+                    </label>
+                    <button class="btn-confirm" onclick="confirmTag('${escapedEPC}', '${escapedActionId}', '${escapedAntennaId}')">
+                        Confirmar
+                    </button>
+                </div>
+                <div class="confirm-result" id="result-${escapedEPC}"></div>
+            `;
+            
+            // Insert at top
+            tagsList.insertBefore(card, tagsList.firstChild);
+            
+            // Limit to 20 cards
+            while (tagsList.children.length > 20) {
+                tagsList.removeChild(tagsList.lastChild);
+            }
+        }
+
+        async function confirmTag(epc, actionId, antennaId) {
+            const action = document.querySelector(`input[name="${actionId}"]:checked`).value;
+            const resultDiv = document.getElementById('result-' + epc);
+            
+            resultDiv.innerHTML = '<span class="loading">Enviando...</span>';
+            
+            try {
+                const response = await fetch('/api/confirm', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ uii: epc, action: action, antenna_id: antennaId })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    resultDiv.innerHTML = `<span class="success">${data.message} (${data.mode})</span>`;
+                    // Refresh pending count
+                    refreshStatus();
+                } else {
+                    resultDiv.innerHTML = `<span class="error">${data.message}</span>`;
+                }
+            } catch (err) {
+                resultDiv.innerHTML = `<span class="error">Error: ${err.message}</span>`;
+            }
+        }
+
+        async function refreshTags() {
+            // Trigger HTMX refresh
+            document.querySelector('.btn-refresh').click();
+        }
+
+        async function refreshStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                pendingCount.textContent = data.pending_count;
+
+                if (data.vps_online) {
+                    updateStatus(true, 'VPS Online');
+                } else {
+                    updateStatus(false, 'Modo Offline');
+                }
+
+                // Show/hide queue warning
+                const warningDiv = document.getElementById('queue-warning');
+                const warningText = document.getElementById('warning-text');
+                if (data.pending_warning) {
+                    warningDiv.classList.remove('hidden');
+                    warningText.textContent = `${data.pending_count} confirmaciones pendientes`;
+                } else {
+                    warningDiv.classList.add('hidden');
+                }
+            } catch (err) {
+                console.error('Failed to refresh status:', err);
+            }
+        }
+
+        // Initialize
+        connectSSE();
+        refreshStatus();
+        
+        // Refresh status every 30 seconds
+        setInterval(refreshStatus, 30000);
+    </script>
+</body>
+</html>

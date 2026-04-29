@@ -1,0 +1,56 @@
+[Unit]
+Description=AMG RFID Gateway Service
+Documentation=https://github.com/amg-rfid/amg-rfid-gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gateway
+Group=gateway
+
+# Working directory
+WorkingDirectory=/opt/amg-rfid-gateway
+
+# Environment
+Environment="GATEWAY_CONFIG=/opt/amg-rfid-gateway/config.yaml"
+Environment="GATEWAY_DATA=/opt/amg-rfid-gateway/data"
+
+# Binary execution
+ExecStart=/opt/amg-rfid-gateway/gateway --config /opt/amg-rfid-gateway/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Restart policy
+Restart=always
+RestartSec=5
+StartLimitInterval=60s
+StartLimitBurst=3
+
+# Graceful shutdown
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/amg-rfid-gateway/data /opt/amg-rfid-gateway/backup
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=amg-rfid-gateway
+
+[Install]
+WantedBy=multi-user.target

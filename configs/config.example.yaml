@@ -1,0 +1,76 @@
+# AMG RFID Gateway Configuration
+# This is an example configuration file.
+# Copy to config.yaml and customize for your deployment.
+
+# Gateway identification
+gateway_id: "rpi-gateway-001"
+company_id: "your-company-uuid"
+
+# Cloud backend connection
+cloud_url: "wss://api.your-domain.com/ws"
+jwt_secret: "your-jwt-token-here"
+
+# Synchronization settings
+sync_interval: 30s
+batch_size: 100
+max_retries: 5
+
+# Health check endpoint port
+health_port: 8080
+
+# Data storage path (SQLite database)
+data_path: "/opt/amg-rfid-gateway/data"
+
+# Antenna configurations
+# Add one entry for each RFID antenna connected to this gateway
+# Zone field: "entrada" (entry), "salida" (exit), or "" (empty for auto-detect)
+antennas:
+  # Example: Entrance antenna (raw TCP)
+  - id: "ANT-001"
+    ip: "192.168.1.100"
+    port: 49153
+    enabled: false  # Set to true to enable
+    zone: "entrada"  # Fixed zone: entrada, salida, or "" for auto
+
+  # Example: Exit antenna
+  - id: "ANT-002"
+    ip: "192.168.1.101"
+    port: 49153
+    enabled: false
+    zone: "salida"  # Fixed zone: entrada, salida, or "" for auto
+
+  # Example: Zebra antenna (LLRP) with auto zone detection
+  # - id: "ANT-003"
+  #   ip: "192.168.1.102"
+  #   port: 5084
+  #   enabled: false
+  #   zone: ""  # Empty string = auto-detect based on location/verifier rules
+
+# Web UI Configuration (Local Verification Frontend)
+# Enable the built-in web interface for manual tag confirmation
+web_enabled: true              # Enable/disable the web UI
+web_port: 9090                 # Port for the web server to listen on
+web_listen_addr: "0.0.0.0"     # Bind address (0.0.0.0 = all interfaces)
+vps_api_url: "https://api.your-domain.com"  # VPS API base URL for tool sync
+sync_tools_interval: 1h        # How often to sync tools from VPS (e.g., 1h, 30m)
+confirmation_retry_interval: 30s  # Retry interval for pending confirmations sync
+
+# Queue Size Limits (Pending Confirmations)
+# Prevents unbounded growth during VPS outages
+max_pending_confirmations: 10000    # Max pending confirmations before discarding oldest (0 = unlimited)
+pending_warning_threshold: 1000     # Show warning when pending count exceeds this (0 = never warn)
+
+# Logging level: debug, info, warn, error
+log_level: "info"
+
+# Metrics configuration (optional)
+metrics:
+  enabled: true
+  port: 9091
+  path: "/metrics"
+
+# OTA Update settings (optional)
+updates:
+  check_interval: "24h"
+  auto_update: false
+  channel: "stable"  # stable, beta
