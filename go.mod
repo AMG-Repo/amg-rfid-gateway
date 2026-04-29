@@ -40,4 +40,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/amg-rfid/amg-rfid-shared-go => /home/jesus/Work/AMG-RFID-Tools-Demo/amg-rfid-shared-go
+replace github.com/amg-rfid/amg-rfid-shared-go => ./amg-rfid-shared-go
