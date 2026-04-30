@@ -79,6 +79,7 @@ func NewMainScreen() MainScreenModel {
 		{Title: "Antennas", Description: "View antenna status and connection", Screen: "antennas"},
 		{Title: "Network", Description: "View network configuration and status", Screen: "network"},
 		{Title: "System", Description: "View system status and sync info", Screen: "status"},
+		{Title: "Settings", Description: "Configure gateway settings", Screen: "settings"},
 		{Title: "Quit", Description: "Exit the configurator", Screen: "quit"},
 	}
 

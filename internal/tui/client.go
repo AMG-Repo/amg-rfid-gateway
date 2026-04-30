@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/antenna"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
 )
 
@@ -91,6 +92,81 @@ func (c *BridgeClient) GetAntennas() ([]antenna.AntennaStatus, error) {
 	}
 
 	return antennas, nil
+}
+
+// GetConfig retrieves the gateway configuration from the bridge server.
+func (c *BridgeClient) GetConfig() (*config.GatewayConfig, error) {
+	req := BridgeRequest{
+		Method: "GET",
+		Path:   "/config",
+	}
+
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if !resp.Success {
+		return nil, errors.New(resp.Error)
+	}
+
+	// Convert response data to GatewayConfig
+	dataBytes, err := json.Marshal(resp.Data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal response data: %w", err)
+	}
+
+	var cfg config.GatewayConfig
+	if err := json.Unmarshal(dataBytes, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+
+	return &cfg, nil
+}
+
+// UpdateConfig sends a configuration update to the bridge server.
+func (c *BridgeClient) UpdateConfig(cfg *config.GatewayConfig) error {
+	// Marshal config to JSON
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	req := BridgeRequest{
+		Method: "POST",
+		Path:   "/config",
+		Body:   body,
+	}
+
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return err
+	}
+
+	if !resp.Success {
+		return errors.New(resp.Error)
+	}
+
+	return nil
+}
+
+// ReloadConfig triggers a configuration reload on the bridge server.
+func (c *BridgeClient) ReloadConfig() error {
+	req := BridgeRequest{
+		Method: "POST",
+		Path:   "/config/reload",
+	}
+
+	resp, err := c.sendRequest(req)
+	if err != nil {
+		return err
+	}
+
+	if !resp.Success {
+		return errors.New(resp.Error)
+	}
+
+	return nil
 }
 
 // sendRequest sends a request to the bridge server and returns the response.

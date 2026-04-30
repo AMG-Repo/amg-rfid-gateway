@@ -26,12 +26,12 @@ import (
 	syncpkg "github.com/amg-rfid/amg-rfid-gateway/internal/sync"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/tui"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/verify"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/version"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/web"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/wsclient"
 )
 
 const (
-	version   = "0.1.0"
 	appName   = "AMG RFID Gateway"
 	dataDir   = "./data"
 	configDir = "./configs"
@@ -42,7 +42,7 @@ func main() {
 	flag.StringVar(&configPath, "config", filepath.Join(configDir, "config.yaml"), "Path to config file")
 	flag.Parse()
 
-	log.Printf("%s v%s starting...", appName, version)
+	log.Printf("%s v%s starting...", appName, version.Version)
 
 	// Load configuration
 	cfg, err := loadConfig(configPath)
@@ -120,7 +120,7 @@ func main() {
 	syncEngine := syncpkg.NewEngine(cacheStore, wsClient, syncConfig)
 
 	// Initialize health monitor
-	healthMonitor := health.NewMonitor(cfg.GatewayID, cfg.CompanyID, version, cacheStore, syncEngine)
+	healthMonitor := health.NewMonitor(cfg.GatewayID, cfg.CompanyID, version.Version, cacheStore, syncEngine)
 
 	// Initialize metrics
 	metricsCollector := monitoring.NewMetrics(cacheStore, syncEngine)
@@ -470,7 +470,7 @@ func startHTTPServer(port int, monitor *health.Monitor, metrics *monitoring.Metr
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status": "ok", "version": "%s"}`, version)
+		fmt.Fprintf(w, `{"status": "ok", "version": "%s"}`, version.Version)
 	})
 
 	server := &http.Server{

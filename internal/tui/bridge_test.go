@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/antenna"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -312,4 +313,255 @@ func TestBridgeServer_ConcurrentConnections(t *testing.T) {
 	}
 
 	assert.Equal(t, 5, successCount)
+}
+
+// Mock implementations for config testing
+type mockConfigProvider struct {
+	config *config.GatewayConfig
+}
+
+func (m *mockConfigProvider) GetConfig() *config.GatewayConfig {
+	return m.config
+}
+
+type mockConfigUpdater struct {
+	config  *config.GatewayConfig
+	updateErr error
+}
+
+func (m *mockConfigUpdater) UpdateConfig(cfg *config.GatewayConfig) error {
+	m.config = cfg
+	return m.updateErr
+}
+
+type mockConfigReloader struct {
+	reloadErr error
+}
+
+func (m *mockConfigReloader) ReloadConfig() error {
+	return m.reloadErr
+}
+
+func TestBridgeServer_GetConfigRoute(t *testing.T) {
+	socketPath := "/tmp/test-bridge-" + t.Name() + ".sock"
+	defer os.Remove(socketPath)
+
+	mockConfig := &config.GatewayConfig{
+		GatewayID: "test-gateway",
+		CompanyID: "test-company",
+		CloudURL:  "wss://test.example.com",
+	}
+
+	mockConfigProvider := &mockConfigProvider{config: mockConfig}
+
+	server := NewBridgeServer(socketPath, &mockHealthMonitor{}, &mockAntennaProvider{})
+	server.SetConfigProvider(mockConfigProvider)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer server.Stop()
+
+	// Wait for server to be ready
+	time.Sleep(50 * time.Millisecond)
+
+	// Connect and send request
+	conn, err := net.Dial("unix", socketPath)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	req := BridgeRequest{Method: "GET", Path: "/config"}
+	encoder := json.NewEncoder(conn)
+	err = encoder.Encode(req)
+	require.NoError(t, err)
+
+	// Read response
+	var resp BridgeResponse
+	decoder := json.NewDecoder(conn)
+	err = decoder.Decode(&resp)
+	require.NoError(t, err)
+
+	assert.True(t, resp.Success)
+	require.NotNil(t, resp.Data)
+
+	// Convert response data to GatewayConfig
+	dataBytes, err := json.Marshal(resp.Data)
+	require.NoError(t, err)
+
+	var result config.GatewayConfig
+	err = json.Unmarshal(dataBytes, &result)
+	require.NoError(t, err)
+
+	assert.Equal(t, "test-gateway", result.GatewayID)
+	assert.Equal(t, "test-company", result.CompanyID)
+	assert.Equal(t, "wss://test.example.com", result.CloudURL)
+}
+
+func TestBridgeServer_PostConfigRoute(t *testing.T) {
+	socketPath := "/tmp/test-bridge-" + t.Name() + ".sock"
+	defer os.Remove(socketPath)
+
+	mockUpdater := &mockConfigUpdater{}
+
+	server := NewBridgeServer(socketPath, &mockHealthMonitor{}, &mockAntennaProvider{})
+	server.SetConfigUpdater(mockUpdater)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer server.Stop()
+
+	// Wait for server to be ready
+	time.Sleep(50 * time.Millisecond)
+
+	newConfig := &config.GatewayConfig{
+		GatewayID: "updated-gateway",
+		CompanyID: "updated-company",
+		CloudURL:  "wss://updated.example.com",
+	}
+	configBytes, err := json.Marshal(newConfig)
+	require.NoError(t, err)
+
+	// Connect and send request
+	conn, err := net.Dial("unix", socketPath)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	req := BridgeRequest{
+		Method: "POST",
+		Path:   "/config",
+		Body:   configBytes,
+	}
+	encoder := json.NewEncoder(conn)
+	err = encoder.Encode(req)
+	require.NoError(t, err)
+
+	// Read response
+	var resp BridgeResponse
+	decoder := json.NewDecoder(conn)
+	err = decoder.Decode(&resp)
+	require.NoError(t, err)
+
+	assert.True(t, resp.Success)
+	require.NotNil(t, mockUpdater.config)
+	assert.Equal(t, "updated-gateway", mockUpdater.config.GatewayID)
+}
+
+func TestBridgeServer_PostConfigReloadRoute(t *testing.T) {
+	socketPath := "/tmp/test-bridge-" + t.Name() + ".sock"
+	defer os.Remove(socketPath)
+
+	mockReloader := &mockConfigReloader{}
+
+	server := NewBridgeServer(socketPath, &mockHealthMonitor{}, &mockAntennaProvider{})
+	server.SetConfigReloader(mockReloader)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer server.Stop()
+
+	// Wait for server to be ready
+	time.Sleep(50 * time.Millisecond)
+
+	// Connect and send request
+	conn, err := net.Dial("unix", socketPath)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	req := BridgeRequest{Method: "POST", Path: "/config/reload"}
+	encoder := json.NewEncoder(conn)
+	err = encoder.Encode(req)
+	require.NoError(t, err)
+
+	// Read response
+	var resp BridgeResponse
+	decoder := json.NewDecoder(conn)
+	err = decoder.Decode(&resp)
+	require.NoError(t, err)
+
+	assert.True(t, resp.Success)
+}
+
+func TestBridgeServer_GetConfig_NotImplemented(t *testing.T) {
+	socketPath := "/tmp/test-bridge-" + t.Name() + ".sock"
+	defer os.Remove(socketPath)
+
+	server := NewBridgeServer(socketPath, &mockHealthMonitor{}, &mockAntennaProvider{})
+	// Note: NOT setting ConfigProvider - should return "not implemented"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer server.Stop()
+
+	// Wait for server to be ready
+	time.Sleep(50 * time.Millisecond)
+
+	// Connect and send request
+	conn, err := net.Dial("unix", socketPath)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	req := BridgeRequest{Method: "GET", Path: "/config"}
+	encoder := json.NewEncoder(conn)
+	err = encoder.Encode(req)
+	require.NoError(t, err)
+
+	// Read response
+	var resp BridgeResponse
+	decoder := json.NewDecoder(conn)
+	err = decoder.Decode(&resp)
+	require.NoError(t, err)
+
+	assert.False(t, resp.Success)
+	assert.Contains(t, resp.Error, "not implemented")
+}
+
+func TestBridgeServer_PostConfig_InvalidBody(t *testing.T) {
+	socketPath := "/tmp/test-bridge-" + t.Name() + ".sock"
+	defer os.Remove(socketPath)
+
+	mockUpdater := &mockConfigUpdater{}
+
+	server := NewBridgeServer(socketPath, &mockHealthMonitor{}, &mockAntennaProvider{})
+	server.SetConfigUpdater(mockUpdater)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := server.Start(ctx)
+	require.NoError(t, err)
+	defer server.Stop()
+
+	// Wait for server to be ready
+	time.Sleep(50 * time.Millisecond)
+
+	// Connect and send raw request with invalid JSON in body field
+	conn, err := net.Dial("unix", socketPath)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// Send raw JSON with invalid body content (not valid JSON string)
+	rawRequest := `{"method":"POST","path":"/config","body":"not valid json"}` + "\n"
+	_, err = conn.Write([]byte(rawRequest))
+	require.NoError(t, err)
+
+	// Read response - should get decode error or error response
+	var resp BridgeResponse
+	decoder := json.NewDecoder(conn)
+	err = decoder.Decode(&resp)
+	// The server may fail to decode or send an error response
+	if err == nil {
+		// If we got a response, it should indicate failure
+		assert.False(t, resp.Success)
+	}
 }

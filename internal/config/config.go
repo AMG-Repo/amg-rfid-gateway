@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -49,6 +51,9 @@ type GatewayConfig struct {
 	// Use pointers to distinguish between "not set" (nil) and "set to 0" (unlimited)
 	MaxPendingConfirmations   *int          `yaml:"max_pending_confirmations,omitempty"`   // nil = default 10000, 0 = unlimited
 	PendingWarningThreshold   *int          `yaml:"pending_warning_threshold,omitempty"`   // nil = default 1000, 0 = never warn
+
+	// Logging configuration
+	LogLevel                  string        `yaml:"log_level"`
 }
 
 // AntennaConfig holds configuration for a single antenna.
@@ -146,6 +151,178 @@ func LoadFromYAML(path string) (*GatewayConfig, error) {
 
 	// HAPPY PATH
 	return &cfg, nil
+}
+
+// AutoDetectPath searches for the config file in standard locations.
+// Search order:
+// 1. $GATEWAY_CONFIG environment variable
+// 2. ./config.yaml (current directory)
+// 3. $(brew --prefix)/etc/amg-rfid-gateway/config.yaml (macOS Homebrew) - skipped on Linux
+// 4. /etc/amg-rfid-gateway/config.yaml (system)
+// Returns the path and nil error if found, or empty string and error if not found.
+func AutoDetectPath() (string, error) {
+	var searched []string
+
+	// 1. Check GATEWAY_CONFIG environment variable
+	if envPath := os.Getenv("GATEWAY_CONFIG"); envPath != "" {
+		searched = append(searched, fmt.Sprintf("$GATEWAY_CONFIG (%s)", envPath))
+		if fileExists(envPath) {
+			return envPath, nil
+		}
+	}
+
+	// 2. Check current directory
+	cwdPath := "./config.yaml"
+	searched = append(searched, cwdPath)
+	if fileExists(cwdPath) {
+		// Convert to absolute path for consistency
+		absPath, err := filepath.Abs(cwdPath)
+		if err == nil {
+			return absPath, nil
+		}
+		return cwdPath, nil
+	}
+
+	// 3. Check Homebrew location (macOS only)
+	if runtime.GOOS == "darwin" {
+		brewPrefix := os.Getenv("HOMEBREW_PREFIX")
+		if brewPrefix == "" {
+			// Try to get from brew command or use default
+			brewPrefix = "/opt/homebrew" // Default for Apple Silicon
+			if runtime.GOARCH == "amd64" {
+				brewPrefix = "/usr/local" // Default for Intel Macs
+			}
+		}
+		brewPath := filepath.Join(brewPrefix, "etc", "amg-rfid-gateway", "config.yaml")
+		searched = append(searched, brewPath)
+		if fileExists(brewPath) {
+			return brewPath, nil
+		}
+	}
+
+	// 4. Check system location
+	systemPath := "/etc/amg-rfid-gateway/config.yaml"
+	searched = append(searched, systemPath)
+	if fileExists(systemPath) {
+		return systemPath, nil
+	}
+
+	// Not found - return error with list of searched paths
+	return "", fmt.Errorf("config file not found. Searched: %v", searched)
+}
+
+// fileExists checks if a file exists and is a regular file (not a directory).
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
+// SaveToYAML saves the configuration to a YAML file atomically.
+// 1. Creates .bak backup of existing file
+// 2. Marshals config to YAML
+// 3. Writes to temp file in same directory
+// 4. Atomic rename temp -> target path
+func (c *GatewayConfig) SaveToYAML(path string) error {
+	// NEGATIVE: Validate we have a valid path
+	if path == "" {
+		return errors.New("path cannot be empty")
+	}
+
+	// Get the directory for the config file
+	dir := filepath.Dir(path)
+	if dir == "" {
+		dir = "."
+	}
+
+	// Ensure directory exists
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// 1. Create backup of existing file if it exists
+	if fileExists(path) {
+		backupPath := path + ".bak"
+		if err := copyFile(path, backupPath); err != nil {
+			return fmt.Errorf("failed to create backup: %w", err)
+		}
+	}
+
+	// 2. Marshal config to YAML
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	// 3. Write to temp file in same directory
+	tempFile, err := os.CreateTemp(dir, "config-*.yaml.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tempPath := tempFile.Name()
+
+	// Ensure temp file is cleaned up on error
+	defer func() {
+		if err != nil {
+			os.Remove(tempPath)
+		}
+	}()
+
+	// Write YAML data to temp file
+	if _, err := tempFile.Write(data); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	// Sync to disk for durability
+	if err := tempFile.Sync(); err != nil {
+		tempFile.Close()
+		return fmt.Errorf("failed to sync temp file: %w", err)
+	}
+
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
+
+	// 4. Atomic rename temp -> target path
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("failed to rename temp file to target: %w", err)
+	}
+
+	// HAPPY PATH
+	return nil
+}
+
+// copyFile copies a file from src to dst, preserving permissions.
+func copyFile(src, dst string) error {
+	// Open source file
+	sourceFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	// Get source file info for permissions
+	info, err := sourceFile.Stat()
+	if err != nil {
+		return err
+	}
+
+	// Create destination file
+	destFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+
+	// Copy content
+	if _, err := destFile.ReadFrom(sourceFile); err != nil {
+		return err
+	}
+
+	return destFile.Sync()
 }
 
 // LoadFromEnv loads configuration from environment variables.

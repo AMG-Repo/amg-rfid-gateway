@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"log"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -27,6 +28,10 @@ const (
 	ScreenNetwork
 	// ScreenStatus shows system status.
 	ScreenStatus
+	// ScreenSplash is the splash screen.
+	ScreenSplash
+	// ScreenSettings is the settings configuration screen.
+	ScreenSettings
 )
 
 // App is the main TUI application model.
@@ -39,6 +44,8 @@ type App struct {
 	antennas screens.AntennasScreenModel
 	network  screens.NetworkScreenModel
 	status   screens.StatusScreenModel
+	splash   screens.SplashScreenModel
+	settings screens.SettingsScreenModel
 
 	// Terminal dimensions
 	width  int
@@ -46,6 +53,12 @@ type App struct {
 
 	// Config
 	cfg *config.GatewayConfig
+
+	// Config path for saving
+	configPath string
+
+	// Version string
+	version string
 
 	// Styles
 	styles *Styles
@@ -112,9 +125,9 @@ func NewStyles() *Styles {
 }
 
 // NewApp creates a new TUI application.
-func NewApp() (*App, error) {
+func NewApp(cfgPath string, version string) (*App, error) {
 	// Try to load config
-	cfg, err := config.LoadFromYAML("./config.yaml")
+	cfg, err := config.LoadFromYAML(cfgPath)
 	if err != nil {
 		// Fallback to env
 		cfg = config.LoadFromEnv()
@@ -126,12 +139,16 @@ func NewApp() (*App, error) {
 	bridgeClient := NewBridgeClient("")
 
 	app := &App{
-		currentScreen: ScreenMainMenu,
+		currentScreen: ScreenSplash,
 		mainMenu:      screens.NewMainScreen(),
 		antennas:      screens.NewAntennasScreen(),
 		network:       screens.NewNetworkScreen(),
 		status:        screens.NewStatusScreen(),
+		splash:        screens.NewSplashScreen(),
+		settings:      screens.NewSettingsScreen(cfg),
 		cfg:           cfg,
+		configPath:    cfgPath,
+		version:       version,
 		styles:        styles,
 		bridgeClient:  bridgeClient,
 	}
@@ -151,6 +168,8 @@ func (a *App) Init() tea.Cmd {
 		a.antennas.Init(),
 		a.network.Init(),
 		a.status.Init(),
+		a.splash.Init(),
+		a.settings.Init(),
 		// Start polling for data
 		a.pollData(),
 	}
@@ -318,6 +337,43 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.status = newModel.(screens.StatusScreenModel)
 		return a, cmd
 
+	case ScreenSplash:
+		newModel, cmd := a.splash.Update(msg)
+		a.splash = newModel.(screens.SplashScreenModel)
+
+		// Check if splash is done and should advance to main menu
+		if a.splash.ShouldAdvanceToMenu() {
+			a.currentScreen = ScreenMainMenu
+		}
+
+		return a, cmd
+
+	case ScreenSettings:
+		newModel, cmd := a.settings.Update(msg)
+		a.settings = newModel.(screens.SettingsScreenModel)
+
+		// Check for save action - save config if there are changes
+		if a.settings.HasChanges() {
+			newCfg := a.settings.GetConfig()
+			// Validate before saving
+			if err := newCfg.Validate(); err != nil {
+				log.Printf("[TUI] Config validation failed: %v", err)
+				// Don't keep invalid config in memory — restore valid config in UI
+				a.settings.SetConfig(a.cfg)
+			} else {
+				a.cfg = newCfg
+				// Save to file
+				if err := a.cfg.SaveToYAML(a.configPath); err != nil {
+					log.Printf("[TUI] Failed to save config: %v", err)
+				} else {
+					log.Printf("[TUI] Config saved to %s", a.configPath)
+					a.settings.SetConfig(newCfg)
+				}
+			}
+		}
+
+		return a, cmd
+
 	default:
 		return a, nil
 	}
@@ -338,6 +394,10 @@ func (a *App) View() string {
 		return a.network.View()
 	case ScreenStatus:
 		return a.status.View()
+	case ScreenSplash:
+		return a.splash.View()
+	case ScreenSettings:
+		return a.settings.View()
 	default:
 		return "Unknown screen"
 	}
@@ -354,6 +414,8 @@ func (a *App) navigateTo(screen string) tea.Cmd {
 		a.currentScreen = ScreenNetwork
 	case "status":
 		a.currentScreen = ScreenStatus
+	case "settings":
+		a.currentScreen = ScreenSettings
 	case "quit":
 		// Quit is handled by returning tea.Quit from Update
 	default:

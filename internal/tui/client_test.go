@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/antenna"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -299,4 +300,258 @@ func TestBridgeClient_MultipleRequests(t *testing.T) {
 	antennas, err := client.GetAntennas()
 	require.NoError(t, err)
 	assert.NotEmpty(t, antennas)
+}
+
+func TestBridgeClient_GetConfig_Success(t *testing.T) {
+	socketPath := "/tmp/test-client-" + t.Name() + ".sock"
+	defer os.Remove(socketPath)
+
+	// Start a mock server
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	// Server response
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Read request
+		var req BridgeRequest
+		decoder := json.NewDecoder(conn)
+		if err := decoder.Decode(&req); err != nil {
+			return
+		}
+
+		// Verify request
+		assert.Equal(t, "GET", req.Method)
+		assert.Equal(t, "/config", req.Path)
+
+		// Send response
+		cfg := config.GatewayConfig{
+			GatewayID: "client-test-gateway",
+			CompanyID: "test-company",
+			CloudURL:  "wss://test.example.com",
+		}
+		resp := BridgeResponse{
+			Success: true,
+			Data:    cfg,
+		}
+		encoder := json.NewEncoder(conn)
+		encoder.Encode(resp)
+	}()
+
+	// Wait for server to be ready
+	time.Sleep(50 * time.Millisecond)
+
+	client := NewBridgeClient(socketPath)
+	cfg, err := client.GetConfig()
+
+	require.NoError(t, err)
+	assert.NotNil(t, cfg)
+	assert.Equal(t, "client-test-gateway", cfg.GatewayID)
+	assert.Equal(t, "test-company", cfg.CompanyID)
+	assert.Equal(t, "wss://test.example.com", cfg.CloudURL)
+}
+
+func TestBridgeClient_UpdateConfig_Success(t *testing.T) {
+	socketPath := "/tmp/test-client-" + t.Name() + ".sock"
+	defer os.Remove(socketPath)
+
+	// Start a mock server
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	var receivedBody json.RawMessage
+
+	// Server response
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Read request
+		var req BridgeRequest
+		decoder := json.NewDecoder(conn)
+		if err := decoder.Decode(&req); err != nil {
+			return
+		}
+
+		// Verify request
+		assert.Equal(t, "POST", req.Method)
+		assert.Equal(t, "/config", req.Path)
+		receivedBody = req.Body
+
+		// Send success response
+		resp := BridgeResponse{
+			Success: true,
+		}
+		encoder := json.NewEncoder(conn)
+		encoder.Encode(resp)
+	}()
+
+	// Wait for server to be ready
+	time.Sleep(50 * time.Millisecond)
+
+	cfg := &config.GatewayConfig{
+		GatewayID: "updated-gateway",
+		CompanyID: "updated-company",
+		CloudURL:  "wss://updated.example.com",
+	}
+
+	client := NewBridgeClient(socketPath)
+	err = client.UpdateConfig(cfg)
+
+	require.NoError(t, err)
+	require.NotNil(t, receivedBody)
+
+	// Verify the body was sent correctly
+	var receivedCfg config.GatewayConfig
+	err = json.Unmarshal(receivedBody, &receivedCfg)
+	require.NoError(t, err)
+	assert.Equal(t, "updated-gateway", receivedCfg.GatewayID)
+	assert.Equal(t, "updated-company", receivedCfg.CompanyID)
+}
+
+func TestBridgeClient_UpdateConfig_ServerError(t *testing.T) {
+	socketPath := "/tmp/test-client-" + t.Name() + ".sock"
+	defer os.Remove(socketPath)
+
+	// Start a mock server
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	// Server response
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Read request
+		var req BridgeRequest
+		decoder := json.NewDecoder(conn)
+		if err := decoder.Decode(&req); err != nil {
+			return
+		}
+
+		// Send error response
+		resp := BridgeResponse{
+			Success: false,
+			Error:   "validation failed",
+		}
+		encoder := json.NewEncoder(conn)
+		encoder.Encode(resp)
+	}()
+
+	// Wait for server to be ready
+	time.Sleep(50 * time.Millisecond)
+
+	cfg := &config.GatewayConfig{
+		GatewayID: "test-gateway",
+		CompanyID: "test-company",
+		CloudURL:  "wss://test.example.com",
+	}
+
+	client := NewBridgeClient(socketPath)
+	err = client.UpdateConfig(cfg)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "validation failed")
+}
+
+func TestBridgeClient_ReloadConfig_Success(t *testing.T) {
+	socketPath := "/tmp/test-client-" + t.Name() + ".sock"
+	defer os.Remove(socketPath)
+
+	// Start a mock server
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	// Server response
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Read request
+		var req BridgeRequest
+		decoder := json.NewDecoder(conn)
+		if err := decoder.Decode(&req); err != nil {
+			return
+		}
+
+		// Verify request
+		assert.Equal(t, "POST", req.Method)
+		assert.Equal(t, "/config/reload", req.Path)
+
+		// Send success response
+		resp := BridgeResponse{
+			Success: true,
+		}
+		encoder := json.NewEncoder(conn)
+		encoder.Encode(resp)
+	}()
+
+	// Wait for server to be ready
+	time.Sleep(50 * time.Millisecond)
+
+	client := NewBridgeClient(socketPath)
+	err = client.ReloadConfig()
+
+	require.NoError(t, err)
+}
+
+func TestBridgeClient_ReloadConfig_ServerError(t *testing.T) {
+	socketPath := "/tmp/test-client-" + t.Name() + ".sock"
+	defer os.Remove(socketPath)
+
+	// Start a mock server
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	// Server response
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Read request
+		var req BridgeRequest
+		decoder := json.NewDecoder(conn)
+		if err := decoder.Decode(&req); err != nil {
+			return
+		}
+
+		// Send error response
+		resp := BridgeResponse{
+			Success: false,
+			Error:   "reload failed",
+		}
+		encoder := json.NewEncoder(conn)
+		encoder.Encode(resp)
+	}()
+
+	// Wait for server to be ready
+	time.Sleep(50 * time.Millisecond)
+
+	client := NewBridgeClient(socketPath)
+	err = client.ReloadConfig()
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "reload failed")
 }

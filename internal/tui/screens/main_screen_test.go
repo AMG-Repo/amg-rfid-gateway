@@ -14,12 +14,12 @@ func TestMainScreen_Navigation(t *testing.T) {
 		expectPos  int
 		numOptions int
 	}{
-		{"down from 0", 0, "down", 1, 4},
-		{"down with j", 0, "j", 1, 4},
-		{"up from 1", 1, "up", 0, 4},
-		{"up with k", 1, "k", 0, 4},
-		{"down at bottom", 3, "down", 3, 4}, // stays at bottom
-		{"up at top", 0, "up", 0, 4},        // stays at top
+		{"down from 0", 0, "down", 1, 5},
+		{"down with j", 0, "j", 1, 5},
+		{"up from 1", 1, "up", 0, 5},
+		{"up with k", 1, "k", 0, 5},
+		{"down at bottom", 4, "down", 4, 5}, // stays at bottom
+		{"up at top", 0, "up", 0, 5},        // stays at top
 	}
 
 	for _, tt := range tests {
@@ -49,7 +49,8 @@ func TestMainScreen_Selection(t *testing.T) {
 		{"select antennas", 0, "antennas"},
 		{"select network", 1, "network"},
 		{"select status", 2, "status"},
-		{"select quit", 3, "quit"},
+		{"select settings", 3, "settings"},
+		{"select quit", 4, "quit"},
 	}
 
 	for _, tt := range tests {
@@ -70,7 +71,7 @@ func TestMainScreen_Selection(t *testing.T) {
 
 func TestMainScreen_QuitCommand(t *testing.T) {
 	m := NewMainScreen()
-	m.cursor = 3 // Quit option
+	m.cursor = 4 // Quit option
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -102,7 +103,7 @@ func TestMainScreen_View(t *testing.T) {
 	}
 
 	// Should contain menu items
-	expectedItems := []string{"Antennas", "Network", "System", "Quit"}
+	expectedItems := []string{"Antennas", "Network", "System", "Settings", "Quit"}
 	for _, item := range expectedItems {
 		if !contains(view, item) {
 			t.Errorf("view should contain %q", item)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/antenna"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
 )
 
@@ -29,10 +30,26 @@ type AntennaProvider interface {
 	GetAntennaStatuses() []antenna.AntennaStatus
 }
 
+// ConfigProvider defines the interface for getting configuration.
+type ConfigProvider interface {
+	GetConfig() *config.GatewayConfig
+}
+
+// ConfigUpdater defines the interface for updating configuration.
+type ConfigUpdater interface {
+	UpdateConfig(*config.GatewayConfig) error
+}
+
+// ConfigReloader defines the interface for reloading configuration.
+type ConfigReloader interface {
+	ReloadConfig() error
+}
+
 // BridgeRequest represents a request to the bridge server.
 type BridgeRequest struct {
-	Method string `json:"method"`
-	Path   string `json:"path"`
+	Method string          `json:"method"`
+	Path   string          `json:"path"`
+	Body   json.RawMessage `json:"body,omitempty"`
 }
 
 // BridgeResponse represents a response from the bridge server.
@@ -48,6 +65,11 @@ type BridgeServer struct {
 	listener   net.Listener
 	health     HealthMonitor
 	antennas   AntennaProvider
+
+	// Config interfaces (optional - nil means not implemented)
+	config   ConfigProvider
+	updater  ConfigUpdater
+	reloader ConfigReloader
 
 	// State
 	running bool
@@ -147,6 +169,27 @@ func (s *BridgeServer) IsRunning() bool {
 	return s.running
 }
 
+// SetConfigProvider sets the config provider interface.
+func (s *BridgeServer) SetConfigProvider(provider ConfigProvider) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.config = provider
+}
+
+// SetConfigUpdater sets the config updater interface.
+func (s *BridgeServer) SetConfigUpdater(updater ConfigUpdater) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.updater = updater
+}
+
+// SetConfigReloader sets the config reloader interface.
+func (s *BridgeServer) SetConfigReloader(reloader ConfigReloader) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reloader = reloader
+}
+
 // serve accepts and handles connections.
 func (s *BridgeServer) serve(ctx context.Context) {
 	defer s.wg.Done()
@@ -206,6 +249,19 @@ func (s *BridgeServer) handleConnection(ctx context.Context, conn net.Conn) {
 		resp = s.handleGetStatus(req)
 	case "/antennas":
 		resp = s.handleGetAntennas(req)
+	case "/config":
+		if req.Method == "GET" || req.Method == "" {
+			resp = s.handleGetConfig(req)
+		} else if req.Method == "POST" {
+			resp = s.handlePostConfig(req)
+		} else {
+			resp = BridgeResponse{
+				Success: false,
+				Error:   "method not allowed: " + req.Method,
+			}
+		}
+	case "/config/reload":
+		resp = s.handlePostConfigReload(req)
 	default:
 		resp = BridgeResponse{
 			Success: false,
@@ -249,6 +305,111 @@ func (s *BridgeServer) handleGetAntennas(req BridgeRequest) BridgeResponse {
 	return BridgeResponse{
 		Success: true,
 		Data:    antennas,
+	}
+}
+
+// handleGetConfig handles GET /config requests.
+func (s *BridgeServer) handleGetConfig(req BridgeRequest) BridgeResponse {
+	if req.Method != "GET" && req.Method != "" {
+		return BridgeResponse{
+			Success: false,
+			Error:   "method not allowed: " + req.Method,
+		}
+	}
+
+	// Check if config provider is available
+	s.mu.RLock()
+	provider := s.config
+	s.mu.RUnlock()
+
+	if provider == nil {
+		return BridgeResponse{
+			Success: false,
+			Error:   "config provider not implemented",
+		}
+	}
+
+	cfg := provider.GetConfig()
+	return BridgeResponse{
+		Success: true,
+		Data:    cfg,
+	}
+}
+
+// handlePostConfig handles POST /config requests.
+func (s *BridgeServer) handlePostConfig(req BridgeRequest) BridgeResponse {
+	if req.Method != "POST" {
+		return BridgeResponse{
+			Success: false,
+			Error:   "method not allowed: " + req.Method,
+		}
+	}
+
+	// Check if config updater is available
+	s.mu.RLock()
+	updater := s.updater
+	s.mu.RUnlock()
+
+	if updater == nil {
+		return BridgeResponse{
+			Success: false,
+			Error:   "config updater not implemented",
+		}
+	}
+
+	// Parse config from request body
+	var cfg config.GatewayConfig
+	if err := json.Unmarshal(req.Body, &cfg); err != nil {
+		return BridgeResponse{
+			Success: false,
+			Error:   "invalid config body: " + err.Error(),
+		}
+	}
+
+	// Update the config
+	if err := updater.UpdateConfig(&cfg); err != nil {
+		return BridgeResponse{
+			Success: false,
+			Error:   "failed to update config: " + err.Error(),
+		}
+	}
+
+	return BridgeResponse{
+		Success: true,
+	}
+}
+
+// handlePostConfigReload handles POST /config/reload requests.
+func (s *BridgeServer) handlePostConfigReload(req BridgeRequest) BridgeResponse {
+	if req.Method != "POST" && req.Method != "" {
+		return BridgeResponse{
+			Success: false,
+			Error:   "method not allowed: " + req.Method,
+		}
+	}
+
+	// Check if config reloader is available
+	s.mu.RLock()
+	reloader := s.reloader
+	s.mu.RUnlock()
+
+	if reloader == nil {
+		return BridgeResponse{
+			Success: false,
+			Error:   "config reloader not implemented",
+		}
+	}
+
+	// Trigger reload
+	if err := reloader.ReloadConfig(); err != nil {
+		return BridgeResponse{
+			Success: false,
+			Error:   "failed to reload config: " + err.Error(),
+		}
+	}
+
+	return BridgeResponse{
+		Success: true,
 	}
 }
 
