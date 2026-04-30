@@ -259,11 +259,12 @@ func TestSplashScreen_ASCIILogo(t *testing.T) {
 	m := NewSplashScreen()
 	view := m.View()
 
-	// The ASCII art should contain RFID-related elements
+	// The ASCII art should contain radar-style elements
 	expectedElements := []string{
-		"┌", "┐", "└", "┘", // Box drawing characters
-		"◆", "◈",         // Diamond shapes (chip)
-		"~", "≈",         // Wave characters
+		"╭", "╮", "╰", "╯", // Rounded corners
+		"│", "─", "┼",  // Radar cross
+		"·",            // Signal dots
+		"AMG",          // Logo text
 	}
 
 	found := false
