@@ -52,7 +52,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          go build -ldflags "-s -w" -o tui ./cmd/tui
+          go build -ldflags "-s -w" -o gateway-tui ./cmd/tui
 
       - name: Package
         run: |
@@ -60,7 +60,7 @@ jobs:
           ARCHIVE="amg-rfid-gateway-${VERSION}-${{ matrix.suffix }}"
           mkdir -p "${ARCHIVE}"
           cp gateway "${ARCHIVE}/"
-          cp tui "${ARCHIVE}/"
+          cp gateway-tui "${ARCHIVE}/"
           cp configs/config.example.yaml "${ARCHIVE}/"
           tar czf "${ARCHIVE}.tar.gz" "${ARCHIVE}"
 

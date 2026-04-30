@@ -2,7 +2,7 @@
 
 # Variables
 BINARY_NAME=gateway
-TUI_BINARY_NAME=tui
+TUI_BINARY_NAME=gateway-tui
 BUILD_DIR=./build
 INSTALL_DIR=/opt/amg-rfid-gateway
 SERVICE_NAME=amg-rfid-gateway

@@ -43,7 +43,8 @@ type SplashScreenStyles struct {
 func NewSplashScreenStyles() *SplashScreenStyles {
 	return &SplashScreenStyles{
 		Logo: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#7D56F4")).
+			Foreground(lipgloss.Color("#00D4FF")).
+			Bold(true).
 			Align(lipgloss.Center),
 		Version: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#B8B8B8")).
@@ -130,15 +131,19 @@ func (m SplashScreenModel) View() string {
 		content)
 }
 
-// renderLogo returns the ASCII art logo.
+// renderLogo returns the ASCII art logo (radar style with concentric rings).
 func (m SplashScreenModel) renderLogo() string {
-	return `    ┌─────────────┐
-    │   ◆ RFID ◆  │
-    │  ≈≈≈≈≈≈≈≈≈  │
-    │  ≈  ◈◈◈  ≈  │
-    │  ≈≈≈≈≈≈≈≈≈  │
-    │   Gateway   │
-    └─────────────┘`
+	return `          ·
+       ·  │  ·
+     · ───┼─── ·
+    ·╭────┼────╮·
+   ·╭┤ ╭──┴──╮ ├╮·
+   ·│ │  AMG  │ │·
+   ·╰┤ ╰─────╯ ├╯·
+    ·╰─────────╯·
+     · ─────── ·
+       ·  │  ·
+          ·`
 }
 
 // SetSize updates the screen dimensions.
