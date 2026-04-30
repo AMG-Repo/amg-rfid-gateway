@@ -183,16 +183,20 @@ func AutoDetectPath() (string, error) {
 		return cwdPath, nil
 	}
 
-	// 3. Check Homebrew location (macOS only)
-	if runtime.GOOS == "darwin" {
-		brewPrefix := os.Getenv("HOMEBREW_PREFIX")
-		if brewPrefix == "" {
-			// Try to get from brew command or use default
-			brewPrefix = "/opt/homebrew" // Default for Apple Silicon
+	// 3. Check Homebrew location (macOS + Linux)
+	brewPrefix := os.Getenv("HOMEBREW_PREFIX")
+	if brewPrefix == "" {
+		switch runtime.GOOS {
+		case "darwin":
+			brewPrefix = "/opt/homebrew" // Apple Silicon
 			if runtime.GOARCH == "amd64" {
-				brewPrefix = "/usr/local" // Default for Intel Macs
+				brewPrefix = "/usr/local" // Intel Macs
 			}
+		case "linux":
+			brewPrefix = "/home/linuxbrew/.linuxbrew" // Homebrew on Linux
 		}
+	}
+	if brewPrefix != "" {
 		brewPath := filepath.Join(brewPrefix, "etc", "amg-rfid-gateway", "config.yaml")
 		searched = append(searched, brewPath)
 		if fileExists(brewPath) {

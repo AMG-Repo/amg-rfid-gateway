@@ -39,10 +39,20 @@ const (
 
 func main() {
 	var configPath string
-	flag.StringVar(&configPath, "config", filepath.Join(configDir, "config.yaml"), "Path to config file")
+	flag.StringVar(&configPath, "config", "", "Path to config file (auto-detected if not specified)")
 	flag.Parse()
 
 	log.Printf("%s v%s starting...", appName, version.Version)
+
+	// Auto-detect config if not specified
+	if configPath == "" {
+		detected, err := config.AutoDetectPath()
+		if err != nil {
+			log.Fatalf("Config not found. Use --config flag or set $GATEWAY_CONFIG.\n%v", err)
+		}
+		log.Printf("Config auto-detected: %s", detected)
+		configPath = detected
+	}
 
 	// Load configuration
 	cfg, err := loadConfig(configPath)
