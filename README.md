@@ -6,10 +6,13 @@ Edge Gateway for Raspberry Pi that connects RFID antennas to the cloud backend.
 
 This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and the AMG-RFID cloud backend. It provides:
 
+- **Splash Screen**: ASCII art logo with version display and VPS connection status on startup
+- **Auto-Detect Configuration**: Binary automatically finds config.yaml in standard locations
+- **TUI Configurator**: Terminal-based configuration with full settings editing
 - **Local Caching**: SQLite-based buffering for offline operation
 - **Automatic Sync**: Batches readings to the cloud via secure WebSocket/HTTP
 - **Multi-Antenna Support**: Connect multiple antennas simultaneously
-- **TUI Configurator**: Terminal-based configuration interface
+- **Web UI**: Built-in web interface for manual tag confirmation
 - **OTA Updates**: Automatic over-the-air updates from GitHub releases
 - **Health Monitoring**: Built-in health checks and Prometheus metrics
 
@@ -36,7 +39,13 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 │                  │  (batch+retry) │                          │
 │                  └───────┬────────┘                          │
 │                          │                                   │
-└──────────────────────────┼───────────────────────────────────┘
+│                          ▼                                   │
+│                  ┌────────────────┐                          │
+│                  │    Web UI      │                          │
+│                  │  (port 9090)   │                          │
+│                  └────────────────┘                          │
+│                                                              │
+└──────────────────────────┬───────────────────────────────────┘
                            │ HTTPS/WSS
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -51,38 +60,59 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 
 | Feature | Description |
 |---------|-------------|
+| **Splash Screen** | ASCII art logo with RFID waves, version, and VPS connection status |
+| **Auto-Detect Config** | Binary searches config automatically in standard locations |
 | **SQLite Cache** | Thread-safe local storage with WAL mode for durability |
 | **Buffered Writes** | 1000-capacity channel with background flush every 1s |
 | **Batch Sync** | Sends up to 100 readings per request to minimize API calls |
 | **Auto-Retry** | Exponential backoff (max 5 retries) for failed syncs |
-| **Reconnect Logic** | Automatic WebSocket reconnection with backoff |
+| **Reconnect Logic** | Automatic antenna reconnection with configurable backoff |
 | **Multi-Antenna** | Supports multiple antennas via goroutines |
+| **Web UI** | Built-in verification interface on port 9090 |
+| **Settings TUI** | Full configuration editing without leaving the TUI |
 
 ### TUI Configurator
 
-Interactive terminal interface using Bubbletea:
+Interactive terminal interface using Bubbletea with splash screen and multiple screens:
 
 ```bash
-# Run TUI configurator
-./gateway --tui
+# Run TUI configurator (auto-detects config)
+./gateway-tui
 
-# Or use the dedicated binary
-./tui-configurator
+# Or run directly with auto-detected config
+./gateway-tui
 ```
 
+**Flow:**
+1. **Splash Screen** (2 seconds): ASCII logo + version + VPS connection status
+2. **Main Menu**: Navigate to Antennas, Network, System, Settings, or Quit
+
 **Screens:**
-- Main Menu: Antennas, Network, System Status, Quit
-- Antennas: View all connected antennas and their status
-- Network: Connection state to cloud backend
-- System: Metrics, cache size, sync stats
+- **Antennas**: View all connected antennas, their status, reading counts, and last tag EPC/RSSI
+- **Network**: Connection state to cloud backend and VPS API
+- **System**: Gateway ID, company ID, version, uptime, cache size, sync status
+- **Settings**: Full TUI-based configuration editor with field validation
+  - Gateway ID, Company ID, Cloud URL, Log Level
+  - Queue Cap, Warning Threshold
+  - View antenna configurations
+  - Save changes without restarting
+
+**Navigation:**
+- Arrow keys or `j/k` to navigate
+- Enter to select/edit
+- `q` or `Ctrl+C` to quit
+- `Esc` to go back
 
 ### OTA Updates
 
-Automatic updates from GitHub releases:
+Automatic updates from GitHub releases with Homebrew tap auto-update:
 
 ```bash
 # Check for updates manually
 ./gateway --check-update
+
+# Update via Homebrew
+brew upgrade amg-rfid-gateway
 
 # Update via script
 sudo ./scripts/update.sh
@@ -97,7 +127,26 @@ sudo ./scripts/update.sh
 
 ## Installation
 
-### Quick Install (Recommended)
+### Homebrew (Recommended)
+
+```bash
+# Add the tap
+brew tap AMG-Repo/tap
+
+# Install
+brew install amg-rfid-gateway
+
+# Run with auto-detected config
+gateway
+
+# Or run TUI
+gateway-tui
+
+# As a service
+brew services start amg-rfid-gateway
+```
+
+### Quick Install (Alternative)
 
 ```bash
 # Download and run install script
@@ -119,6 +168,11 @@ sudo chown -R gateway:gateway /opt/amg-rfid-gateway
 wget https://github.com/amg-rfid/amg-rfid-gateway/releases/latest/download/gateway-linux-arm64
 sudo mv gateway-linux-arm64 /opt/amg-rfid-gateway/gateway
 sudo chmod +x /opt/amg-rfid-gateway/gateway
+
+# Also download TUI binary
+wget https://github.com/amg-rfid/amg-rfid-gateway/releases/latest/download/gateway-tui-linux-arm64
+sudo mv gateway-tui-linux-arm64 /opt/amg-rfid-gateway/gateway-tui
+sudo chmod +x /opt/amg-rfid-gateway/gateway-tui
 
 # 3. Create config
 cp configs/config.example.yaml /opt/amg-rfid-gateway/config.yaml
@@ -146,62 +200,162 @@ make build-arm64
 # Or build for ARMv7 (older Pi)
 make build-arm
 
+# Build TUI
+make build-tui
+
 # Build all binaries
 make build-all
 ```
 
 ## Configuration
 
-Edit `/opt/amg-rfid-gateway/config.yaml`:
+The gateway auto-detects configuration files in this order:
+
+1. `$GATEWAY_CONFIG` environment variable
+2. `./config.yaml` (current directory)
+3. `$(brew --prefix)/etc/amg-rfid-gateway/config.yaml` (Homebrew)
+4. `/etc/amg-rfid-gateway/config.yaml` (system)
+
+This means `--config` flag is now optional:
+
+```bash
+# These all work the same if config is in a standard location
+./gateway
+./gateway --config /etc/amg-rfid-gateway/config.yaml
+GATEWAY_CONFIG=/path/to/config.yaml ./gateway
+```
+
+### Complete Configuration Example
 
 ```yaml
-gateway:
-  id: "gateway-001"              # Unique gateway ID
-  company_id: "company-001"      # Your company ID
-  jwt_token: "your-jwt-token"    # Authentication token
+# AMG RFID Gateway Configuration
 
-cloud:
-  host: "api.amg-rfid.com"       # Backend hostname
-  port: 443                      # HTTPS port
-  use_tls: true                  # Enable TLS/WSS
-  sync_interval: "30s"           # How often to sync
+# Gateway identification
+gateway_id: "rpi-gateway-001"
+company_id: "your-company-uuid"
 
+# Cloud backend connection
+cloud_url: "wss://api.your-domain.com/ws"
+jwt_secret: "your-jwt-token-here"
+
+# Synchronization settings
+sync_interval: 30s
+batch_size: 100
+max_retries: 5
+
+# Health check endpoint port
+health_port: 8080
+
+# Data storage path (SQLite database)
+data_path: "/opt/amg-rfid-gateway/data"
+
+# Antenna configurations
+# Zone field: "entrada" (entry), "salida" (exit), or "" (empty for auto-detect)
 antennas:
-  - id: "antenna-1"
-    host: "192.168.1.100"        # Antenna IP address
-    port: 10001                  # Antenna TCP port
-  - id: "antenna-2"
-    host: "192.168.1.101"
-    port: 10001
+  - id: "ANT-001"
+    ip: "192.168.1.100"
+    port: 49153
+    enabled: true
+    zone: "entrada"
 
-cache:
-  data_dir: "/opt/amg-rfid-gateway/data"
-  max_size_mb: 100
+  - id: "ANT-002"
+    ip: "192.168.1.101"
+    port: 49153
+    enabled: true
+    zone: "salida"
 
-logging:
-  level: "info"                  # debug, info, warn, error
-  format: "json"                 # json, text
+# Permanent Listening Mode (REQ-A006)
+# Controls how the gateway handles continuous antenna connections
+listen_mode: "auto"                    # Options: "active", "passive", "auto"
+heartbeat_interval: 3s                 # How often to send heartbeat pings
+heartbeat_silence_threshold: 5s        # Silence threshold for connection health
 
-ota:
+# Adaptive Delay Configuration
+# Fine-tune reading detection sensitivity based on tag activity
+adaptive_delay_recent: 3s              # Delay after recent tag detection
+adaptive_delay_recent_window: 2s       # Window for "recent" classification
+adaptive_delay_stale: 1s               # Delay when no tags detected recently
+adaptive_delay_stale_window: 10s       # Window for "stale" classification
+adaptive_delay_auto_reading: 5s        # Auto-reading delay in auto mode
+
+# Reconnection Configuration
+reconnect_initial_backoff: 1s          # Initial retry backoff (doubles each attempt)
+reconnect_max_backoff: 30s             # Maximum backoff between reconnection attempts
+socket_path: "/tmp/amg-rfid-gateway.sock"  # Unix socket for TUI bridge
+
+# Web UI Configuration (Local Verification Frontend)
+web_enabled: true                      # Enable/disable the web UI
+web_port: 9090                         # Port for the web server
+web_listen_addr: "0.0.0.0"             # Bind address (0.0.0.0 = all interfaces)
+vps_api_url: "https://api.your-domain.com"  # VPS API base URL for tool sync
+sync_tools_interval: 1h                # How often to sync tools from VPS
+confirmation_retry_interval: 30s       # Retry interval for pending confirmations
+
+# Queue Size Limits (Pending Confirmations)
+max_pending_confirmations: 10000       # Max pending confirmations (0 = unlimited)
+pending_warning_threshold: 1000        # Warning threshold (0 = never warn)
+
+# Logging
+log_level: "info"                      # debug, info, warn, error
+
+# Metrics configuration (optional)
+metrics:
   enabled: true
+  port: 9091
+  path: "/metrics"
+
+# OTA Update settings (optional)
+updates:
   check_interval: "24h"
-  github_repo: "amg-rfid/amg-rfid-gateway"
+  auto_update: false
+  channel: "stable"  # stable, beta
 ```
+
+### Configuration Fields Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `gateway_id` | string | required | Unique gateway identifier |
+| `company_id` | string | required | Company UUID for authentication |
+| `cloud_url` | string | required | WebSocket URL (wss://) for cloud sync |
+| `jwt_secret` | string | required | Authentication token |
+| `sync_interval` | duration | 30s | How often to sync to cloud |
+| `batch_size` | int | 100 | Readings per sync request |
+| `max_retries` | int | 5 | Max retry attempts for failed syncs |
+| `health_port` | int | 8080 | HTTP port for health/metrics |
+| `data_path` | string | ./data | SQLite database location |
+| `listen_mode` | string | auto | Antenna listening mode (active/passive/auto) |
+| `heartbeat_interval` | duration | 3s | Heartbeat ping interval |
+| `heartbeat_silence_threshold` | duration | 5s | Connection health threshold |
+| `adaptive_delay_*` | duration | varies | Fine-tune reading sensitivity |
+| `reconnect_*` | duration | varies | Reconnection backoff settings |
+| `web_enabled` | bool | true | Enable web UI |
+| `web_port` | int | 9090 | Web UI port |
+| `web_listen_addr` | string | 0.0.0.0 | Web UI bind address |
+| `vps_api_url` | string | required | VPS REST API base URL |
+| `sync_tools_interval` | duration | 1h | Tool sync frequency |
+| `confirmation_retry_interval` | duration | 30s | Pending confirmation retry |
+| `max_pending_confirmations` | int | 10000 | Queue size limit (0=unlimited) |
+| `pending_warning_threshold` | int | 1000 | Warning threshold (0=never) |
+| `log_level` | string | info | Logging verbosity |
 
 ## Usage
 
 ### Start Gateway
 
 ```bash
-# As systemd service
-sudo systemctl start gateway
-sudo systemctl status gateway
+# With auto-detected config (recommended)
+./gateway
 
-# Manual (for testing)
+# Or specify config explicitly
 ./gateway --config /opt/amg-rfid-gateway/config.yaml
 
 # With verbose logging
-./gateway --config /opt/amg-rfid-gateway/config.yaml --log-level debug
+./gateway --log-level debug
+
+# As systemd service
+sudo systemctl start gateway
+sudo systemctl status gateway
 ```
 
 ### View Logs
@@ -217,12 +371,23 @@ sudo tail -f /opt/amg-rfid-gateway/data/gateway.log
 ### TUI Configuration
 
 ```bash
-# Launch TUI
-./tui-configurator
+# Launch TUI with splash screen and auto-detected config
+./gateway-tui
+
+# The TUI shows:
+# 1. Splash screen (2s): Logo, version, VPS status
+# 2. Main Menu: Navigate with arrow keys
+#    - Antennas: View antenna status and readings
+#    - Network: Cloud connection status
+#    - System: Gateway metrics and sync info
+#    - Settings: Edit configuration fields
+#    - Quit: Exit the TUI
 
 # Navigate with arrow keys
-# Enter to select
+# Enter to select/edit
+# 's' to save changes in Settings screen
 # q or Ctrl+C to quit
+# Esc to go back
 ```
 
 ### Health Check
@@ -255,6 +420,19 @@ curl http://localhost:8080/metrics
 # gateway_antennas_connected - Number of connected antennas
 ```
 
+### Web UI
+
+When `web_enabled: true`, access the web interface at:
+
+```
+http://gateway-ip:9090
+```
+
+Features:
+- Manual tag confirmation interface
+- Real-time reading display
+- Tool verification status
+
 ## Testing
 
 ```bash
@@ -280,16 +458,42 @@ The gateway communicates with the cloud backend using these endpoints:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/v1/rfid/sync` | POST | Send batch of readings |
-| `/api/v1/rfid/pending` | GET | Get pending commands |
+| `/api/v1/rfid/pending` | GET | Get pending confirmations |
 | `/api/v1/health/gateways` | GET | Health check |
+| `/metrics` | GET | Prometheus metrics |
+| `/health` | GET | Simple health status |
 
 **Authentication:** JWT Bearer token with `gateway_id` and `company_id` claims.
+
+## Shared Module (amg-rfid-shared-go)
+
+The project includes a shared Go module for common types and protocol definitions:
+
+```
+amg-rfid-shared-go/
+├── models/
+│   ├── reading.go          # RFID tag reading model
+│   ├── sync_request.go     # Gateway -> Cloud sync request
+│   ├── sync_response.go    # Cloud -> Gateway sync response
+│   ├── health.go           # Health status models
+│   └── errors.go           # Error codes and types
+└── protocol/
+    ├── packet.go           # Binary packet parsing (AMG protocol)
+    ├── constants.go        # Protocol constants and timeouts
+    └── endpoints.go        # API endpoint URLs
+```
+
+This module is shared between the gateway and other components for consistency.
 
 ## Troubleshooting
 
 ### Gateway won't start
 
 ```bash
+# Check if config is found (auto-detect)
+./gateway
+# If not found, it will show searched locations
+
 # Check logs
 sudo journalctl -u gateway -n 50
 
@@ -304,10 +508,10 @@ ls -la /opt/amg-rfid-gateway/
 
 ```bash
 # Test antenna connectivity
-nc -zv 192.168.1.100 10001
+nc -zv 192.168.1.100 49153
 
 # Check antenna config in TUI
-./tui-configurator
+./gateway-tui
 # Navigate to Antennas screen
 ```
 
@@ -328,7 +532,10 @@ curl http://localhost:8080/health
 ### Update failures
 
 ```bash
-# Manual update
+# Manual update via Homebrew
+brew update && brew upgrade amg-rfid-gateway
+
+# Manual update via script
 sudo ./scripts/update.sh --force
 
 # Check GitHub releases
@@ -359,26 +566,37 @@ GOOS=linux GOARCH=arm64 go build -o gateway-arm64 ./cmd/gateway
 ```
 amg-rfid-gateway/
 ├── cmd/
-│   ├── gateway/          # Main gateway binary
-│   └── tui/              # TUI configurator binary
+│   ├── gateway/              # Main gateway binary
+│   └── tui/                  # TUI configurator binary
 ├── internal/
-│   ├── cache/            # SQLite cache implementation
-│   ├── config/           # Configuration loading
-│   ├── health/           # Health monitoring
-│   ├── monitoring/       # Prometheus metrics
-│   ├── rawtcp/           # Antenna TCP client
-│   ├── sync/             # Cloud sync engine
-│   ├── tui/              # TUI screens
-│   ├── updater/          # OTA update logic
-│   └── wsclient/         # WebSocket client
+│   ├── antenna/              # Antenna connection management
+│   ├── cache/                # SQLite cache implementation
+│   ├── config/               # Configuration loading/saving
+│   ├── events/               # Event bus for tag detection
+│   ├── health/               # Health monitoring
+│   ├── httpclient/           # VPS HTTP client
+│   ├── localstore/           # Local tool storage
+│   ├── monitoring/           # Prometheus metrics
+│   ├── rawtcp/               # Antenna TCP client
+│   ├── sync/                 # Cloud sync engine
+│   ├── tui/                  # TUI screens and app
+│   │   └── screens/          # Splash, Main, Antennas, Network, Status, Settings
+│   ├── updater/              # OTA update logic
+│   ├── verify/               # Tool verification logic
+│   ├── version/              # Version information
+│   ├── web/                  # Web UI server
+│   └── wsclient/             # WebSocket client
+├── amg-rfid-shared-go/       # Shared Go module
+│   ├── models/               # Common data models
+│   └── protocol/             # Protocol definitions
 ├── configs/
-│   └── config.example.yaml
+│   └── config.example.yaml   # Example configuration
 ├── scripts/
-│   ├── install.sh
-│   ├── update.sh
-│   └── systemd/
+│   ├── install.sh            # Installation script
+│   ├── update.sh             # Update script
+│   └── systemd/              # SystemD service files
 ├── test/
-│   └── e2e/              # Integration tests
+│   └── e2e/                  # Integration tests
 ├── Makefile
 ├── go.mod
 └── README.md
@@ -398,16 +616,21 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Support
 
-- 📧 Email: support@amg-rfid.com
-- 💬 Discord: [AMG-RFID Community](https://discord.gg/amg-rfid)
-- 🐛 Issues: [GitHub Issues](https://github.com/amg-rfid/amg-rfid-gateway/issues)
+- Email: support@amg-rfid.com
+- Discord: [AMG-RFID Community](https://discord.gg/amg-rfid)
+- Issues: [GitHub Issues](https://github.com/amg-rfid/amg-rfid-gateway/issues)
 
 ## Roadmap
 
 - [x] Core gateway with SQLite cache
-- [x] TUI configurator
-- [x] OTA updates
+- [x] TUI configurator with splash screen
+- [x] Settings screen for TUI-based config editing
+- [x] Auto-detect configuration
+- [x] Web UI for local verification
+- [x] OTA updates with Homebrew support
 - [x] Prometheus metrics
-- [ ] Web-based configuration UI
+- [x] Shared module (amg-rfid-shared-go)
+- [x] Permanent listening mode with adaptive delays
 - [ ] Edge ML for tag filtering
 - [ ] Multi-backend support
+- [ ] Config import/export
