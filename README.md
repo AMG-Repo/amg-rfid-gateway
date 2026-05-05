@@ -87,6 +87,15 @@ Interactive terminal interface using Bubbletea with splash screen and multiple s
 1. **Splash Screen** (2 seconds): ASCII logo + version + VPS connection status
 2. **Main Menu**: Navigate to Antennas, Network, System, Settings, or Quit
 
+#### Splash Screen
+![Splash Screen](docs/screenshots/splash.svg)
+
+#### Main Menu
+![Main Menu](docs/screenshots/main-menu.svg)
+
+#### Settings
+![Settings](docs/screenshots/settings.svg)
+
 **Screens:**
 - **Antennas**: View all connected antennas, their status, reading counts, and last tag EPC/RSSI
 - **Network**: Connection state to cloud backend and VPS API
