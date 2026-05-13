@@ -36,27 +36,52 @@ func TestVerifyFlow_EndToEnd(t *testing.T) {
 
 	vpsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/tools":
-			// Return tools list
-			tools := []localstore.Tool{
-				{ID: 1, CompanyID: "comp-001", SKU: "TOOL-001", Name: "Hammer", UII: "EPC-TEST-001", Status: "active", Location: "Almacén A"},
+		case "/api/v1/gateway/sync-data":
+			// Return sync data with normalized schema
+			syncData := map[string]interface{}{
+				"status": "OK",
+				"tools": []map[string]interface{}{
+					{
+						"id":               1,
+						"tool_id":          1,
+						"uii":              "EPC-TEST-001",
+						"sku":              "TOOL-001",
+						"name":             "Hammer",
+						"description":      "A hammer",
+						"status":           "active",
+						"location":         "Almacén A",
+						"location_id":      nil,
+						"unit_number":      "001",
+						"display_name":     "Hammer 001",
+						"notes":            nil,
+						"active":           true,
+						"kanban_zone":      nil,
+						"tool_destination": "Almacén A",
+					},
+				},
+				"timestamp": time.Now().UTC(),
 			}
-			json.NewEncoder(w).Encode(tools)
+			json.NewEncoder(w).Encode(syncData)
 
 		case "/api/v1/users":
 			json.NewEncoder(w).Encode([]localstore.User{})
 
-		case "/api/v1/tools/confirm":
+		case "/api/v1/gateway/confirm":
 			var req struct {
-				UII    string `json:"uii"`
-				Action string `json:"action"`
+				UII       string `json:"uii"`
+				Action    string `json:"action"`
+				AntennaID string `json:"antenna_id"`
 			}
 			json.NewDecoder(r.Body).Decode(&req)
 			confirmedUII = req.UII
 			confirmedAction = req.Action
 			close(confirmationReceived)
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+			json.NewEncoder(w).Encode(map[string]string{
+				"status": "OK",
+				"uii":    req.UII,
+				"action": req.Action,
+			})
 
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -71,7 +96,7 @@ func TestVerifyFlow_EndToEnd(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Create tables
+	// Create tables with normalized schema (tools + tool_tags)
 	_, err = db.Exec(`
 		CREATE TABLE tools (
 			id INTEGER PRIMARY KEY,
@@ -79,9 +104,21 @@ func TestVerifyFlow_EndToEnd(t *testing.T) {
 			sku TEXT NOT NULL,
 			name TEXT NOT NULL,
 			description TEXT,
+			default_destination TEXT,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE tool_tags (
+			id INTEGER PRIMARY KEY,
+			tool_id INTEGER NOT NULL,
 			uii TEXT NOT NULL UNIQUE,
+			unit_number TEXT,
 			status TEXT,
 			location TEXT,
+			location_id INTEGER,
+			display_name TEXT,
+			notes TEXT,
+			active BOOLEAN DEFAULT 1,
+			kanban_zone TEXT,
 			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE TABLE pending_confirmations (
@@ -99,13 +136,22 @@ func TestVerifyFlow_EndToEnd(t *testing.T) {
 		t.Fatalf("failed to create tables: %v", err)
 	}
 
-	// Insert test tool
+	// Insert test tool master record
 	_, err = db.Exec(`
-		INSERT INTO tools (id, company_id, sku, name, uii, status, location)
-		VALUES (1, 'comp-001', 'TOOL-001', 'Hammer', 'EPC-TEST-001', 'active', 'Almacén A')
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination)
+		VALUES (1, 'comp-001', 'TOOL-001', 'Hammer', 'A hammer', 'Almacén A')
 	`)
 	if err != nil {
 		t.Fatalf("failed to insert tool: %v", err)
+	}
+
+	// Insert test tool tag record
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, status, location, active)
+		VALUES (1, 1, 'EPC-TEST-001', 'active', 'Almacén A', 1)
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert tool tag: %v", err)
 	}
 
 	store := localstore.New(db)
@@ -122,7 +168,7 @@ func TestVerifyFlow_EndToEnd(t *testing.T) {
 	verifier := verify.NewVerifier(mockStore, antennas)
 
 	// Create VPS client
-	vpsClient := httpclient.NewVPSClient(vpsServer.URL, 5*time.Second)
+	vpsClient := httpclient.NewVPSClient(vpsServer.URL, 5*time.Second, "test-token")
 
 	// Create web server
 	server := newTestServer(eventBus, store, verifier, vpsClient)
@@ -217,16 +263,29 @@ func TestVerifyFlow_OfflineMode(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Create tables
+	// Create tables with normalized schema (tools + tool_tags)
 	_, err = db.Exec(`
 		CREATE TABLE tools (
 			id INTEGER PRIMARY KEY,
 			company_id TEXT NOT NULL,
 			sku TEXT NOT NULL,
 			name TEXT NOT NULL,
+			description TEXT,
+			default_destination TEXT,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE tool_tags (
+			id INTEGER PRIMARY KEY,
+			tool_id INTEGER NOT NULL,
 			uii TEXT NOT NULL UNIQUE,
+			unit_number TEXT,
 			status TEXT,
 			location TEXT,
+			location_id INTEGER,
+			display_name TEXT,
+			notes TEXT,
+			active BOOLEAN DEFAULT 1,
+			kanban_zone TEXT,
 			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE TABLE pending_confirmations (
@@ -251,7 +310,7 @@ func TestVerifyFlow_OfflineMode(t *testing.T) {
 	verifier := verify.NewVerifier(mockStore, nil)
 
 	// Create VPS client pointing to non-existent server (offline)
-	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond)
+	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "test-token")
 
 	// Create web server using test helper
 	server := newTestServer(eventBus, store, verifier, vpsClient)
@@ -357,7 +416,7 @@ func TestVerifyFlow_ToolLookup(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Create table - must match localstore schema exactly
+	// Create tables - must match localstore normalized schema exactly (tools + tool_tags)
 	_, err = db.Exec(`
 		CREATE TABLE tools (
 			id INTEGER PRIMARY KEY,
@@ -365,25 +424,48 @@ func TestVerifyFlow_ToolLookup(t *testing.T) {
 			sku TEXT NOT NULL,
 			name TEXT NOT NULL,
 			description TEXT,
+			default_destination TEXT,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE tool_tags (
+			id INTEGER PRIMARY KEY,
+			tool_id INTEGER NOT NULL,
 			uii TEXT NOT NULL UNIQUE,
+			unit_number TEXT,
 			status TEXT,
 			location TEXT,
+			location_id INTEGER,
+			display_name TEXT,
+			notes TEXT,
+			active BOOLEAN DEFAULT 1,
+			kanban_zone TEXT,
 			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 	`)
 	if err != nil {
-		t.Fatalf("failed to create table: %v", err)
+		t.Fatalf("failed to create tables: %v", err)
 	}
 
-	// Insert test tools
+	// Insert test tools (master records)
 	_, err = db.Exec(`
-		INSERT INTO tools (id, company_id, sku, name, description, uii, status, location)
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination)
 		VALUES 
-			(1, 'comp-001', 'SKU-001', 'Hammer', 'A hammer', 'EPC-001', 'active', 'Almacén A'),
-			(2, 'comp-001', 'SKU-002', 'Screwdriver', 'A screwdriver', 'EPC-002', 'active', 'Obra Central')
+			(1, 'comp-001', 'SKU-001', 'Hammer', 'A hammer', 'Almacén A'),
+			(2, 'comp-001', 'SKU-002', 'Screwdriver', 'A screwdriver', 'Obra Central')
 	`)
 	if err != nil {
 		t.Fatalf("failed to insert tools: %v", err)
+	}
+
+	// Insert test tool tags (instance records)
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, status, location, active)
+		VALUES 
+			(1, 1, 'EPC-001', 'active', 'Almacén A', 1),
+			(2, 2, 'EPC-002', 'active', 'Obra Central', 1)
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert tool tags: %v", err)
 	}
 
 	store := localstore.New(db)

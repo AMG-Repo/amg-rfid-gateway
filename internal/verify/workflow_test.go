@@ -2,6 +2,7 @@ package verify
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
@@ -627,5 +628,193 @@ func TestVerifier_EmptyAntennas(t *testing.T) {
 	}
 	if result.Reason != "location:warehouse" {
 		t.Errorf("expected reason 'location:warehouse', got %v", result.Reason)
+	}
+}
+
+// Test ResolveExitDestination with kanban_zone (primary resolution)
+func TestResolveExitDestination_WithKanbanZone(t *testing.T) {
+	kanbanZone := "Linea 4"
+	tool := &Tool{
+		ID:         1,
+		UII:        "EPC-123",
+		KanbanZone: &kanbanZone,
+	}
+
+	dest, err := ResolveExitDestination(tool)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if dest != "Linea 4" {
+		t.Errorf("expected destination 'Linea 4', got %v", dest)
+	}
+}
+
+// Test ResolveExitDestination with default_destination fallback
+func TestResolveExitDestination_WithDefaultDestinationFallback(t *testing.T) {
+	defaultDest := "Almacén Norte"
+	tool := &Tool{
+		ID:                 1,
+		UII:                "EPC-123",
+		KanbanZone:         nil,
+		DefaultDestination: &defaultDest,
+	}
+
+	dest, err := ResolveExitDestination(tool)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if dest != "Almacén Norte" {
+		t.Errorf("expected destination 'Almacén Norte', got %v", dest)
+	}
+}
+
+// Test ResolveExitDestination prefers kanban_zone over default_destination
+func TestResolveExitDestination_PrefersKanbanZone(t *testing.T) {
+	kanbanZone := "Linea 4"
+	defaultDest := "Almacén Norte"
+	tool := &Tool{
+		ID:                 1,
+		UII:                "EPC-123",
+		KanbanZone:         &kanbanZone,
+		DefaultDestination: &defaultDest,
+	}
+
+	dest, err := ResolveExitDestination(tool)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if dest != "Linea 4" {
+		t.Errorf("expected destination 'Linea 4' (kanban), got %v", dest)
+	}
+}
+
+// Test ResolveExitDestination returns error when no destination configured
+func TestResolveExitDestination_NoDestinationConfigured(t *testing.T) {
+	tool := &Tool{
+		ID:  1,
+		UII: "EPC-123",
+	}
+
+	_, err := ResolveExitDestination(tool)
+	if err == nil {
+		t.Error("expected error for tool with no destination, got nil")
+	}
+	if !strings.Contains(err.Error(), "destination_not_configured") {
+		t.Errorf("expected error containing 'destination_not_configured', got %v", err)
+	}
+}
+
+// Test ResolveExitDestination with nil tool
+func TestResolveExitDestination_NilTool(t *testing.T) {
+	_, err := ResolveExitDestination(nil)
+	if err == nil {
+		t.Error("expected error for nil tool, got nil")
+	}
+}
+
+// Test IsEntryToWarehouse
+func TestIsEntryToWarehouse(t *testing.T) {
+	tests := []struct {
+		action   Action
+		expected bool
+	}{
+		{ActionEntrada, true},
+		{ActionSalida, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.action), func(t *testing.T) {
+			result := IsEntryToWarehouse(tt.action)
+			if result != tt.expected {
+				t.Errorf("IsEntryToWarehouse(%v) = %v, want %v", tt.action, result, tt.expected)
+			}
+		})
+	}
+}
+
+// Test IsExitFromWarehouse
+func TestIsExitFromWarehouse(t *testing.T) {
+	tests := []struct {
+		action   Action
+		expected bool
+	}{
+		{ActionEntrada, false},
+		{ActionSalida, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.action), func(t *testing.T) {
+			result := IsExitFromWarehouse(tt.action)
+			if result != tt.expected {
+				t.Errorf("IsExitFromWarehouse(%v) = %v, want %v", tt.action, result, tt.expected)
+			}
+		})
+	}
+}
+
+// Test SuggestAction with Almacén General specifically (domain rule check)
+func TestSuggestAction_AlmacenGeneral(t *testing.T) {
+	store := newMockToolStore()
+	store.AddTool(&Tool{
+		ID:       1,
+		SKU:      "TOOL-001",
+		Name:     "Test Tool",
+		UII:      "EPC-123",
+		Location: "Almacén General",
+		Status:   "available",
+	})
+
+	antennas := []config.AntennaConfig{
+		{ID: "ant-1", Zone: ""},
+	}
+
+	verifier := NewVerifier(store, antennas)
+
+	result := verifier.SuggestAction("EPC-123", "ant-1")
+
+	if result.Action != ActionSalida {
+		t.Errorf("expected ActionSalida for tool in Almacén General, got %v", result.Action)
+	}
+}
+
+// Test SuggestAction with normalized schema fields populated
+func TestSuggestAction_NormalizedSchemaFields(t *testing.T) {
+	store := newMockToolStore()
+	kanbanZone := "Linea 4"
+	defaultDest := "Almacén Central"
+	store.AddTool(&Tool{
+		ID:                 1,
+		ToolID:             100,
+		SKU:                "SKU-001",
+		Name:               "Test Tool",
+		UII:                "EPC-123",
+		Location:           "Almacén General",
+		Status:             "available",
+		KanbanZone:         &kanbanZone,
+		DefaultDestination: &defaultDest,
+	})
+
+	antennas := []config.AntennaConfig{
+		{ID: "ant-1", Zone: ""},
+	}
+
+	verifier := NewVerifier(store, antennas)
+
+	result := verifier.SuggestAction("EPC-123", "ant-1")
+
+	if result.Action != ActionSalida {
+		t.Errorf("expected ActionSalida, got %v", result.Action)
+	}
+	if result.ToolInfo == nil {
+		t.Fatal("expected ToolInfo to be populated")
+	}
+	if result.ToolInfo.ToolID != 100 {
+		t.Errorf("expected ToolID 100, got %v", result.ToolInfo.ToolID)
+	}
+	if result.ToolInfo.KanbanZone == nil || *result.ToolInfo.KanbanZone != "Linea 4" {
+		t.Errorf("expected KanbanZone 'Linea 4', got %v", result.ToolInfo.KanbanZone)
+	}
+	if result.ToolInfo.DefaultDestination == nil || *result.ToolInfo.DefaultDestination != "Almacén Central" {
+		t.Errorf("expected DefaultDestination 'Almacén Central', got %v", result.ToolInfo.DefaultDestination)
 	}
 }

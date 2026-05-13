@@ -87,8 +87,8 @@ func main() {
 	verifier := verify.NewVerifier(toolStoreAdapter, cfg.Antennas)
 	log.Println("Verifier initialized")
 
-	// Initialize VPS HTTP client
-	vpsClient := httpclient.NewVPSClient(cfg.VPSAPIURL, 10*time.Second)
+	// Initialize VPS HTTP client with JWT token for protected gateway endpoints
+	vpsClient := httpclient.NewVPSClient(cfg.VPSAPIURL, 10*time.Second, cfg.JWTSecret)
 	log.Println("VPS client initialized")
 
 	// Initialize tools sync service
@@ -255,27 +255,48 @@ func main() {
 }
 
 // toolStoreAdapter wraps localstore to implement verify.ToolStore interface
+// Maps normalized schema data (tool_tags JOIN tools) to verify.Tool.
 type toolStoreAdapter struct {
 	store *localstore.LocalStore
 }
 
-// GetToolByUII implements verify.ToolStore interface
+// GetToolByUII implements verify.ToolStore interface.
+// Performs normalized schema lookup: loads tag data from tool_tags and
+// master data from tools, merging them into verify.Tool.
 func (a *toolStoreAdapter) GetToolByUII(uii string) (*verify.Tool, error) {
-	tool, err := a.store.GetToolByUII(uii)
+	// 1. Load tag data from tool_tags (per-tag state: location, status, kanban_zone)
+	tag, err := a.store.GetToolTagByUII(uii)
 	if err != nil {
 		return nil, err
 	}
-	if tool == nil {
+	if tag == nil {
 		return nil, nil
 	}
-	return &verify.Tool{
-		ID:       tool.ID,
-		SKU:      tool.SKU,
-		Name:     tool.Name,
-		UII:      tool.UII,
-		Location: tool.Location,
-		Status:   tool.Status,
-	}, nil
+
+	// 2. Load master data from tools (SKU-level: name, default_destination)
+	var master *localstore.ToolRecord
+	if tag.ToolID > 0 {
+		master, _ = a.store.GetToolRecordByID(tag.ToolID)
+	}
+
+	// 3. Merge into verify.Tool (normalized view)
+	tool := &verify.Tool{
+		ID:         tag.ID,
+		ToolID:     tag.ToolID,
+		UII:        tag.UII,
+		Location:   tag.Location,
+		Status:     tag.Status,
+		KanbanZone: tag.KanbanZone,
+	}
+
+	// Add master data if available
+	if master != nil {
+		tool.SKU = master.SKU
+		tool.Name = master.Name
+		tool.DefaultDestination = master.DefaultDestination
+	}
+
+	return tool, nil
 }
 
 // loadConfig loads configuration from file or environment

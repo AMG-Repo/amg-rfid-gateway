@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-// Tool represents a tool from VPS cached locally.
+// Tool represents a tool from VPS cached locally (legacy flat schema).
+// Deprecated: Use ToolRecord and ToolTagRecord for normalized schema.
 type Tool struct {
 	ID           int64     `json:"id"`
 	CompanyID    string    `json:"company_id"`
@@ -17,6 +18,33 @@ type Tool struct {
 	UII          string    `json:"uii"`
 	Status       string    `json:"status"`
 	Location     string    `json:"location"`
+	LastSyncedAt time.Time `json:"last_synced_at"`
+}
+
+// ToolRecord represents a normalized tool master record (SKU level).
+type ToolRecord struct {
+	ID                 int64     `json:"id"`
+	CompanyID          string    `json:"company_id"`
+	SKU                string    `json:"sku"`
+	Name               string    `json:"name"`
+	Description        string    `json:"description"`
+	DefaultDestination *string   `json:"default_destination,omitempty"`
+	LastSyncedAt       time.Time `json:"last_synced_at"`
+}
+
+// ToolTagRecord represents a normalized tool tag record (individual RFID instance).
+type ToolTagRecord struct {
+	ID           int64     `json:"id"`
+	ToolID       int64     `json:"tool_id"`
+	UII          string    `json:"uii"`
+	UnitNumber   string    `json:"unit_number"`
+	Status       string    `json:"status"`
+	Location     string    `json:"location"`
+	LocationID   *int64    `json:"location_id,omitempty"`
+	DisplayName  string    `json:"display_name"`
+	Notes        *string   `json:"notes,omitempty"`
+	Active       bool      `json:"active"`
+	KanbanZone   *string   `json:"kanban_zone,omitempty"`
 	LastSyncedAt time.Time `json:"last_synced_at"`
 }
 
@@ -74,12 +102,14 @@ func New(db *sql.DB) *LocalStore {
 	return &LocalStore{db: db}
 }
 
-// GetToolByUII retrieves a tool by UII (EPC).
+// GetToolByUII retrieves a tool by UII (EPC) using normalized schema.
+// Performs a JOIN between tool_tags and tools to get complete metadata.
 func (s *LocalStore) GetToolByUII(uii string) (*Tool, error) {
 	row := s.db.QueryRow(`
-		SELECT id, company_id, sku, name, description, uii, status, location, last_synced_at
-		FROM tools
-		WHERE uii = ?
+		SELECT tt.id, t.company_id, t.sku, t.name, t.description, tt.uii, tt.status, tt.location, tt.last_synced_at
+		FROM tool_tags tt
+		JOIN tools t ON tt.tool_id = t.id
+		WHERE tt.uii = ?
 	`, uii)
 
 	var tool Tool
@@ -132,41 +162,74 @@ func (s *LocalStore) GetUserByRFIDTag(rfidTag string) (*User, error) {
 }
 
 // UpsertTools batch upserts tools from VPS sync.
+// Uses normalized schema: upserts tool_tags (tag data) and tools (master data).
 func (s *LocalStore) UpsertTools(tools []Tool) error {
+	if len(tools) == 0 {
+		return nil
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`
-		INSERT INTO tools (id, company_id, sku, name, description, uii, status, location, last_synced_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(uii) DO UPDATE SET
+	// Prepare statements for normalized schema
+	toolStmt, err := tx.Prepare(`
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
 			company_id = excluded.company_id,
 			sku = excluded.sku,
 			name = excluded.name,
 			description = excluded.description,
-			status = excluded.status,
-			location = excluded.location,
+			default_destination = excluded.default_destination,
 			last_synced_at = excluded.last_synced_at
 	`)
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer toolStmt.Close()
+
+	tagStmt, err := tx.Prepare(`
+		INSERT INTO tool_tags (id, tool_id, uii, status, location, active, last_synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(uii) DO UPDATE SET
+			tool_id = excluded.tool_id,
+			status = excluded.status,
+			location = excluded.location,
+			active = excluded.active,
+			last_synced_at = excluded.last_synced_at
+	`)
+	if err != nil {
+		return err
+	}
+	defer tagStmt.Close()
 
 	now := time.Now()
 	for _, tool := range tools {
-		_, err := stmt.Exec(
+		// Insert/update tool master record (using tool.ID as provisional tool_id)
+		_, err := toolStmt.Exec(
 			tool.ID,
 			tool.CompanyID,
 			tool.SKU,
 			tool.Name,
 			tool.Description,
+			tool.Location, // Use location as default_destination
+			now,
+		)
+		if err != nil {
+			return err
+		}
+
+		// Insert/update tool tag record
+		_, err = tagStmt.Exec(
+			tool.ID,    // Use same ID for tag
+			tool.ID,    // tool_id references tools.id
 			tool.UII,
 			tool.Status,
 			tool.Location,
+			true, // active
 			now,
 		)
 		if err != nil {
@@ -178,7 +241,12 @@ func (s *LocalStore) UpsertTools(tools []Tool) error {
 }
 
 // UpsertToolsFromSync batch upserts normalized tools and tool_tags from gateway sync-data.
+// Uses normalized schema: upserts tool_records (SKU master) and tool_tags (per-tag state).
 func (s *LocalStore) UpsertToolsFromSync(rows []SyncDataItem) error {
+	if len(rows) == 0 {
+		return nil
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -187,16 +255,14 @@ func (s *LocalStore) UpsertToolsFromSync(rows []SyncDataItem) error {
 
 	// Prepare statements for tools (SKU master) and tool_tags (per-tag state)
 	toolStmt, err := tx.Prepare(`
-		INSERT INTO tools (id, company_id, sku, name, description, uii, status, location, last_synced_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(uii) DO UPDATE SET
-			id = excluded.id,
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
 			company_id = excluded.company_id,
 			sku = excluded.sku,
 			name = excluded.name,
 			description = excluded.description,
-			status = excluded.status,
-			location = excluded.location,
+			default_destination = excluded.default_destination,
 			last_synced_at = excluded.last_synced_at
 	`)
 	if err != nil {
@@ -204,10 +270,48 @@ func (s *LocalStore) UpsertToolsFromSync(rows []SyncDataItem) error {
 	}
 	defer toolStmt.Close()
 
+	tagStmt, err := tx.Prepare(`
+		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, location_id, display_name, notes, active, kanban_zone, last_synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(uii) DO UPDATE SET
+			tool_id = excluded.tool_id,
+			unit_number = excluded.unit_number,
+			status = excluded.status,
+			location = excluded.location,
+			location_id = excluded.location_id,
+			display_name = excluded.display_name,
+			notes = excluded.notes,
+			active = excluded.active,
+			kanban_zone = excluded.kanban_zone,
+			last_synced_at = excluded.last_synced_at
+	`)
+	if err != nil {
+		return err
+	}
+	defer tagStmt.Close()
+
 	now := time.Now()
 	for _, row := range rows {
-		// For normalized data: each row represents a tag instance with its tool metadata
-		// We flatten this into the existing tools table structure for backward compatibility
+		// Upsert tool master record (using ToolID from sync data)
+		defaultDest := row.ToolDestination
+		if defaultDest == nil || *defaultDest == "" {
+			defaultDest = &row.Location
+		}
+
+		_, err := toolStmt.Exec(
+			row.ToolID,
+			"", // company_id not provided in sync data
+			row.SKU,
+			row.Name,
+			row.Description,
+			defaultDest,
+			now,
+		)
+		if err != nil {
+			return err
+		}
+
+		// Upsert tool tag record
 		location := row.Location
 		if location == "" {
 			location = "Almacén General"
@@ -219,21 +323,23 @@ func (s *LocalStore) UpsertToolsFromSync(rows []SyncDataItem) error {
 			locationID.Valid = true
 		}
 
-		_, err := toolStmt.Exec(
-			row.ID,         // Use tag id as the row id
-			"",             // company_id not provided in sync data
-			row.SKU,
-			row.Name,
-			row.Description,
+		_, err = tagStmt.Exec(
+			row.ID,        // tag id
+			row.ToolID,    // references tools.id
 			row.UII,
+			row.UnitNumber,
 			row.Status,
 			location,
+			locationID,
+			row.DisplayName,
+			row.Notes,
+			row.Active,
+			row.KanbanZone,
 			now,
 		)
 		if err != nil {
 			return err
 		}
-		_ = locationID // Available for future schema migration
 	}
 
 	return tx.Commit()
@@ -443,4 +549,208 @@ func (s *LocalStore) DeleteOldestUnsyncedConfirmation() (string, error) {
 		return uii.String, nil
 	}
 	return "", nil
+}
+
+// === Normalized Schema Methods ===
+
+// UpsertToolTags batch upserts tool tags from VPS sync.
+// Uses normalized schema with tool_tags table.
+func (s *LocalStore) UpsertToolTags(tags []ToolTagRecord) error {
+	if len(tags) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, location_id, display_name, notes, active, kanban_zone, last_synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(uii) DO UPDATE SET
+			tool_id = excluded.tool_id,
+			unit_number = excluded.unit_number,
+			status = excluded.status,
+			location = excluded.location,
+			location_id = excluded.location_id,
+			display_name = excluded.display_name,
+			notes = excluded.notes,
+			active = excluded.active,
+			kanban_zone = excluded.kanban_zone,
+			last_synced_at = excluded.last_synced_at
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now()
+	for _, tag := range tags {
+		_, err := stmt.Exec(
+			tag.ID,
+			tag.ToolID,
+			tag.UII,
+			tag.UnitNumber,
+			tag.Status,
+			tag.Location,
+			tag.LocationID,
+			tag.DisplayName,
+			tag.Notes,
+			tag.Active,
+			tag.KanbanZone,
+			now,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// GetToolTagByUII retrieves a tool tag by UII (EPC) using normalized schema.
+func (s *LocalStore) GetToolTagByUII(uii string) (*ToolTagRecord, error) {
+	row := s.db.QueryRow(`
+		SELECT id, tool_id, uii, unit_number, status, location, location_id, display_name, notes, active, kanban_zone, last_synced_at
+		FROM tool_tags
+		WHERE uii = ?
+	`, uii)
+
+	var tag ToolTagRecord
+	err := row.Scan(
+		&tag.ID,
+		&tag.ToolID,
+		&tag.UII,
+		&tag.UnitNumber,
+		&tag.Status,
+		&tag.Location,
+		&tag.LocationID,
+		&tag.DisplayName,
+		&tag.Notes,
+		&tag.Active,
+		&tag.KanbanZone,
+		&tag.LastSyncedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &tag, nil
+}
+
+// GetToolTagsByToolID retrieves all tool tags for a given tool ID.
+func (s *LocalStore) GetToolTagsByToolID(toolID int64) ([]ToolTagRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT id, tool_id, uii, unit_number, status, location, location_id, display_name, notes, active, kanban_zone, last_synced_at
+		FROM tool_tags
+		WHERE tool_id = ?
+	`, toolID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tags []ToolTagRecord
+	for rows.Next() {
+		var tag ToolTagRecord
+		err := rows.Scan(
+			&tag.ID,
+			&tag.ToolID,
+			&tag.UII,
+			&tag.UnitNumber,
+			&tag.Status,
+			&tag.Location,
+			&tag.LocationID,
+			&tag.DisplayName,
+			&tag.Notes,
+			&tag.Active,
+			&tag.KanbanZone,
+			&tag.LastSyncedAt,
+		)
+		if err != nil {
+			continue
+		}
+		tags = append(tags, tag)
+	}
+
+	return tags, rows.Err()
+}
+
+// UpsertToolsRecords batch upserts tool master records from VPS sync.
+// Uses normalized schema with tools table (no uii column).
+func (s *LocalStore) UpsertToolsRecords(tools []ToolRecord) error {
+	if len(tools) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			company_id = excluded.company_id,
+			sku = excluded.sku,
+			name = excluded.name,
+			description = excluded.description,
+			default_destination = excluded.default_destination,
+			last_synced_at = excluded.last_synced_at
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now()
+	for _, tool := range tools {
+		_, err := stmt.Exec(
+			tool.ID,
+			tool.CompanyID,
+			tool.SKU,
+			tool.Name,
+			tool.Description,
+			tool.DefaultDestination,
+			now,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// GetToolRecordByID retrieves a tool master record by ID.
+func (s *LocalStore) GetToolRecordByID(id int64) (*ToolRecord, error) {
+	row := s.db.QueryRow(`
+		SELECT id, company_id, sku, name, description, default_destination, last_synced_at
+		FROM tools
+		WHERE id = ?
+	`, id)
+
+	var tool ToolRecord
+	err := row.Scan(
+		&tool.ID,
+		&tool.CompanyID,
+		&tool.SKU,
+		&tool.Name,
+		&tool.Description,
+		&tool.DefaultDestination,
+		&tool.LastSyncedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &tool, nil
 }

@@ -80,6 +80,12 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 		return nil, fmt.Errorf("failed to migrate pending_confirmations: %w", err)
 	}
 
+	// Run normalized schema migration for gateway sync contract fix
+	if err := migrateNormalizedSchema(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate normalized schema: %w", err)
+	}
+
 	// HAPPY PATH: Create cache instance with buffered channel
 	cache := &SQLite{
 		db:       db,
@@ -101,8 +107,71 @@ func (s *SQLite) GetDB() *sql.DB {
 }
 
 // createTables creates the database schema.
+// Uses normalized schema (tools + tool_tags) for new databases.
 func createTables(db *sql.DB) error {
-	_, err := db.Exec(`
+	// Check if tools table already exists (could be legacy or normalized)
+	var toolsExists bool
+	err := db.QueryRow(`
+		SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tools'
+	`).Scan(&toolsExists)
+	if err != nil {
+		return fmt.Errorf("failed to check tools table existence: %w", err)
+	}
+
+	// If tools table exists, it might be legacy schema - let migrateNormalizedSchema handle it
+	// Otherwise, create the normalized schema for new databases
+	if toolsExists {
+		// Table exists, migration will handle normalization if needed
+		// Just ensure other tables exist
+		_, err = db.Exec(`
+			CREATE TABLE IF NOT EXISTS pending_readings (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				antenna_id TEXT NOT NULL,
+				gateway_id TEXT NOT NULL,
+				epc TEXT NOT NULL,
+				rssi INTEGER NOT NULL,
+				timestamp DATETIME NOT NULL,
+				synced BOOLEAN DEFAULT 0,
+				retry_count INTEGER DEFAULT 0,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_pending_readings_synced 
+			ON pending_readings(synced) WHERE synced = 0;
+
+			CREATE INDEX IF NOT EXISTS idx_pending_readings_epc 
+			ON pending_readings(epc);
+
+			CREATE TABLE IF NOT EXISTS users (
+				id INTEGER PRIMARY KEY,
+				company_id TEXT NOT NULL,
+				name TEXT NOT NULL,
+				role TEXT,
+				department TEXT,
+				rfid_tag TEXT,
+				active BOOLEAN DEFAULT 1,
+				last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			);
+
+			CREATE TABLE IF NOT EXISTS pending_confirmations (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				uii TEXT NOT NULL,
+				action TEXT NOT NULL CHECK(action IN ('entrada', 'salida')),
+				antenna_id TEXT,
+				timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+				synced BOOLEAN DEFAULT 0,
+				retry_count INTEGER DEFAULT 0,
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			);
+
+			CREATE INDEX IF NOT EXISTS idx_users_rfid ON users(rfid_tag);
+			CREATE INDEX IF NOT EXISTS idx_pending_synced ON pending_confirmations(synced);
+		`)
+		return err
+	}
+
+	// New database - create normalized schema directly
+	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS pending_readings (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			antenna_id TEXT NOT NULL,
@@ -127,9 +196,22 @@ func createTables(db *sql.DB) error {
 			sku TEXT NOT NULL,
 			name TEXT NOT NULL,
 			description TEXT,
+			default_destination TEXT,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS tool_tags (
+			id INTEGER PRIMARY KEY,
+			tool_id INTEGER NOT NULL,
 			uii TEXT NOT NULL UNIQUE,
+			unit_number TEXT,
 			status TEXT,
 			location TEXT,
+			location_id INTEGER,
+			display_name TEXT,
+			notes TEXT,
+			active BOOLEAN DEFAULT 1,
+			kanban_zone TEXT,
 			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 
@@ -155,7 +237,9 @@ func createTables(db *sql.DB) error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 
-		CREATE INDEX IF NOT EXISTS idx_tools_uii ON tools(uii);
+		CREATE INDEX IF NOT EXISTS idx_tool_tags_uii ON tool_tags(uii);
+		CREATE INDEX IF NOT EXISTS idx_tool_tags_tool_id ON tool_tags(tool_id);
+		CREATE INDEX IF NOT EXISTS idx_tools_sku ON tools(sku);
 		CREATE INDEX IF NOT EXISTS idx_users_rfid ON users(rfid_tag);
 		CREATE INDEX IF NOT EXISTS idx_pending_synced ON pending_confirmations(synced);
 	`)
@@ -215,6 +299,197 @@ func migratePendingConfirmations(db *sql.DB) error {
 	}
 
 	return nil
+}
+
+// migrateNormalizedSchema migrates from flat tools table to normalized tools + tool_tags schema.
+// This is idempotent and safe to run multiple times.
+func migrateNormalizedSchema(db *sql.DB) error {
+	// Check if tool_tags table already exists
+	var toolTagsExists bool
+	err := db.QueryRow(`
+		SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tool_tags'
+	`).Scan(&toolTagsExists)
+	if err != nil {
+		return fmt.Errorf("failed to check tool_tags table existence: %w", err)
+	}
+
+	// If tool_tags already exists, migration is complete
+	if toolTagsExists {
+		return nil
+	}
+
+	// Start transaction for migration
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Step 1: Check if we need to migrate from legacy flat schema
+	var legacyToolsExists bool
+	err = tx.QueryRow(`
+		SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tools'
+	`).Scan(&legacyToolsExists)
+	if err != nil {
+		return fmt.Errorf("failed to check legacy tools table: %w", err)
+	}
+
+	var hasUIIColumn bool
+	if legacyToolsExists {
+		// Check if legacy table has uii column (flat schema)
+		err = tx.QueryRow(`
+			SELECT COUNT(*) > 0 FROM pragma_table_info('tools') WHERE name = 'uii'
+		`).Scan(&hasUIIColumn)
+		if err != nil {
+			return fmt.Errorf("failed to check uii column: %w", err)
+		}
+	}
+
+	// Step 2: If legacy flat schema exists, migrate it
+	if legacyToolsExists && hasUIIColumn {
+		// Rename old table to preserve data
+		_, err = tx.Exec(`ALTER TABLE tools RENAME TO tools_legacy`)
+		if err != nil {
+			return fmt.Errorf("failed to rename legacy tools table: %w", err)
+		}
+
+		// Create normalized tools table (SKU master, no uii column)
+		_, err = tx.Exec(`
+			CREATE TABLE tools (
+				id INTEGER PRIMARY KEY,
+				company_id TEXT NOT NULL,
+				sku TEXT NOT NULL,
+				name TEXT NOT NULL,
+				description TEXT,
+				default_destination TEXT,
+				last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			)
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to create normalized tools table: %w", err)
+		}
+
+		// Create index on sku (not unique - multiple tools can share same SKU)
+		_, err = tx.Exec(`CREATE INDEX IF NOT EXISTS idx_tools_sku ON tools(sku)`)
+		if err != nil {
+			return fmt.Errorf("failed to create sku index: %w", err)
+		}
+
+		// Migrate distinct SKU data from legacy to normalized tools
+		_, err = tx.Exec(`
+			INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+			SELECT DISTINCT id, company_id, sku, name, description, location, last_synced_at 
+			FROM tools_legacy
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to migrate tools data: %w", err)
+		}
+
+		// Create tool_tags table
+		_, err = tx.Exec(`
+			CREATE TABLE tool_tags (
+				id INTEGER PRIMARY KEY,
+				tool_id INTEGER NOT NULL,
+				uii TEXT NOT NULL UNIQUE,
+				unit_number TEXT,
+				status TEXT,
+				location TEXT,
+				location_id INTEGER,
+				display_name TEXT,
+				notes TEXT,
+				active BOOLEAN DEFAULT 1,
+				kanban_zone TEXT,
+				last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			)
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to create tool_tags table: %w", err)
+		}
+
+		// Create indexes on tool_tags
+		_, err = tx.Exec(`
+			CREATE UNIQUE INDEX idx_tool_tags_uii ON tool_tags(uii);
+			CREATE INDEX idx_tool_tags_tool_id ON tool_tags(tool_id)
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to create tool_tags indexes: %w", err)
+		}
+
+		// Migrate tag data from legacy to tool_tags
+		_, err = tx.Exec(`
+			INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, active, last_synced_at)
+			SELECT id, id, uii, NULL, status, location, 1, last_synced_at 
+			FROM tools_legacy
+			WHERE uii IS NOT NULL AND uii != ''
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to migrate legacy data to tool_tags: %w", err)
+		}
+
+		// Drop legacy table
+		_, err = tx.Exec(`DROP TABLE tools_legacy`)
+		if err != nil {
+			return fmt.Errorf("failed to drop legacy tools table: %w", err)
+		}
+	} else {
+		// No legacy data to migrate, just create the new tables if they don't exist
+
+		// Create normalized tools table if it doesn't exist
+		if !legacyToolsExists {
+			_, err = tx.Exec(`
+				CREATE TABLE IF NOT EXISTS tools (
+					id INTEGER PRIMARY KEY,
+					company_id TEXT NOT NULL,
+					sku TEXT NOT NULL,
+					name TEXT NOT NULL,
+					description TEXT,
+					default_destination TEXT,
+					last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+				)
+			`)
+			if err != nil {
+				return fmt.Errorf("failed to create tools table: %w", err)
+			}
+
+			// Create index on sku (not unique - multiple tools can share same SKU)
+			_, err = tx.Exec(`CREATE INDEX IF NOT EXISTS idx_tools_sku ON tools(sku)`)
+			if err != nil {
+				return fmt.Errorf("failed to create sku index: %w", err)
+			}
+		}
+
+		// Create tool_tags table
+		_, err = tx.Exec(`
+			CREATE TABLE IF NOT EXISTS tool_tags (
+				id INTEGER PRIMARY KEY,
+				tool_id INTEGER NOT NULL,
+				uii TEXT NOT NULL UNIQUE,
+				unit_number TEXT,
+				status TEXT,
+				location TEXT,
+				location_id INTEGER,
+				display_name TEXT,
+				notes TEXT,
+				active BOOLEAN DEFAULT 1,
+				kanban_zone TEXT,
+				last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			)
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to create tool_tags table: %w", err)
+		}
+
+		// Create indexes on tool_tags
+		_, err = tx.Exec(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_tags_uii ON tool_tags(uii);
+			CREATE INDEX IF NOT EXISTS idx_tool_tags_tool_id ON tool_tags(tool_id)
+		`)
+		if err != nil {
+			return fmt.Errorf("failed to create tool_tags indexes: %w", err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // Store adds a reading to the cache.

@@ -24,7 +24,7 @@ type TagInfo struct {
 type ConfirmRequest struct {
 	UII       string `json:"uii"`
 	Action    string `json:"action"`
-	AntennaID string `json:"antenna_id"`
+	AntennaID string `json:"antenna_id,omitempty"`
 }
 
 // ConfirmResponse represents the confirmation response.
@@ -128,8 +128,12 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	vpsOnline := s.checkVPSHealth(ctx)
 
 	if vpsOnline {
-		// Try to send confirmation to VPS
-		err := s.vpsClient.SendConfirmation(s.companyID, req.UII, req.Action)
+		// Try to send confirmation to VPS with antenna_id
+		antennaID := req.AntennaID
+		if antennaID == "" {
+			antennaID = "manual"
+		}
+		err := s.vpsClient.SendConfirmationV2(s.companyID, req.UII, req.Action, antennaID)
 		if err == nil {
 			s.jsonResponse(w, ConfirmResponse{
 				Success: true,
