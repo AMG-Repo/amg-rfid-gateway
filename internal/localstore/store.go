@@ -20,6 +20,26 @@ type Tool struct {
 	LastSyncedAt time.Time `json:"last_synced_at"`
 }
 
+// SyncDataItem represents a flattened tool+tag row from gateway sync-data endpoint.
+// This mirrors the VPS normalized schema (tool_tags JOIN tools).
+type SyncDataItem struct {
+	ID              int64   `json:"id"`
+	ToolID          int64   `json:"tool_id"`
+	UII             string  `json:"uii"`
+	SKU             string  `json:"sku"`
+	Name            string  `json:"name"`
+	Description     string  `json:"description"`
+	Status          string  `json:"status"`
+	Location        string  `json:"location"`
+	LocationID      *int64  `json:"location_id,omitempty"`
+	UnitNumber      string  `json:"unit_number"`
+	DisplayName     string  `json:"display_name"`
+	Notes           *string `json:"notes,omitempty"`
+	Active          bool    `json:"active"`
+	KanbanZone      *string `json:"kanban_zone,omitempty"`
+	ToolDestination *string `json:"tool_destination,omitempty"`
+}
+
 // User represents a user from VPS cached locally.
 type User struct {
 	ID           int64     `json:"id"`
@@ -152,6 +172,68 @@ func (s *LocalStore) UpsertTools(tools []Tool) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	return tx.Commit()
+}
+
+// UpsertToolsFromSync batch upserts normalized tools and tool_tags from gateway sync-data.
+func (s *LocalStore) UpsertToolsFromSync(rows []SyncDataItem) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Prepare statements for tools (SKU master) and tool_tags (per-tag state)
+	toolStmt, err := tx.Prepare(`
+		INSERT INTO tools (id, company_id, sku, name, description, uii, status, location, last_synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(uii) DO UPDATE SET
+			id = excluded.id,
+			company_id = excluded.company_id,
+			sku = excluded.sku,
+			name = excluded.name,
+			description = excluded.description,
+			status = excluded.status,
+			location = excluded.location,
+			last_synced_at = excluded.last_synced_at
+	`)
+	if err != nil {
+		return err
+	}
+	defer toolStmt.Close()
+
+	now := time.Now()
+	for _, row := range rows {
+		// For normalized data: each row represents a tag instance with its tool metadata
+		// We flatten this into the existing tools table structure for backward compatibility
+		location := row.Location
+		if location == "" {
+			location = "Almacén General"
+		}
+
+		var locationID sql.NullInt64
+		if row.LocationID != nil {
+			locationID.Int64 = *row.LocationID
+			locationID.Valid = true
+		}
+
+		_, err := toolStmt.Exec(
+			row.ID,         // Use tag id as the row id
+			"",             // company_id not provided in sync data
+			row.SKU,
+			row.Name,
+			row.Description,
+			row.UII,
+			row.Status,
+			location,
+			now,
+		)
+		if err != nil {
+			return err
+		}
+		_ = locationID // Available for future schema migration
 	}
 
 	return tx.Commit()

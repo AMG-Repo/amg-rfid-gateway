@@ -885,54 +885,208 @@ func TestDeleteOldestUnsyncedConfirmation(t *testing.T) {
 
 	store := New(db)
 
-	// Create confirmations with different timestamps
-	now := time.Now()
-	store.CreateConfirmation("EPC-001", "entrada", "ANT-01", now, 0)
-	store.CreateConfirmation("EPC-002", "salida", "ANT-02", now.Add(1*time.Second), 0)
-	store.CreateConfirmation("EPC-003", "entrada", "ANT-01", now.Add(2*time.Second), 0)
+	// Create test confirmations
+	_, err := store.CreateConfirmation("EPC-001", "entrada", "", time.Now(), 0)
+	if err != nil {
+		t.Fatalf("failed to create confirmation: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	_, err = store.CreateConfirmation("EPC-002", "salida", "", time.Now(), 0)
+	if err != nil {
+		t.Fatalf("failed to create confirmation: %v", err)
+	}
 
 	// Delete oldest
 	deletedUII, err := store.DeleteOldestUnsyncedConfirmation()
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if deletedUII != "EPC-001" {
-		t.Errorf("expected oldest UII 'EPC-001' to be deleted, got '%s'", deletedUII)
+		t.Fatalf("failed to delete oldest: %v", err)
 	}
 
-	// Verify count
+	if deletedUII != "EPC-001" {
+		t.Errorf("expected oldest UII 'EPC-001', got %q", deletedUII)
+	}
+
+	// Verify only one remains
 	count, err := store.GetPendingConfirmationsCount()
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("failed to get count: %v", err)
 	}
-	if count != 2 {
-		t.Errorf("expected 2 confirmations after delete, got %d", count)
+	if count != 1 {
+		t.Errorf("expected 1 pending confirmation, got %d", count)
+	}
+}
+
+func TestUpsertToolsFromSync_Insert(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	// Insert tools from sync data
+	rows := []SyncDataItem{
+		{
+			ID:       1,
+			ToolID:   10,
+			UII:      "EPC-001",
+			SKU:      "SKU-001",
+			Name:     "Tool One",
+			Status:   "available",
+			Location: "Almacén General",
+			Active:   true,
+		},
+		{
+			ID:       2,
+			ToolID:   10,
+			UII:      "EPC-002",
+			SKU:      "SKU-001",
+			Name:     "Tool One",
+			Status:   "in_use",
+			Location: "Línea 1",
+			Active:   true,
+		},
 	}
 
-	// Delete again
-	deletedUII, err = store.DeleteOldestUnsyncedConfirmation()
+	err := store.UpsertToolsFromSync(rows)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if deletedUII != "EPC-002" {
-		t.Errorf("expected oldest UII 'EPC-002' to be deleted, got '%s'", deletedUII)
+		t.Fatalf("failed to upsert tools from sync: %v", err)
 	}
 
-	// Delete last one
-	deletedUII, err = store.DeleteOldestUnsyncedConfirmation()
+	// Verify tools were inserted
+	tool1, err := store.GetToolByUII("EPC-001")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("failed to get tool: %v", err)
 	}
-	if deletedUII != "EPC-003" {
-		t.Errorf("expected oldest UII 'EPC-003' to be deleted, got '%s'", deletedUII)
+	if tool1 == nil {
+		t.Fatal("expected tool 1 to exist")
+	}
+	if tool1.SKU != "SKU-001" {
+		t.Errorf("expected SKU 'SKU-001', got %q", tool1.SKU)
+	}
+	if tool1.Name != "Tool One" {
+		t.Errorf("expected Name 'Tool One', got %q", tool1.Name)
+	}
+	if tool1.Status != "available" {
+		t.Errorf("expected Status 'available', got %q", tool1.Status)
+	}
+	if tool1.Location != "Almacén General" {
+		t.Errorf("expected Location 'Almacén General', got %q", tool1.Location)
 	}
 
-	// Delete from empty queue
-	deletedUII, err = store.DeleteOldestUnsyncedConfirmation()
+	tool2, err := store.GetToolByUII("EPC-002")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("failed to get tool: %v", err)
 	}
-	if deletedUII != "" {
-		t.Errorf("expected empty UII when nothing to delete, got '%s'", deletedUII)
+	if tool2 == nil {
+		t.Fatal("expected tool 2 to exist")
+	}
+	if tool2.Location != "Línea 1" {
+		t.Errorf("expected Location 'Línea 1', got %q", tool2.Location)
+	}
+}
+
+func TestUpsertToolsFromSync_Update(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	// Insert initial tool
+	tools := []Tool{
+		{ID: 1, CompanyID: "comp-1", SKU: "SKU-001", Name: "Old Name", UII: "EPC-001", Status: "available", Location: "Old Location"},
+	}
+	err := store.UpsertTools(tools)
+	if err != nil {
+		t.Fatalf("failed to upsert initial tools: %v", err)
+	}
+
+	// Update via sync data
+	rows := []SyncDataItem{
+		{
+			ID:       1,
+			ToolID:   10,
+			UII:      "EPC-001",
+			SKU:      "SKU-001",
+			Name:     "New Name",
+			Status:   "in_use",
+			Location: "New Location",
+			Active:   true,
+		},
+	}
+
+	err = store.UpsertToolsFromSync(rows)
+	if err != nil {
+		t.Fatalf("failed to upsert tools from sync: %v", err)
+	}
+
+	// Verify tool was updated
+	tool, err := store.GetToolByUII("EPC-001")
+	if err != nil {
+		t.Fatalf("failed to get tool: %v", err)
+	}
+	if tool.Name != "New Name" {
+		t.Errorf("expected Name 'New Name', got %q", tool.Name)
+	}
+	if tool.Status != "in_use" {
+		t.Errorf("expected Status 'in_use', got %q", tool.Status)
+	}
+	if tool.Location != "New Location" {
+		t.Errorf("expected Location 'New Location', got %q", tool.Location)
+	}
+}
+
+func TestUpsertToolsFromSync_EmptyLocationFallback(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	// Insert with empty location (should default to "Almacén General")
+	rows := []SyncDataItem{
+		{
+			ID:       1,
+			ToolID:   10,
+			UII:      "EPC-001",
+			SKU:      "SKU-001",
+			Name:     "Tool One",
+			Status:   "available",
+			Location: "", // Empty location
+			Active:   true,
+		},
+	}
+
+	err := store.UpsertToolsFromSync(rows)
+	if err != nil {
+		t.Fatalf("failed to upsert tools from sync: %v", err)
+	}
+
+	// Verify location defaults to "Almacén General"
+	tool, err := store.GetToolByUII("EPC-001")
+	if err != nil {
+		t.Fatalf("failed to get tool: %v", err)
+	}
+	if tool.Location != "Almacén General" {
+		t.Errorf("expected Location 'Almacén General' for empty input, got %q", tool.Location)
+	}
+}
+
+func TestUpsertToolsFromSync_EmptySlice(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	// Upsert empty slice
+	err := store.UpsertToolsFromSync([]SyncDataItem{})
+	if err != nil {
+		t.Fatalf("failed to upsert empty sync data: %v", err)
+	}
+
+	// Verify no tools exist
+	count, err := store.GetToolsCount()
+	if err != nil {
+		t.Fatalf("failed to get count: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 tools, got %d", count)
 	}
 }

@@ -36,6 +36,10 @@ func (m *mockStoreWithConfirmations) UpsertTools(tools []localstore.Tool) error 
 	return nil
 }
 
+func (m *mockStoreWithConfirmations) UpsertToolsFromSync(rows []localstore.SyncDataItem) error {
+	return nil
+}
+
 func (m *mockStoreWithConfirmations) UpsertUsers(users []localstore.User) error {
 	return nil
 }
@@ -147,12 +151,12 @@ type mockVPSWithControl struct {
 	confirmCalls atomic.Int32
 }
 
-func (m *mockVPSWithControl) FetchTools(companyID string) ([]localstore.Tool, error) {
+func (m *mockVPSWithControl) FetchSyncData(companyID string) ([]localstore.SyncDataItem, error) {
 	m.fetchCalls.Add(1)
 	if !m.online.Load() {
 		return nil, errors.New("VPS offline")
 	}
-	return []localstore.Tool{}, nil
+	return []localstore.SyncDataItem{}, nil
 }
 
 func (m *mockVPSWithControl) FetchUsers(companyID string) ([]localstore.User, error) {
@@ -162,7 +166,7 @@ func (m *mockVPSWithControl) FetchUsers(companyID string) ([]localstore.User, er
 	return []localstore.User{}, nil
 }
 
-func (m *mockVPSWithControl) SendConfirmation(companyID, uii, action string) error {
+func (m *mockVPSWithControl) SendGatewayConfirmation(companyID, uii, action, antennaID string) error {
 	m.confirmCalls.Add(1)
 	if !m.online.Load() {
 		return errors.New("VPS offline")

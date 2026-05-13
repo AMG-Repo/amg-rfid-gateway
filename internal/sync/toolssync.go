@@ -15,14 +15,14 @@ const MaxRetries = 10
 
 // VPSClient defines the interface for VPS API operations
 type VPSClient interface {
-	FetchTools(companyID string) ([]localstore.Tool, error)
+	FetchSyncData(companyID string) ([]localstore.SyncDataItem, error)
 	FetchUsers(companyID string) ([]localstore.User, error)
-	SendConfirmation(companyID, uii, action string) error
+	SendGatewayConfirmation(companyID, uii, action, antennaID string) error
 }
 
 // LocalStore defines the interface for local storage operations
 type LocalStore interface {
-	UpsertTools(tools []localstore.Tool) error
+	UpsertToolsFromSync(rows []localstore.SyncDataItem) error
 	UpsertUsers(users []localstore.User) error
 	GetUnsyncedConfirmations(limit int) ([]localstore.PendingConfirmation, error)
 	MarkConfirmationSynced(id int64) error
@@ -152,12 +152,12 @@ func (t *ToolsSync) syncToolsUsersLoop() {
 	}
 }
 
-// performSync fetches tools and users from VPS and updates local store.
+// performSync fetches sync data and users from VPS and updates local store.
 func (t *ToolsSync) performSync() {
-	// Fetch tools
-	tools, err := t.vpsClient.FetchTools(t.companyID)
+	// Fetch sync data (flattened tools+tags from gateway endpoint)
+	syncData, err := t.vpsClient.FetchSyncData(t.companyID)
 	if err != nil {
-		log.Printf("[ToolsSync] Failed to fetch tools: %v", err)
+		log.Printf("[ToolsSync] Failed to fetch sync data: %v", err)
 		t.setVPSOnline(false)
 		return
 	}
@@ -170,9 +170,9 @@ func (t *ToolsSync) performSync() {
 		return
 	}
 
-	// Upsert tools
-	if err := t.store.UpsertTools(tools); err != nil {
-		log.Printf("[ToolsSync] Failed to upsert tools: %v", err)
+	// Upsert sync data (normalized tools + tool_tags)
+	if err := t.store.UpsertToolsFromSync(syncData); err != nil {
+		log.Printf("[ToolsSync] Failed to upsert sync data: %v", err)
 		return
 	}
 
@@ -185,10 +185,7 @@ func (t *ToolsSync) performSync() {
 	// Mark VPS as online after successful sync
 	t.setVPSOnline(true)
 
-	log.Printf("[ToolsSync] Synced %d tools and %d users", len(tools), len(users))
-
-	log.Printf("[ToolsSync] Synced %d tools and %d users", len(tools), len(users))
-	t.setVPSOnline(true)
+	log.Printf("[ToolsSync] Synced %d tool tags and %d users", len(syncData), len(users))
 }
 
 // flushPendingConfirmations periodically tries to send pending confirmations to VPS.
@@ -236,7 +233,7 @@ func (t *ToolsSync) performFlush() {
 			continue
 		}
 
-		err := t.vpsClient.SendConfirmation(t.companyID, conf.UII, conf.Action)
+		err := t.vpsClient.SendGatewayConfirmation(t.companyID, conf.UII, conf.Action, conf.AntennaID)
 		if err != nil {
 			log.Printf("[ToolsSync] Failed to send confirmation %d: %v", conf.ID, err)
 			allSucceeded = false

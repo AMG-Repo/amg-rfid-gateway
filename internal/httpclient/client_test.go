@@ -290,3 +290,165 @@ func containsError(err error, substr string) bool {
 	}
 	return len(substr) > 0 && fmt.Sprintf("%v", err) != ""
 }
+
+func TestFetchSyncData_Success(t *testing.T) {
+	expectedItems := []localstore.SyncDataItem{
+		{ID: 1, ToolID: 10, UII: "EPC-001", SKU: "SKU-001", Name: "Tool 1", Status: "available", Location: "Almacén General"},
+		{ID: 2, ToolID: 10, UII: "EPC-002", SKU: "SKU-001", Name: "Tool 1", Status: "in_use", Location: "Línea 1"},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Errorf("expected GET method, got %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/gateway/sync-data" {
+			t.Errorf("expected path /api/v1/gateway/sync-data, got %s", r.URL.Path)
+		}
+
+		companyID := r.URL.Query().Get("company_id")
+		if companyID != "comp-1" {
+			t.Errorf("expected company_id 'comp-1', got %q", companyID)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(SyncDataResponse{
+			Status: "OK",
+			Tools:  expectedItems,
+		})
+	}))
+	defer server.Close()
+
+	client := NewVPSClient(server.URL, 5*time.Second)
+	items, err := client.FetchSyncData("comp-1")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(items) != 2 {
+		t.Errorf("expected 2 items, got %d", len(items))
+	}
+	if items[0].UII != "EPC-001" {
+		t.Errorf("expected UII 'EPC-001', got %q", items[0].UII)
+	}
+	if items[0].SKU != "SKU-001" {
+		t.Errorf("expected SKU 'SKU-001', got %q", items[0].SKU)
+	}
+}
+
+func TestFetchSyncData_NonOKStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(SyncDataResponse{
+			Status: "ERROR",
+			Tools:  nil,
+		})
+	}))
+	defer server.Close()
+
+	client := NewVPSClient(server.URL, 5*time.Second)
+	_, err := client.FetchSyncData("comp-1")
+
+	if err == nil {
+		t.Error("expected error for non-OK status")
+	}
+}
+
+func TestFetchSyncData_HTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := NewVPSClient(server.URL, 5*time.Second)
+	_, err := client.FetchSyncData("comp-1")
+
+	if err == nil {
+		t.Error("expected error for HTTP 401")
+	}
+}
+
+func TestSendGatewayConfirmation_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("expected POST method, got %s", r.Method)
+		}
+		if r.URL.Path != "/api/v1/gateway/confirm" {
+			t.Errorf("expected path /api/v1/gateway/confirm, got %s", r.URL.Path)
+		}
+
+		var reqBody map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+
+		if reqBody["uii"] != "EPC-123" {
+			t.Errorf("expected uii 'EPC-123', got %v", reqBody["uii"])
+		}
+		if reqBody["action"] != "salida" {
+			t.Errorf("expected action 'salida', got %v", reqBody["action"])
+		}
+		if reqBody["antenna_id"] != "ant-01" {
+			t.Errorf("expected antenna_id 'ant-01', got %v", reqBody["antenna_id"])
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(GatewayConfirmResponse{
+			Status:   "OK",
+			UII:      "EPC-123",
+			Action:   "EXIT",
+			Location: "Línea 4",
+		})
+	}))
+	defer server.Close()
+
+	client := NewVPSClient(server.URL, 5*time.Second)
+	err := client.SendGatewayConfirmation("comp-1", "EPC-123", "salida", "ant-01")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSendGatewayConfirmation_WithoutAntennaID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+
+		if reqBody["uii"] != "EPC-456" {
+			t.Errorf("expected uii 'EPC-456', got %v", reqBody["uii"])
+		}
+		if _, exists := reqBody["antenna_id"]; exists {
+			t.Error("expected antenna_id to not be present when empty")
+		}
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "OK"})
+	}))
+	defer server.Close()
+
+	client := NewVPSClient(server.URL, 5*time.Second)
+	err := client.SendGatewayConfirmation("comp-1", "EPC-456", "entrada", "")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSendGatewayConfirmation_HTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "tag not found"})
+	}))
+	defer server.Close()
+
+	client := NewVPSClient(server.URL, 5*time.Second)
+	err := client.SendGatewayConfirmation("comp-1", "UNKNOWN-EPC", "entrada", "ant-01")
+
+	if err == nil {
+		t.Error("expected error for HTTP 404")
+	}
+}

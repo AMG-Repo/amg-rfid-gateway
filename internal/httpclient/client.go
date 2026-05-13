@@ -115,8 +115,9 @@ func (c *VPSClient) FetchUsers(companyID string) ([]localstore.User, error) {
 	return users, nil
 }
 
-// SendConfirmation sends a confirmation to the VPS.
+// SendConfirmation sends a confirmation to the VPS (legacy endpoint).
 // Calls POST /api/v1/tools/confirm
+// Deprecated: Use SendGatewayConfirmation instead for gateway-specific confirm endpoint.
 func (c *VPSClient) SendConfirmation(companyID, uii, action string) error {
 	url := fmt.Sprintf("%s/api/v1/tools/confirm", c.baseURL)
 
@@ -148,6 +149,118 @@ func (c *VPSClient) SendConfirmation(companyID, uii, action string) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// SyncDataResponse is the envelope from the gateway sync-data endpoint.
+type SyncDataResponse struct {
+	Status    string                 `json:"status"`
+	Tools     []localstore.SyncDataItem `json:"tools"`
+	Timestamp string                 `json:"timestamp"`
+}
+
+// FetchSyncData retrieves flattened tool+tag data from the gateway sync endpoint.
+// Calls GET /api/v1/gateway/sync-data?company_id={company_id}
+func (c *VPSClient) FetchSyncData(companyID string) ([]localstore.SyncDataItem, error) {
+	url := fmt.Sprintf("%s/api/v1/gateway/sync-data?company_id=%s", c.baseURL, companyID)
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var syncResp SyncDataResponse
+	if err := json.Unmarshal(body, &syncResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if syncResp.Status != "OK" {
+		return nil, fmt.Errorf("unexpected response status: %s", syncResp.Status)
+	}
+
+	return syncResp.Tools, nil
+}
+
+// GatewayConfirmResponse is the response from the gateway confirm endpoint.
+type GatewayConfirmResponse struct {
+	Status    string `json:"status"`
+	UII       string `json:"uii"`
+	Action    string `json:"action"`
+	Location  string `json:"location"`
+	Timestamp string `json:"timestamp"`
+}
+
+// SendGatewayConfirmation sends a confirmation to the VPS gateway endpoint with antenna_id.
+// Calls POST /api/v1/gateway/confirm
+func (c *VPSClient) SendGatewayConfirmation(companyID, uii, action, antennaID string) error {
+	url := fmt.Sprintf("%s/api/v1/gateway/confirm", c.baseURL)
+
+	payload := map[string]string{
+		"company_id": companyID,
+		"uii":        uii,
+		"action":     action,
+	}
+	if antennaID != "" {
+		payload["antenna_id"] = antennaID
+	}
+
+	jsonBody, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse response to verify success
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var confirmResp GatewayConfirmResponse
+	if err := json.Unmarshal(body, &confirmResp); err != nil {
+		// Non-JSON success response is acceptable
+		return nil
+	}
+
+	if confirmResp.Status != "OK" {
+		return fmt.Errorf("confirmation failed: %s", confirmResp.Status)
 	}
 
 	return nil

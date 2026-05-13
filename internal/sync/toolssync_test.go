@@ -13,16 +13,16 @@ import (
 
 // mockVPSClient is a mock implementation for testing
 type mockVPSClient struct {
-	fetchToolsFunc  func(companyID string) ([]localstore.Tool, error)
-	fetchUsersFunc  func(companyID string) ([]localstore.User, error)
-	sendConfirmFunc func(companyID, uii, action string) error
-	callCount       atomic.Int32
+	fetchSyncDataFunc func(companyID string) ([]localstore.SyncDataItem, error)
+	fetchUsersFunc    func(companyID string) ([]localstore.User, error)
+	sendConfirmFunc   func(companyID, uii, action, antennaID string) error
+	callCount         atomic.Int32
 }
 
-func (m *mockVPSClient) FetchTools(companyID string) ([]localstore.Tool, error) {
+func (m *mockVPSClient) FetchSyncData(companyID string) ([]localstore.SyncDataItem, error) {
 	m.callCount.Add(1)
-	if m.fetchToolsFunc != nil {
-		return m.fetchToolsFunc(companyID)
+	if m.fetchSyncDataFunc != nil {
+		return m.fetchSyncDataFunc(companyID)
 	}
 	return nil, nil
 }
@@ -35,17 +35,17 @@ func (m *mockVPSClient) FetchUsers(companyID string) ([]localstore.User, error) 
 	return nil, nil
 }
 
-func (m *mockVPSClient) SendConfirmation(companyID, uii, action string) error {
+func (m *mockVPSClient) SendGatewayConfirmation(companyID, uii, action, antennaID string) error {
 	m.callCount.Add(1)
 	if m.sendConfirmFunc != nil {
-		return m.sendConfirmFunc(companyID, uii, action)
+		return m.sendConfirmFunc(companyID, uii, action, antennaID)
 	}
 	return nil
 }
 
 // mockLocalStore is a mock implementation for testing
 type mockLocalStore struct {
-	upsertToolsFunc        func(tools []localstore.Tool) error
+	upsertToolsFunc        func(rows []localstore.SyncDataItem) error
 	upsertUsersFunc        func(users []localstore.User) error
 	getUnsyncedFunc        func(limit int) ([]localstore.PendingConfirmation, error)
 	markSyncedFunc         func(id int64) error
@@ -73,9 +73,9 @@ func (m *mockLocalStore) GetUserByRFIDTag(rfidTag string) (*localstore.User, err
 	return nil, nil
 }
 
-func (m *mockLocalStore) UpsertTools(tools []localstore.Tool) error {
+func (m *mockLocalStore) UpsertToolsFromSync(rows []localstore.SyncDataItem) error {
 	if m.upsertToolsFunc != nil {
-		return m.upsertToolsFunc(tools)
+		return m.upsertToolsFunc(rows)
 	}
 	return nil
 }
@@ -223,10 +223,10 @@ func TestToolsSync_SyncToolsAndUsers(t *testing.T) {
 	usersUpserted := make(chan bool, 1)
 
 	vpsClient := &mockVPSClient{
-		fetchToolsFunc: func(companyID string) ([]localstore.Tool, error) {
+		fetchSyncDataFunc: func(companyID string) ([]localstore.SyncDataItem, error) {
 			toolsFetched <- true
-			return []localstore.Tool{
-				{ID: 1, CompanyID: companyID, SKU: "TOOL-001", UII: "E200123456"},
+			return []localstore.SyncDataItem{
+				{ID: 1, ToolID: 1, SKU: "TOOL-001", UII: "E200123456", Name: "Tool 001"},
 			}, nil
 		},
 		fetchUsersFunc: func(companyID string) ([]localstore.User, error) {
@@ -238,8 +238,8 @@ func TestToolsSync_SyncToolsAndUsers(t *testing.T) {
 	}
 
 	store := &mockLocalStore{
-		upsertToolsFunc: func(tools []localstore.Tool) error {
-			if len(tools) == 1 && tools[0].SKU == "TOOL-001" {
+		upsertToolsFunc: func(rows []localstore.SyncDataItem) error {
+			if len(rows) == 1 && rows[0].SKU == "TOOL-001" {
 				toolsUpserted <- true
 			}
 			return nil
@@ -301,7 +301,7 @@ func TestToolsSync_SyncToolsAndUsers(t *testing.T) {
 // TestToolsSync_VPSOffline tests behavior when VPS is unreachable
 func TestToolsSync_VPSOffline(t *testing.T) {
 	vpsClient := &mockVPSClient{
-		fetchToolsFunc: func(companyID string) ([]localstore.Tool, error) {
+		fetchSyncDataFunc: func(companyID string) ([]localstore.SyncDataItem, error) {
 			return nil, errors.New("connection refused")
 		},
 		fetchUsersFunc: func(companyID string) ([]localstore.User, error) {
@@ -337,7 +337,7 @@ func TestToolsSync_FlushPendingConfirmations(t *testing.T) {
 	markedSynced := make(chan int64, 2)
 
 	vpsClient := &mockVPSClient{
-		sendConfirmFunc: func(companyID, uii, action string) error {
+		sendConfirmFunc: func(companyID, uii, action, antennaID string) error {
 			confirmationsSent <- uii
 			return nil
 		},
@@ -406,7 +406,7 @@ func TestToolsSync_FlushPendingConfirmations(t *testing.T) {
 // TestToolsSync_QueueWhenOffline tests that confirmations are queued when VPS is offline
 func TestToolsSync_QueueWhenOffline(t *testing.T) {
 	vpsClient := &mockVPSClient{
-		sendConfirmFunc: func(companyID, uii, action string) error {
+		sendConfirmFunc: func(companyID, uii, action, antennaID string) error {
 			return errors.New("connection refused")
 		},
 	}
@@ -452,16 +452,16 @@ func TestToolsSync_FlushWhenBackOnline(t *testing.T) {
 	confirmationsSent := make(chan string, 1)
 
 	vpsClient := &mockVPSClient{
-		sendConfirmFunc: func(companyID, uii, action string) error {
+		sendConfirmFunc: func(companyID, uii, action, antennaID string) error {
 			if vpsOnline.Load() {
 				confirmationsSent <- uii
 				return nil
 			}
 			return errors.New("connection refused")
 		},
-		fetchToolsFunc: func(companyID string) ([]localstore.Tool, error) {
+		fetchSyncDataFunc: func(companyID string) ([]localstore.SyncDataItem, error) {
 			if vpsOnline.Load() {
-				return []localstore.Tool{{ID: 1, SKU: "TOOL-001"}}, nil
+				return []localstore.SyncDataItem{{ID: 1, ToolID: 1, SKU: "TOOL-001", Name: "Tool 001"}}, nil
 			}
 			return nil, errors.New("connection refused")
 		},
@@ -528,7 +528,7 @@ func TestToolsSync_MultiplePendingConfirmations(t *testing.T) {
 	confirmationsSent := make(chan string, 10)
 
 	vpsClient := &mockVPSClient{
-		sendConfirmFunc: func(companyID, uii, action string) error {
+		sendConfirmFunc: func(companyID, uii, action, antennaID string) error {
 			confirmationsSent <- uii
 			return nil
 		},
