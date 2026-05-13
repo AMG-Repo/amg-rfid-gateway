@@ -27,7 +27,7 @@ func TestNewServer(t *testing.T) {
 	// We can't easily create a real LocalStore without a DB, so we'll test with nil
 	// In real tests you'd use a test database
 	verifier := &verify.Verifier{}
-	vpsClient := httpclient.NewVPSClient("http://localhost:8080", 5*time.Second)
+	vpsClient := httpclient.NewVPSClient("http://localhost:8080", 5*time.Second, "test-token")
 
 	server := NewServer("127.0.0.1", 0, eventBus, nil, verifier, vpsClient, "test-company")
 
@@ -364,9 +364,9 @@ func TestHandleConfirm_VPSOnline(t *testing.T) {
 			return
 		}
 
-		// Handle confirmation endpoint
-		if r.URL.Path != "/api/v1/tools/confirm" {
-			t.Errorf("expected path /api/v1/tools/confirm, got %s", r.URL.Path)
+		// Handle confirmation endpoint (new gateway endpoint)
+		if r.URL.Path != "/api/v1/gateway/confirm" {
+			t.Errorf("expected path /api/v1/gateway/confirm, got %s", r.URL.Path)
 		}
 		if r.Method != "POST" {
 			t.Errorf("expected POST, got %s", r.Method)
@@ -389,7 +389,7 @@ func TestHandleConfirm_VPSOnline(t *testing.T) {
 	}))
 	defer vpsServer.Close()
 
-	vpsClient := httpclient.NewVPSClient(vpsServer.URL, 5*time.Second)
+	vpsClient := httpclient.NewVPSClient(vpsServer.URL, 5*time.Second, "test-token")
 	verifier := verify.NewVerifier(nil, nil)
 
 	server := NewServer("127.0.0.1", 0, eventBus, nil, verifier, vpsClient, "test-company")
@@ -426,7 +426,7 @@ func TestHandleConfirm_VPSOffline(t *testing.T) {
 	defer eventBus.Close()
 
 	// Create VPS client pointing to non-existent server
-	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond)
+	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "test-token")
 	verifier := verify.NewVerifier(nil, nil)
 
 	// Create real local store with in-memory DB
@@ -624,7 +624,7 @@ func TestHandleTags_ReturnsCorrectJSON(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Create tables
+	// Create normalized schema tables
 	_, err = db.Exec(`
 		CREATE TABLE tools (
 			id INTEGER PRIMARY KEY,
@@ -632,9 +632,21 @@ func TestHandleTags_ReturnsCorrectJSON(t *testing.T) {
 			sku TEXT NOT NULL,
 			name TEXT NOT NULL,
 			description TEXT,
+			default_destination TEXT,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE tool_tags (
+			id INTEGER PRIMARY KEY,
+			tool_id INTEGER NOT NULL,
 			uii TEXT NOT NULL UNIQUE,
+			unit_number TEXT,
 			status TEXT,
 			location TEXT,
+			location_id INTEGER,
+			display_name TEXT,
+			notes TEXT,
+			active BOOLEAN DEFAULT 1,
+			kanban_zone TEXT,
 			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE TABLE pending_confirmations (
@@ -654,11 +666,18 @@ func TestHandleTags_ReturnsCorrectJSON(t *testing.T) {
 
 	store := localstore.New(db)
 
-	// Insert a tool
+	// Insert normalized data: tool master + tool tag
 	_, err = db.Exec(`
-		INSERT INTO tools (id, company_id, sku, name, description, uii, status, location)
-		VALUES (1, 'comp-001', 'SKU-001', 'Test Tool', 'A test tool', 'EPC-001', 'active', 'Warehouse A')
-	`)
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (1, 'comp-001', 'SKU-001', 'Test Tool', 'A test tool', 'Warehouse A', ?)
+	`, time.Now())
+	if err != nil {
+		t.Fatalf("failed to insert tool: %v", err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, active, last_synced_at)
+		VALUES (1, 1, 'EPC-001', '001', 'active', 'Warehouse A', 1, ?)
+	`, time.Now())
 	if err != nil {
 		t.Fatalf("failed to insert tool: %v", err)
 	}
@@ -830,7 +849,7 @@ func TestHandleStatus_VPSOnline(t *testing.T) {
 	}))
 	defer vpsServer.Close()
 
-	vpsClient := httpclient.NewVPSClient(vpsServer.URL, 5*time.Second)
+	vpsClient := httpclient.NewVPSClient(vpsServer.URL, 5*time.Second, "test-token")
 
 	// Create store with some pending confirmations
 	db, err := sql.Open("sqlite", ":memory:")
@@ -915,7 +934,7 @@ func TestHandleStatus_VPSOffline(t *testing.T) {
 	defer eventBus.Close()
 
 	// Create VPS client pointing to non-existent server
-	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond)
+	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "test-token")
 
 	server := NewServer("127.0.0.1", 0, eventBus, nil, nil, vpsClient, "test-company")
 
@@ -1058,7 +1077,7 @@ func TestHandleConfirm_WithAntennaID(t *testing.T) {
 	store := localstore.New(db)
 
 	// VPS client pointing to non-existent server (force offline mode)
-	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond)
+	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "test-token")
 	verifier := verify.NewVerifier(nil, nil)
 
 	server := NewServer("127.0.0.1", 0, eventBus, store, verifier, vpsClient, "test-company")
