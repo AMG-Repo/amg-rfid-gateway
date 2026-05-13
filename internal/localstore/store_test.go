@@ -9,14 +9,14 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// setupTestDB creates an in-memory SQLite database for testing
+// setupTestDB creates an in-memory SQLite database for testing with normalized schema
 func setupTestDB(t *testing.T) *sql.DB {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("failed to open in-memory database: %v", err)
 	}
 
-	// Create tables
+	// Create normalized schema tables (tools + tool_tags)
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS tools (
 			id INTEGER PRIMARY KEY,
@@ -24,9 +24,22 @@ func setupTestDB(t *testing.T) *sql.DB {
 			sku TEXT NOT NULL,
 			name TEXT NOT NULL,
 			description TEXT,
+			default_destination TEXT,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS tool_tags (
+			id INTEGER PRIMARY KEY,
+			tool_id INTEGER NOT NULL,
 			uii TEXT NOT NULL UNIQUE,
+			unit_number TEXT,
 			status TEXT,
 			location TEXT,
+			location_id INTEGER,
+			display_name TEXT,
+			notes TEXT,
+			active BOOLEAN DEFAULT 1,
+			kanban_zone TEXT,
 			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 
@@ -52,7 +65,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 
-		CREATE INDEX IF NOT EXISTS idx_tools_uii ON tools(uii);
+		CREATE INDEX IF NOT EXISTS idx_tool_tags_uii ON tool_tags(uii);
+		CREATE INDEX IF NOT EXISTS idx_tool_tags_tool_id ON tool_tags(tool_id);
+		CREATE INDEX IF NOT EXISTS idx_tools_sku ON tools(sku);
 		CREATE INDEX IF NOT EXISTS idx_users_rfid ON users(rfid_tag);
 		CREATE INDEX IF NOT EXISTS idx_pending_synced ON pending_confirmations(synced);
 	`)
@@ -84,14 +99,21 @@ func TestGetToolByUII_Existing(t *testing.T) {
 
 	store := New(db)
 
-	// Insert a tool
+	// Insert normalized data: tool master + tool tag
 	now := time.Now()
 	_, err := db.Exec(`
-		INSERT INTO tools (id, company_id, sku, name, description, uii, status, location, last_synced_at)
-		VALUES (1, 'comp-001', 'SKU-001', 'Test Tool', 'A test tool', 'E200341502001080', 'active', 'Warehouse A', ?)
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (1, 'comp-001', 'SKU-001', 'Test Tool', 'A test tool', 'Warehouse A', ?)
 	`, now)
 	if err != nil {
 		t.Fatalf("failed to insert tool: %v", err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, active, last_synced_at)
+		VALUES (1, 1, 'E200341502001080', '001', 'active', 'Warehouse A', 1, ?)
+	`, now)
+	if err != nil {
+		t.Fatalf("failed to insert tool tag: %v", err)
 	}
 
 	// Get the tool
@@ -221,13 +243,20 @@ func TestUpsertTools_Update(t *testing.T) {
 
 	store := New(db)
 
-	// Insert initial tool
+	// Insert initial normalized data
 	_, err := db.Exec(`
-		INSERT INTO tools (id, company_id, sku, name, uii, status, location)
-		VALUES (1, 'comp-001', 'SKU-001', 'Old Name', 'E200341502001080', 'active', 'Old Location')
-	`)
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (1, 'comp-001', 'SKU-001', 'Old Name', 'Desc', 'Old Location', ?)
+	`, time.Now())
 	if err != nil {
 		t.Fatalf("failed to insert initial tool: %v", err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, status, location, active, last_synced_at)
+		VALUES (1, 1, 'E200341502001080', 'active', 'Old Location', 1, ?)
+	`, time.Now())
+	if err != nil {
+		t.Fatalf("failed to insert initial tool tag: %v", err)
 	}
 
 	// Upsert with updated values
@@ -642,14 +671,15 @@ func TestGetToolsCount(t *testing.T) {
 		t.Errorf("expected 0 tools initially, got %d", count)
 	}
 
-	// Insert tools
+	// Insert tools using normalized schema
+	now := time.Now()
 	_, err = db.Exec(`
-		INSERT INTO tools (id, company_id, sku, name, uii, status)
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
 		VALUES 
-			(1, 'comp-001', 'SKU-001', 'Tool One', 'EPC-001', 'active'),
-			(2, 'comp-001', 'SKU-002', 'Tool Two', 'EPC-002', 'active'),
-			(3, 'comp-001', 'SKU-003', 'Tool Three', 'EPC-003', 'inactive')
-	`)
+			(1, 'comp-001', 'SKU-001', 'Tool One', 'Desc 1', 'Loc 1', ?),
+			(2, 'comp-001', 'SKU-002', 'Tool Two', 'Desc 2', 'Loc 2', ?),
+			(3, 'comp-001', 'SKU-003', 'Tool Three', 'Desc 3', 'Loc 3', ?)
+	`, now, now, now)
 	if err != nil {
 		t.Fatalf("failed to insert tools: %v", err)
 	}
@@ -951,36 +981,57 @@ func TestUpsertToolsFromSync_Insert(t *testing.T) {
 		t.Fatalf("failed to upsert tools from sync: %v", err)
 	}
 
-	// Verify tools were inserted
+	// Verify tool master record was created
+	toolRecord, err := store.GetToolRecordByID(10)
+	if err != nil {
+		t.Fatalf("failed to get tool record: %v", err)
+	}
+	if toolRecord == nil {
+		t.Fatal("expected tool record to exist")
+	}
+	if toolRecord.SKU != "SKU-001" {
+		t.Errorf("expected SKU 'SKU-001', got %q", toolRecord.SKU)
+	}
+	if toolRecord.Name != "Tool One" {
+		t.Errorf("expected Name 'Tool One', got %q", toolRecord.Name)
+	}
+
+	// Verify tool tags were created
+	tag1, err := store.GetToolTagByUII("EPC-001")
+	if err != nil {
+		t.Fatalf("failed to get tag: %v", err)
+	}
+	if tag1 == nil {
+		t.Fatal("expected tag 1 to exist")
+	}
+	if tag1.Status != "available" {
+		t.Errorf("expected Status 'available', got %q", tag1.Status)
+	}
+	if tag1.Location != "Almacén General" {
+		t.Errorf("expected Location 'Almacén General', got %q", tag1.Location)
+	}
+
+	tag2, err := store.GetToolTagByUII("EPC-002")
+	if err != nil {
+		t.Fatalf("failed to get tag: %v", err)
+	}
+	if tag2 == nil {
+		t.Fatal("expected tag 2 to exist")
+	}
+	if tag2.Location != "Línea 1" {
+		t.Errorf("expected Location 'Línea 1', got %q", tag2.Location)
+	}
+
+	// Verify legacy GetToolByUII still works via JOIN
 	tool1, err := store.GetToolByUII("EPC-001")
 	if err != nil {
-		t.Fatalf("failed to get tool: %v", err)
+		t.Fatalf("failed to get tool via legacy method: %v", err)
 	}
 	if tool1 == nil {
-		t.Fatal("expected tool 1 to exist")
+		t.Fatal("expected tool 1 to exist via legacy method")
 	}
 	if tool1.SKU != "SKU-001" {
 		t.Errorf("expected SKU 'SKU-001', got %q", tool1.SKU)
-	}
-	if tool1.Name != "Tool One" {
-		t.Errorf("expected Name 'Tool One', got %q", tool1.Name)
-	}
-	if tool1.Status != "available" {
-		t.Errorf("expected Status 'available', got %q", tool1.Status)
-	}
-	if tool1.Location != "Almacén General" {
-		t.Errorf("expected Location 'Almacén General', got %q", tool1.Location)
-	}
-
-	tool2, err := store.GetToolByUII("EPC-002")
-	if err != nil {
-		t.Fatalf("failed to get tool: %v", err)
-	}
-	if tool2 == nil {
-		t.Fatal("expected tool 2 to exist")
-	}
-	if tool2.Location != "Línea 1" {
-		t.Errorf("expected Location 'Línea 1', got %q", tool2.Location)
 	}
 }
 
@@ -990,13 +1041,21 @@ func TestUpsertToolsFromSync_Update(t *testing.T) {
 
 	store := New(db)
 
-	// Insert initial tool
-	tools := []Tool{
-		{ID: 1, CompanyID: "comp-1", SKU: "SKU-001", Name: "Old Name", UII: "EPC-001", Status: "available", Location: "Old Location"},
-	}
-	err := store.UpsertTools(tools)
+	// Insert initial normalized data
+	now := time.Now()
+	_, err := db.Exec(`
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (10, 'comp-001', 'SKU-001', 'Old Name', 'Desc', 'Old Location', ?)
+	`, now)
 	if err != nil {
-		t.Fatalf("failed to upsert initial tools: %v", err)
+		t.Fatalf("failed to insert initial tool: %v", err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, status, location, active, last_synced_at)
+		VALUES (1, 10, 'EPC-001', 'available', 'Old Location', 1, ?)
+	`, now)
+	if err != nil {
+		t.Fatalf("failed to insert initial tag: %v", err)
 	}
 
 	// Update via sync data
@@ -1018,19 +1077,37 @@ func TestUpsertToolsFromSync_Update(t *testing.T) {
 		t.Fatalf("failed to upsert tools from sync: %v", err)
 	}
 
-	// Verify tool was updated
+	// Verify tool master was updated
+	toolRecord, err := store.GetToolRecordByID(10)
+	if err != nil {
+		t.Fatalf("failed to get tool record: %v", err)
+	}
+	if toolRecord.Name != "New Name" {
+		t.Errorf("expected Name 'New Name', got %q", toolRecord.Name)
+	}
+
+	// Verify tag was updated
+	tag, err := store.GetToolTagByUII("EPC-001")
+	if err != nil {
+		t.Fatalf("failed to get tag: %v", err)
+	}
+	if tag.Status != "in_use" {
+		t.Errorf("expected Status 'in_use', got %q", tag.Status)
+	}
+	if tag.Location != "New Location" {
+		t.Errorf("expected Location 'New Location', got %q", tag.Location)
+	}
+
+	// Verify legacy GetToolByUII still works
 	tool, err := store.GetToolByUII("EPC-001")
 	if err != nil {
-		t.Fatalf("failed to get tool: %v", err)
+		t.Fatalf("failed to get tool via legacy method: %v", err)
 	}
 	if tool.Name != "New Name" {
-		t.Errorf("expected Name 'New Name', got %q", tool.Name)
-	}
-	if tool.Status != "in_use" {
-		t.Errorf("expected Status 'in_use', got %q", tool.Status)
+		t.Errorf("expected Name 'New Name' via legacy method, got %q", tool.Name)
 	}
 	if tool.Location != "New Location" {
-		t.Errorf("expected Location 'New Location', got %q", tool.Location)
+		t.Errorf("expected Location 'New Location' via legacy method, got %q", tool.Location)
 	}
 }
 
@@ -1059,13 +1136,22 @@ func TestUpsertToolsFromSync_EmptyLocationFallback(t *testing.T) {
 		t.Fatalf("failed to upsert tools from sync: %v", err)
 	}
 
-	// Verify location defaults to "Almacén General"
+	// Verify tag location defaults to "Almacén General"
+	tag, err := store.GetToolTagByUII("EPC-001")
+	if err != nil {
+		t.Fatalf("failed to get tag: %v", err)
+	}
+	if tag.Location != "Almacén General" {
+		t.Errorf("expected Location 'Almacén General' for empty input, got %q", tag.Location)
+	}
+
+	// Verify legacy GetToolByUII also gets the defaulted location
 	tool, err := store.GetToolByUII("EPC-001")
 	if err != nil {
 		t.Fatalf("failed to get tool: %v", err)
 	}
 	if tool.Location != "Almacén General" {
-		t.Errorf("expected Location 'Almacén General' for empty input, got %q", tool.Location)
+		t.Errorf("expected Location 'Almacén General' via legacy method, got %q", tool.Location)
 	}
 }
 
@@ -1089,4 +1175,411 @@ func TestUpsertToolsFromSync_EmptySlice(t *testing.T) {
 	if count != 0 {
 		t.Errorf("expected 0 tools, got %d", count)
 	}
+}
+
+// === Normalized Schema Tests ===
+
+// Test UpsertToolTags inserts new tags
+func TestUpsertToolTags_Insert(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	// Insert a tool master record first
+	_, err := db.Exec(`
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (10, 'comp-001', 'SKU-001', 'Test Tool', 'Description', 'Warehouse A', ?)
+	`, time.Now())
+	if err != nil {
+		t.Fatalf("failed to insert tool: %v", err)
+	}
+
+	tags := []ToolTagRecord{
+		{
+			ID:          1,
+			ToolID:      10,
+			UII:         "EPC-001",
+			UnitNumber:  "001",
+			Status:      "available",
+			Location:    "Warehouse A",
+			DisplayName: "Tool One",
+			Active:      true,
+		},
+		{
+			ID:          2,
+			ToolID:      10,
+			UII:         "EPC-002",
+			UnitNumber:  "002",
+			Status:      "in_use",
+			Location:    "Line 1",
+			DisplayName: "Tool Two",
+			Active:      true,
+		},
+	}
+
+	err = store.UpsertToolTags(tags)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify tags were inserted
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM tool_tags").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to count tags: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 tags, got %d", count)
+	}
+}
+
+// Test UpsertToolTags updates existing tags
+func TestUpsertToolTags_Update(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	// Insert tool master and initial tag
+	now := time.Now()
+	_, err := db.Exec(`
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (10, 'comp-001', 'SKU-001', 'Test Tool', 'Description', 'Warehouse A', ?)
+	`, now)
+	if err != nil {
+		t.Fatalf("failed to insert tool: %v", err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, display_name, active, last_synced_at)
+		VALUES (1, 10, 'EPC-001', '001', 'available', 'Warehouse A', 'Old Name', 1, ?)
+	`, now)
+	if err != nil {
+		t.Fatalf("failed to insert tag: %v", err)
+	}
+
+	// Update via UpsertToolTags
+	updatedTags := []ToolTagRecord{
+		{
+			ID:          1,
+			ToolID:      10,
+			UII:         "EPC-001",
+			UnitNumber:  "001",
+			Status:      "in_use",       // Changed
+			Location:    "Line 1",       // Changed
+			DisplayName: "Updated Name", // Changed
+			Active:      false,          // Changed
+		},
+	}
+
+	err = store.UpsertToolTags(updatedTags)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify tag was updated
+	tag, err := store.GetToolTagByUII("EPC-001")
+	if err != nil {
+		t.Fatalf("failed to get tag: %v", err)
+	}
+	if tag.Status != "in_use" {
+		t.Errorf("expected Status 'in_use', got %s", tag.Status)
+	}
+	if tag.Location != "Line 1" {
+		t.Errorf("expected Location 'Line 1', got %s", tag.Location)
+	}
+	if tag.DisplayName != "Updated Name" {
+		t.Errorf("expected DisplayName 'Updated Name', got %s", tag.DisplayName)
+	}
+	if tag.Active {
+		t.Error("expected Active to be false")
+	}
+}
+
+// Test GetToolTagByUII with existing tag
+func TestGetToolTagByUII_Existing(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	// Insert tool master and tag
+	now := time.Now()
+	_, err := db.Exec(`
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (10, 'comp-001', 'SKU-001', 'Test Tool', 'Description', 'Warehouse A', ?)
+	`, now)
+	if err != nil {
+		t.Fatalf("failed to insert tool: %v", err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, display_name, active, last_synced_at)
+		VALUES (1, 10, 'EPC-001', '001', 'available', 'Warehouse A', 'Test Tag', 1, ?)
+	`, now)
+	if err != nil {
+		t.Fatalf("failed to insert tag: %v", err)
+	}
+
+	// Get the tag
+	tag, err := store.GetToolTagByUII("EPC-001")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tag == nil {
+		t.Fatal("expected tag to be found")
+	}
+
+	if tag.ID != 1 {
+		t.Errorf("expected ID 1, got %d", tag.ID)
+	}
+	if tag.ToolID != 10 {
+		t.Errorf("expected ToolID 10, got %d", tag.ToolID)
+	}
+	if tag.UII != "EPC-001" {
+		t.Errorf("expected UII 'EPC-001', got %s", tag.UII)
+	}
+	if tag.UnitNumber != "001" {
+		t.Errorf("expected UnitNumber '001', got %s", tag.UnitNumber)
+	}
+	if tag.Status != "available" {
+		t.Errorf("expected Status 'available', got %s", tag.Status)
+	}
+	if tag.Location != "Warehouse A" {
+		t.Errorf("expected Location 'Warehouse A', got %s", tag.Location)
+	}
+	if tag.DisplayName != "Test Tag" {
+		t.Errorf("expected DisplayName 'Test Tag', got %s", tag.DisplayName)
+	}
+	if !tag.Active {
+		t.Error("expected Active to be true")
+	}
+}
+
+// Test GetToolTagByUII with non-existent tag
+func TestGetToolTagByUII_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	tag, err := store.GetToolTagByUII("NON-EXISTENT")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tag != nil {
+		t.Error("expected tag to be nil for non-existent UII")
+	}
+}
+
+// Test GetToolTagsByToolID
+func TestGetToolTagsByToolID(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	// Insert tool masters
+	now := time.Now()
+	_, err := db.Exec(`
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES 
+			(10, 'comp-001', 'SKU-001', 'Tool A', 'Description', 'Warehouse A', ?),
+			(20, 'comp-001', 'SKU-002', 'Tool B', 'Description', 'Warehouse B', ?)
+	`, now, now)
+	if err != nil {
+		t.Fatalf("failed to insert tools: %v", err)
+	}
+
+	// Insert tags for tool 10
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, display_name, active, last_synced_at)
+		VALUES 
+			(1, 10, 'EPC-001', '001', 'available', 'Warehouse A', 'Tag 1', 1, ?),
+			(2, 10, 'EPC-002', '002', 'in_use', 'Line 1', 'Tag 2', 1, ?),
+			(3, 20, 'EPC-003', '001', 'available', 'Warehouse B', 'Tag 3', 1, ?)
+	`, now, now, now)
+	if err != nil {
+		t.Fatalf("failed to insert tags: %v", err)
+	}
+
+	// Get tags for tool 10
+	tags, err := store.GetToolTagsByToolID(10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(tags) != 2 {
+		t.Errorf("expected 2 tags for tool 10, got %d", len(tags))
+	}
+
+	// Verify we got the right tags
+	uiis := make(map[string]bool)
+	for _, tag := range tags {
+		uiis[tag.UII] = true
+	}
+	if !uiis["EPC-001"] || !uiis["EPC-002"] {
+		t.Errorf("expected EPC-001 and EPC-002, got: %v", uiis)
+	}
+	if uiis["EPC-003"] {
+		t.Error("EPC-003 should not be in results for tool 10")
+	}
+}
+
+// Test UpsertToolsRecords inserts new records
+func TestUpsertToolsRecords_Insert(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	tools := []ToolRecord{
+		{
+			ID:          1,
+			CompanyID:   "comp-001",
+			SKU:         "SKU-001",
+			Name:        "Tool One",
+			Description: "Description 1",
+		},
+		{
+			ID:          2,
+			CompanyID:   "comp-001",
+			SKU:         "SKU-002",
+			Name:        "Tool Two",
+			Description: "Description 2",
+		},
+	}
+
+	err := store.UpsertToolsRecords(tools)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify records were inserted
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM tools").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to count tools: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 tool records, got %d", count)
+	}
+}
+
+// Test UpsertToolsRecords updates existing records
+func TestUpsertToolsRecords_Update(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	// Insert initial tool record
+	now := time.Now()
+	_, err := db.Exec(`
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (1, 'comp-001', 'SKU-001', 'Old Name', 'Old Desc', 'Old Location', ?)
+	`, now)
+	if err != nil {
+		t.Fatalf("failed to insert tool: %v", err)
+	}
+
+	// Update via UpsertToolsRecords
+	updatedTools := []ToolRecord{
+		{
+			ID:                 1,
+			CompanyID:          "comp-002",     // Changed
+			SKU:                "SKU-001",
+			Name:               "New Name",     // Changed
+			Description:        "New Desc",     // Changed
+			DefaultDestination: strPtr("New Location"), // Changed
+		},
+	}
+
+	err = store.UpsertToolsRecords(updatedTools)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify record was updated
+	tool, err := store.GetToolRecordByID(1)
+	if err != nil {
+		t.Fatalf("failed to get tool: %v", err)
+	}
+	if tool.CompanyID != "comp-002" {
+		t.Errorf("expected CompanyID 'comp-002', got %s", tool.CompanyID)
+	}
+	if tool.Name != "New Name" {
+		t.Errorf("expected Name 'New Name', got %s", tool.Name)
+	}
+	if tool.Description != "New Desc" {
+		t.Errorf("expected Description 'New Desc', got %s", tool.Description)
+	}
+	if tool.DefaultDestination == nil || *tool.DefaultDestination != "New Location" {
+		t.Errorf("expected DefaultDestination 'New Location', got %v", tool.DefaultDestination)
+	}
+}
+
+// Test GetToolRecordByID with existing record
+func TestGetToolRecordByID_Existing(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	// Insert tool record
+	now := time.Now()
+	_, err := db.Exec(`
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (1, 'comp-001', 'SKU-001', 'Test Tool', 'Description', 'Warehouse A', ?)
+	`, now)
+	if err != nil {
+		t.Fatalf("failed to insert tool: %v", err)
+	}
+
+	// Get the record
+	tool, err := store.GetToolRecordByID(1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tool == nil {
+		t.Fatal("expected tool record to be found")
+	}
+
+	if tool.ID != 1 {
+		t.Errorf("expected ID 1, got %d", tool.ID)
+	}
+	if tool.CompanyID != "comp-001" {
+		t.Errorf("expected CompanyID 'comp-001', got %s", tool.CompanyID)
+	}
+	if tool.SKU != "SKU-001" {
+		t.Errorf("expected SKU 'SKU-001', got %s", tool.SKU)
+	}
+	if tool.Name != "Test Tool" {
+		t.Errorf("expected Name 'Test Tool', got %s", tool.Name)
+	}
+	if tool.Description != "Description" {
+		t.Errorf("expected Description 'Description', got %s", tool.Description)
+	}
+	if tool.DefaultDestination == nil || *tool.DefaultDestination != "Warehouse A" {
+		t.Errorf("expected DefaultDestination 'Warehouse A', got %v", tool.DefaultDestination)
+	}
+}
+
+// Test GetToolRecordByID with non-existent record
+func TestGetToolRecordByID_NotFound(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	tool, err := store.GetToolRecordByID(999)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tool != nil {
+		t.Error("expected tool record to be nil for non-existent ID")
+	}
+}
+
+// Helper function for string pointers
+func strPtr(s string) *string {
+	return &s
 }
