@@ -36,6 +36,18 @@ func (m *mockStoreWithConfirmations) UpsertTools(tools []localstore.Tool) error 
 	return nil
 }
 
+func (m *mockStoreWithConfirmations) UpsertToolsFromSync(rows []localstore.SyncDataItem) error {
+	return nil
+}
+
+func (m *mockStoreWithConfirmations) UpsertToolTags(tags []localstore.ToolTagRecord) error {
+	return nil
+}
+
+func (m *mockStoreWithConfirmations) UpsertToolsRecords(tools []localstore.ToolRecord) error {
+	return nil
+}
+
 func (m *mockStoreWithConfirmations) UpsertUsers(users []localstore.User) error {
 	return nil
 }
@@ -163,6 +175,26 @@ func (m *mockVPSWithControl) FetchUsers(companyID string) ([]localstore.User, er
 }
 
 func (m *mockVPSWithControl) SendConfirmation(companyID, uii, action string) error {
+	m.confirmCalls.Add(1)
+	if !m.online.Load() {
+		return errors.New("VPS offline")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sentConfirms = append(m.sentConfirms, uii)
+	return nil
+}
+
+func (m *mockVPSWithControl) FetchSyncData(companyID string) (*syncpkg.SyncDataResponse, error) {
+	m.fetchCalls.Add(1)
+	if !m.online.Load() {
+		return nil, errors.New("VPS offline")
+	}
+	return &syncpkg.SyncDataResponse{Status: "OK", Tools: []localstore.SyncDataItem{}}, nil
+}
+
+func (m *mockVPSWithControl) SendConfirmationV2(companyID, uii, action, antennaID string) error {
 	m.confirmCalls.Add(1)
 	if !m.online.Load() {
 		return errors.New("VPS offline")

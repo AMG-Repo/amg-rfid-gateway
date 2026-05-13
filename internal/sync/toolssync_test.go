@@ -13,10 +13,12 @@ import (
 
 // mockVPSClient is a mock implementation for testing
 type mockVPSClient struct {
-	fetchToolsFunc  func(companyID string) ([]localstore.Tool, error)
-	fetchUsersFunc  func(companyID string) ([]localstore.User, error)
-	sendConfirmFunc func(companyID, uii, action string) error
-	callCount       atomic.Int32
+	fetchToolsFunc    func(companyID string) ([]localstore.Tool, error)
+	fetchSyncDataFunc func(companyID string) (*SyncDataResponse, error)
+	fetchUsersFunc    func(companyID string) ([]localstore.User, error)
+	sendConfirmFunc   func(companyID, uii, action string) error
+	sendConfirmV2Func func(companyID, uii, action, antennaID string) error
+	callCount         atomic.Int32
 }
 
 func (m *mockVPSClient) FetchTools(companyID string) ([]localstore.Tool, error) {
@@ -25,6 +27,14 @@ func (m *mockVPSClient) FetchTools(companyID string) ([]localstore.Tool, error) 
 		return m.fetchToolsFunc(companyID)
 	}
 	return nil, nil
+}
+
+func (m *mockVPSClient) FetchSyncData(companyID string) (*SyncDataResponse, error) {
+	m.callCount.Add(1)
+	if m.fetchSyncDataFunc != nil {
+		return m.fetchSyncDataFunc(companyID)
+	}
+	return &SyncDataResponse{Status: "OK", Tools: []localstore.SyncDataItem{}}, nil
 }
 
 func (m *mockVPSClient) FetchUsers(companyID string) ([]localstore.User, error) {
@@ -43,9 +53,19 @@ func (m *mockVPSClient) SendConfirmation(companyID, uii, action string) error {
 	return nil
 }
 
+func (m *mockVPSClient) SendConfirmationV2(companyID, uii, action, antennaID string) error {
+	m.callCount.Add(1)
+	if m.sendConfirmV2Func != nil {
+		return m.sendConfirmV2Func(companyID, uii, action, antennaID)
+	}
+	return nil
+}
+
 // mockLocalStore is a mock implementation for testing
 type mockLocalStore struct {
-	upsertToolsFunc        func(tools []localstore.Tool) error
+	upsertToolsFunc        func(rows []localstore.SyncDataItem) error
+	toolsUpsertedFunc      func(tools []localstore.ToolRecord) error
+	toolTagsUpsertedFunc   func(tags []localstore.ToolTagRecord) error
 	upsertUsersFunc        func(users []localstore.User) error
 	getUnsyncedFunc        func(limit int) ([]localstore.PendingConfirmation, error)
 	markSyncedFunc         func(id int64) error
@@ -73,9 +93,9 @@ func (m *mockLocalStore) GetUserByRFIDTag(rfidTag string) (*localstore.User, err
 	return nil, nil
 }
 
-func (m *mockLocalStore) UpsertTools(tools []localstore.Tool) error {
+func (m *mockLocalStore) UpsertToolsFromSync(rows []localstore.SyncDataItem) error {
 	if m.upsertToolsFunc != nil {
-		return m.upsertToolsFunc(tools)
+		return m.upsertToolsFunc(rows)
 	}
 	return nil
 }
@@ -141,6 +161,20 @@ func (m *mockLocalStore) GetMarkedSyncedIDs() []int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.mu.markSyncedIDs
+}
+
+func (m *mockLocalStore) UpsertToolTags(tags []localstore.ToolTagRecord) error {
+	if m.toolTagsUpsertedFunc != nil {
+		return m.toolTagsUpsertedFunc(tags)
+	}
+	return nil
+}
+
+func (m *mockLocalStore) UpsertToolsRecords(tools []localstore.ToolRecord) error {
+	if m.toolsUpsertedFunc != nil {
+		return m.toolsUpsertedFunc(tools)
+	}
+	return nil
 }
 
 // TestNewToolsSync tests the constructor
@@ -215,18 +249,30 @@ func TestToolsSync_StartStop(t *testing.T) {
 	}
 }
 
-// TestToolsSync_SyncToolsAndUsers tests the tools/users sync loop
+// TestToolsSync_SyncToolsAndUsers tests the tools/users sync loop using FetchSyncData
 func TestToolsSync_SyncToolsAndUsers(t *testing.T) {
-	toolsFetched := make(chan bool, 1)
+	syncDataFetched := make(chan bool, 1)
 	usersFetched := make(chan bool, 1)
-	toolsUpserted := make(chan bool, 1)
+	toolsRecordsUpserted := make(chan bool, 1)
+	toolTagsUpserted := make(chan bool, 1)
 	usersUpserted := make(chan bool, 1)
 
 	vpsClient := &mockVPSClient{
-		fetchToolsFunc: func(companyID string) ([]localstore.Tool, error) {
-			toolsFetched <- true
-			return []localstore.Tool{
-				{ID: 1, CompanyID: companyID, SKU: "TOOL-001", UII: "E200123456"},
+		fetchSyncDataFunc: func(companyID string) (*SyncDataResponse, error) {
+			syncDataFetched <- true
+			return &SyncDataResponse{
+				Status: "OK",
+				Tools: []localstore.SyncDataItem{
+					{
+						ID:       1,
+						ToolID:   1,
+						UII:      "E200123456",
+						SKU:      "TOOL-001",
+						Name:     "Hammer",
+						Status:   "active",
+						Location: "Almacen A",
+					},
+				},
 			}, nil
 		},
 		fetchUsersFunc: func(companyID string) ([]localstore.User, error) {
@@ -238,9 +284,15 @@ func TestToolsSync_SyncToolsAndUsers(t *testing.T) {
 	}
 
 	store := &mockLocalStore{
-		upsertToolsFunc: func(tools []localstore.Tool) error {
+		toolsUpsertedFunc: func(tools []localstore.ToolRecord) error {
 			if len(tools) == 1 && tools[0].SKU == "TOOL-001" {
-				toolsUpserted <- true
+				toolsRecordsUpserted <- true
+			}
+			return nil
+		},
+		toolTagsUpsertedFunc: func(tags []localstore.ToolTagRecord) error {
+			if len(tags) == 1 && tags[0].UII == "E200123456" {
+				toolTagsUpserted <- true
 			}
 			return nil
 		},
@@ -265,10 +317,10 @@ func TestToolsSync_SyncToolsAndUsers(t *testing.T) {
 
 	// Wait for first sync iteration
 	select {
-	case <-toolsFetched:
+	case <-syncDataFetched:
 		// Good
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("Timeout waiting for tools fetch")
+		t.Fatal("Timeout waiting for sync data fetch")
 	}
 
 	select {
@@ -279,10 +331,17 @@ func TestToolsSync_SyncToolsAndUsers(t *testing.T) {
 	}
 
 	select {
-	case <-toolsUpserted:
+	case <-toolsRecordsUpserted:
 		// Good
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("Timeout waiting for tools upsert")
+		t.Fatal("Timeout waiting for tool records upsert")
+	}
+
+	select {
+	case <-toolTagsUpserted:
+		// Good
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Timeout waiting for tool tags upsert")
 	}
 
 	select {
@@ -301,7 +360,7 @@ func TestToolsSync_SyncToolsAndUsers(t *testing.T) {
 // TestToolsSync_VPSOffline tests behavior when VPS is unreachable
 func TestToolsSync_VPSOffline(t *testing.T) {
 	vpsClient := &mockVPSClient{
-		fetchToolsFunc: func(companyID string) ([]localstore.Tool, error) {
+		fetchSyncDataFunc: func(companyID string) (*SyncDataResponse, error) {
 			return nil, errors.New("connection refused")
 		},
 		fetchUsersFunc: func(companyID string) ([]localstore.User, error) {
@@ -337,7 +396,7 @@ func TestToolsSync_FlushPendingConfirmations(t *testing.T) {
 	markedSynced := make(chan int64, 2)
 
 	vpsClient := &mockVPSClient{
-		sendConfirmFunc: func(companyID, uii, action string) error {
+		sendConfirmV2Func: func(companyID, uii, action, antennaID string) error {
 			confirmationsSent <- uii
 			return nil
 		},
@@ -345,13 +404,13 @@ func TestToolsSync_FlushPendingConfirmations(t *testing.T) {
 
 	store := &mockLocalStore{
 		confirmations: []localstore.PendingConfirmation{
-			{ID: 1, UII: "EPC-001", Action: "entrada"},
-			{ID: 2, UII: "EPC-002", Action: "salida"},
+			{ID: 1, UII: "EPC-001", Action: "entrada", AntennaID: "ant-1"},
+			{ID: 2, UII: "EPC-002", Action: "salida", AntennaID: "ant-2"},
 		},
 		getUnsyncedFunc: func(limit int) ([]localstore.PendingConfirmation, error) {
 			return []localstore.PendingConfirmation{
-				{ID: 1, UII: "EPC-001", Action: "entrada"},
-				{ID: 2, UII: "EPC-002", Action: "salida"},
+				{ID: 1, UII: "EPC-001", Action: "entrada", AntennaID: "ant-1"},
+				{ID: 2, UII: "EPC-002", Action: "salida", AntennaID: "ant-2"},
 			}, nil
 		},
 		markSyncedFunc: func(id int64) error {
@@ -406,18 +465,18 @@ func TestToolsSync_FlushPendingConfirmations(t *testing.T) {
 // TestToolsSync_QueueWhenOffline tests that confirmations are queued when VPS is offline
 func TestToolsSync_QueueWhenOffline(t *testing.T) {
 	vpsClient := &mockVPSClient{
-		sendConfirmFunc: func(companyID, uii, action string) error {
+		sendConfirmV2Func: func(companyID, uii, action, antennaID string) error {
 			return errors.New("connection refused")
 		},
 	}
 
 	store := &mockLocalStore{
 		confirmations: []localstore.PendingConfirmation{
-			{ID: 1, UII: "EPC-001", Action: "entrada", RetryCount: 0},
+			{ID: 1, UII: "EPC-001", Action: "entrada", RetryCount: 0, AntennaID: "ant-1"},
 		},
 		getUnsyncedFunc: func(limit int) ([]localstore.PendingConfirmation, error) {
 			return []localstore.PendingConfirmation{
-				{ID: 1, UII: "EPC-001", Action: "entrada", RetryCount: 0},
+				{ID: 1, UII: "EPC-001", Action: "entrada", RetryCount: 0, AntennaID: "ant-1"},
 			}, nil
 		},
 		incrementRetryFunc: func(id int64) error {
@@ -452,16 +511,16 @@ func TestToolsSync_FlushWhenBackOnline(t *testing.T) {
 	confirmationsSent := make(chan string, 1)
 
 	vpsClient := &mockVPSClient{
-		sendConfirmFunc: func(companyID, uii, action string) error {
+		sendConfirmV2Func: func(companyID, uii, action, antennaID string) error {
 			if vpsOnline.Load() {
 				confirmationsSent <- uii
 				return nil
 			}
 			return errors.New("connection refused")
 		},
-		fetchToolsFunc: func(companyID string) ([]localstore.Tool, error) {
+		fetchSyncDataFunc: func(companyID string) (*SyncDataResponse, error) {
 			if vpsOnline.Load() {
-				return []localstore.Tool{{ID: 1, SKU: "TOOL-001"}}, nil
+				return &SyncDataResponse{Status: "OK", Tools: []localstore.SyncDataItem{{ID: 1, ToolID: 1, SKU: "TOOL-001"}}}, nil
 			}
 			return nil, errors.New("connection refused")
 		},
@@ -475,12 +534,12 @@ func TestToolsSync_FlushWhenBackOnline(t *testing.T) {
 
 	store := &mockLocalStore{
 		confirmations: []localstore.PendingConfirmation{
-			{ID: 1, UII: "EPC-001", Action: "entrada"},
+			{ID: 1, UII: "EPC-001", Action: "entrada", AntennaID: "ant-1"},
 		},
 		getUnsyncedFunc: func(limit int) ([]localstore.PendingConfirmation, error) {
 			if vpsOnline.Load() {
 				return []localstore.PendingConfirmation{
-					{ID: 1, UII: "EPC-001", Action: "entrada"},
+					{ID: 1, UII: "EPC-001", Action: "entrada", AntennaID: "ant-1"},
 				}, nil
 			}
 			return []localstore.PendingConfirmation{}, nil
@@ -528,7 +587,7 @@ func TestToolsSync_MultiplePendingConfirmations(t *testing.T) {
 	confirmationsSent := make(chan string, 10)
 
 	vpsClient := &mockVPSClient{
-		sendConfirmFunc: func(companyID, uii, action string) error {
+		sendConfirmV2Func: func(companyID, uii, action, antennaID string) error {
 			confirmationsSent <- uii
 			return nil
 		},
@@ -536,19 +595,19 @@ func TestToolsSync_MultiplePendingConfirmations(t *testing.T) {
 
 	store := &mockLocalStore{
 		confirmations: []localstore.PendingConfirmation{
-			{ID: 1, UII: "EPC-001", Action: "entrada"},
-			{ID: 2, UII: "EPC-002", Action: "salida"},
-			{ID: 3, UII: "EPC-003", Action: "entrada"},
-			{ID: 4, UII: "EPC-004", Action: "salida"},
-			{ID: 5, UII: "EPC-005", Action: "entrada"},
+			{ID: 1, UII: "EPC-001", Action: "entrada", AntennaID: "ant-1"},
+			{ID: 2, UII: "EPC-002", Action: "salida", AntennaID: "ant-2"},
+			{ID: 3, UII: "EPC-003", Action: "entrada", AntennaID: "ant-1"},
+			{ID: 4, UII: "EPC-004", Action: "salida", AntennaID: "ant-2"},
+			{ID: 5, UII: "EPC-005", Action: "entrada", AntennaID: "ant-1"},
 		},
 		getUnsyncedFunc: func(limit int) ([]localstore.PendingConfirmation, error) {
 			return []localstore.PendingConfirmation{
-				{ID: 1, UII: "EPC-001", Action: "entrada"},
-				{ID: 2, UII: "EPC-002", Action: "salida"},
-				{ID: 3, UII: "EPC-003", Action: "entrada"},
-				{ID: 4, UII: "EPC-004", Action: "salida"},
-				{ID: 5, UII: "EPC-005", Action: "entrada"},
+				{ID: 1, UII: "EPC-001", Action: "entrada", AntennaID: "ant-1"},
+				{ID: 2, UII: "EPC-002", Action: "salida", AntennaID: "ant-2"},
+				{ID: 3, UII: "EPC-003", Action: "entrada", AntennaID: "ant-1"},
+				{ID: 4, UII: "EPC-004", Action: "salida", AntennaID: "ant-2"},
+				{ID: 5, UII: "EPC-005", Action: "entrada", AntennaID: "ant-1"},
 			}, nil
 		},
 	}

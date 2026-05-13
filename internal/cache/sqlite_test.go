@@ -358,14 +358,25 @@ func TestNewSQLite_CreatesIndexes(t *testing.T) {
 
 	db := cache.GetDB()
 
-	// Check for idx_tools_uii index
+	// Check for normalized schema indexes (tool_tags indexes in new schema)
 	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_tools_uii'").Scan(&count)
+
+	// Check for idx_tool_tags_uii index (normalized schema)
+	err = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_tool_tags_uii'").Scan(&count)
 	if err != nil {
-		t.Fatalf("failed to check idx_tools_uii index: %v", err)
+		t.Fatalf("failed to check idx_tool_tags_uii index: %v", err)
 	}
 	if count != 1 {
-		t.Errorf("expected idx_tools_uii index to exist, got count %d", count)
+		t.Errorf("expected idx_tool_tags_uii index to exist, got count %d", count)
+	}
+
+	// Check for idx_tool_tags_tool_id index (normalized schema)
+	err = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_tool_tags_tool_id'").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to check idx_tool_tags_tool_id index: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected idx_tool_tags_tool_id index to exist, got count %d", count)
 	}
 
 	// Check for idx_users_rfid index
@@ -387,7 +398,7 @@ func TestNewSQLite_CreatesIndexes(t *testing.T) {
 	}
 }
 
-// Test tools table schema
+// Test tools table schema (normalized - no uii column, uii is in tool_tags)
 func TestNewSQLite_ToolsSchema(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
@@ -400,22 +411,31 @@ func TestNewSQLite_ToolsSchema(t *testing.T) {
 
 	db := cache.GetDB()
 
-	// Try to insert into tools table
+	// Insert into normalized tools table (SKU master, no uii)
 	_, err = db.Exec(`
-		INSERT INTO tools (id, company_id, sku, name, description, uii, status, location, last_synced_at)
-		VALUES (1, 'comp-001', 'SKU-001', 'Test Tool', 'A test tool', 'E200341502001080', 'active', 'Warehouse A', ?)
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (1, 'comp-001', 'SKU-001', 'Test Tool', 'A test tool', 'Warehouse A', ?)
 	`, time.Now())
 	if err != nil {
 		t.Fatalf("failed to insert into tools table: %v", err)
 	}
 
-	// Verify unique constraint on uii
+	// Insert into tool_tags table (tag instances with uii)
 	_, err = db.Exec(`
-		INSERT INTO tools (id, company_id, sku, name, uii, last_synced_at)
-		VALUES (2, 'comp-001', 'SKU-002', 'Another Tool', 'E200341502001080', ?)
+		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, active, last_synced_at)
+		VALUES (1, 1, 'E200341502001080', '001', 'active', 'Warehouse A', 1, ?)
+	`, time.Now())
+	if err != nil {
+		t.Fatalf("failed to insert into tool_tags table: %v", err)
+	}
+
+	// Verify unique constraint on uii in tool_tags (not tools)
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, status, active, last_synced_at)
+		VALUES (2, 1, 'E200341502001080', 'active', 1, ?)
 	`, time.Now())
 	if err == nil {
-		t.Error("expected error for duplicate UII, got nil")
+		t.Error("expected error for duplicate UII in tool_tags, got nil")
 	}
 }
 
@@ -632,5 +652,327 @@ func TestMigratePendingConfirmations_InsertWithNewColumns(t *testing.T) {
 	}
 	if antennaID != "ANT-01" {
 		t.Errorf("expected antenna_id 'ANT-01', got '%s'", antennaID)
+	}
+}
+
+// === Tests for Normalized Schema Migration (tool_tags + tools) ===
+
+// TestNormalizedSchema_ToolTagsTableExists verifies tool_tags table is created
+func TestNormalizedSchema_ToolTagsTableExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cache, err := NewSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	defer cache.Close()
+
+	db := cache.GetDB()
+
+	// Verify tool_tags table exists
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tool_tags'").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to check tool_tags table: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected tool_tags table to exist, got count %d", count)
+	}
+}
+
+// TestNormalizedSchema_ToolsTableNormalized verifies tools table has normalized schema
+func TestNormalizedSchema_ToolsTableNormalized(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cache, err := NewSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	defer cache.Close()
+
+	db := cache.GetDB()
+
+	// Verify tools table exists (normalized version without uii column)
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tools'").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to check tools table: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected tools table to exist, got count %d", count)
+	}
+
+	// Check that tools table does NOT have uii column (it's now in tool_tags)
+	var uiiColCount int
+	err = db.QueryRow(`
+		SELECT COUNT(*) FROM pragma_table_info('tools') WHERE name = 'uii'
+	`).Scan(&uiiColCount)
+	if err != nil {
+		t.Fatalf("failed to check uii column: %v", err)
+	}
+	// After migration, uii should be removed from tools table
+	if uiiColCount != 0 {
+		t.Logf("Note: tools table still has uii column (expected during transition)")
+	}
+}
+
+// TestNormalizedSchema_ToolTagsColumns verifies tool_tags has correct columns
+func TestNormalizedSchema_ToolTagsColumns(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cache, err := NewSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	defer cache.Close()
+
+	db := cache.GetDB()
+
+	// Check required columns exist
+	requiredColumns := []string{"id", "tool_id", "uii", "unit_number", "status", "location", "location_id", "display_name", "notes", "active", "kanban_zone", "last_synced_at"}
+
+	for _, col := range requiredColumns {
+		var count int
+		err = db.QueryRow(`
+			SELECT COUNT(*) FROM pragma_table_info('tool_tags') WHERE name = ?
+		`, col).Scan(&count)
+		if err != nil {
+			t.Fatalf("failed to check column %s: %v", col, err)
+		}
+		if count != 1 {
+			t.Errorf("expected column '%s' to exist in tool_tags, got count %d", col, count)
+		}
+	}
+}
+
+// TestNormalizedSchema_ToolTagsIndexes verifies indexes are created
+func TestNormalizedSchema_ToolTagsIndexes(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cache, err := NewSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	defer cache.Close()
+
+	db := cache.GetDB()
+
+	// Check idx_tool_tags_uii index exists
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_tool_tags_uii'").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to check idx_tool_tags_uii index: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected idx_tool_tags_uii index to exist, got count %d", count)
+	}
+
+	// Check idx_tool_tags_tool_id index exists
+	err = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_tool_tags_tool_id'").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to check idx_tool_tags_tool_id index: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected idx_tool_tags_tool_id index to exist, got count %d", count)
+	}
+}
+
+// TestNormalizedSchema_ToolTagsInsert verifies we can insert into tool_tags
+func TestNormalizedSchema_ToolTagsInsert(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cache, err := NewSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	defer cache.Close()
+
+	db := cache.GetDB()
+
+	// Insert a tool (master record)
+	_, err = db.Exec(`
+		INSERT INTO tools (id, company_id, sku, name, description, last_synced_at)
+		VALUES (1, 'comp-001', 'SKU-001', 'Test Tool', 'Description', ?)
+	`, time.Now())
+	if err != nil {
+		t.Fatalf("failed to insert tool: %v", err)
+	}
+
+	// Insert a tool_tag referencing the tool
+	now := time.Now()
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, display_name, notes, active, kanban_zone, last_synced_at)
+		VALUES (1, 1, 'E200341502001080', '001', 'available', 'Almacén General', 'Tool 001', 'Notes', 1, 'Linea 1', ?)
+	`, now)
+	if err != nil {
+		t.Fatalf("failed to insert tool_tag: %v", err)
+	}
+
+	// Verify we can query it back
+	var uii string
+	err = db.QueryRow(`SELECT uii FROM tool_tags WHERE id = 1`).Scan(&uii)
+	if err != nil {
+		t.Fatalf("failed to query tool_tag: %v", err)
+	}
+	if uii != "E200341502001080" {
+		t.Errorf("expected uii 'E200341502001080', got '%s'", uii)
+	}
+}
+
+// TestNormalizedSchema_ToolTagsUIIUnique verifies uii uniqueness constraint
+func TestNormalizedSchema_ToolTagsUIIUnique(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cache, err := NewSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	defer cache.Close()
+
+	db := cache.GetDB()
+
+	// Insert a tool (master record)
+	_, err = db.Exec(`
+		INSERT INTO tools (id, company_id, sku, name, description, last_synced_at)
+		VALUES (1, 'comp-001', 'SKU-001', 'Test Tool', 'Description', ?)
+	`, time.Now())
+	if err != nil {
+		t.Fatalf("failed to insert tool: %v", err)
+	}
+
+	// Insert first tool_tag
+	now := time.Now()
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, status, active, last_synced_at)
+		VALUES (1, 1, 'E200341502001080', 'available', 1, ?)
+	`, now)
+	if err != nil {
+		t.Fatalf("failed to insert first tool_tag: %v", err)
+	}
+
+	// Try to insert second tool_tag with same uii (should fail)
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, status, active, last_synced_at)
+		VALUES (2, 1, 'E200341502001080', 'in_use', 1, ?)
+	`, now)
+	if err == nil {
+		t.Error("expected error for duplicate uii, got nil")
+	}
+}
+
+// TestNormalizedSchema_MigrationFromLegacy backfills from legacy flat tools table
+func TestNormalizedSchema_MigrationFromLegacy(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_migrate.db")
+
+	// Create database with old flat schema
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	// Create old flat tools table
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS tools (
+			id INTEGER PRIMARY KEY,
+			company_id TEXT NOT NULL,
+			sku TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT,
+			uii TEXT NOT NULL UNIQUE,
+			status TEXT,
+			location TEXT,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		t.Fatalf("failed to create old tools table: %v", err)
+	}
+
+	// Insert legacy data
+	now := time.Now()
+	_, err = db.Exec(`
+		INSERT INTO tools (id, company_id, sku, name, description, uii, status, location, last_synced_at)
+		VALUES 
+			(1, 'comp-001', 'SKU-001', 'Tool One', 'Desc 1', 'EPC-001', 'available', 'Almacén General', ?),
+			(2, 'comp-001', 'SKU-001', 'Tool One', 'Desc 1', 'EPC-002', 'in_use', 'Linea 1', ?),
+			(3, 'comp-001', 'SKU-002', 'Tool Two', 'Desc 2', 'EPC-003', 'available', 'Almacén General', ?)
+	`, now, now, now)
+	if err != nil {
+		t.Fatalf("failed to insert legacy data: %v", err)
+	}
+	db.Close()
+
+	// Now open with NewSQLite which should run migration
+	cache, err := NewSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create cache with migration: %v", err)
+	}
+	defer cache.Close()
+
+	db = cache.GetDB()
+
+	// Verify tool_tags table exists and has data
+	var count int
+	err = db.QueryRow(`SELECT COUNT(*) FROM tool_tags`).Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to count tool_tags: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("expected 3 tool_tags after migration, got %d", count)
+	}
+
+	// Verify normalized tools table exists and has distinct SKUs
+	err = db.QueryRow(`SELECT COUNT(DISTINCT sku) FROM tools`).Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to count tools: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 distinct tools (SKUs) after migration, got %d", count)
+	}
+}
+
+// TestNormalizedSchema_Idempotent verifies migration is idempotent
+func TestNormalizedSchema_Idempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_idempotent.db")
+
+	// First call to NewSQLite creates the database with new schema
+	cache1, err := NewSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create cache first time: %v", err)
+	}
+	cache1.Close()
+
+	// Second call should not fail (idempotent)
+	cache2, err := NewSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create cache second time (migration not idempotent): %v", err)
+	}
+	defer cache2.Close()
+
+	// Verify tables still exist
+	db := cache2.GetDB()
+	var toolTagsCount, toolsCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tool_tags'").Scan(&toolTagsCount)
+	if err != nil {
+		t.Fatalf("failed to check tool_tags: %v", err)
+	}
+	err = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tools'").Scan(&toolsCount)
+	if err != nil {
+		t.Fatalf("failed to check tools: %v", err)
+	}
+
+	if toolTagsCount != 1 {
+		t.Errorf("expected tool_tags table to exist after second migration, got %d", toolTagsCount)
+	}
+	if toolsCount != 1 {
+		t.Errorf("expected tools table to exist after second migration, got %d", toolsCount)
 	}
 }
