@@ -11,13 +11,26 @@ import (
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/sync"
 )
+
+// Ensure type compatibility with sync package
+var _ = sync.SyncDataResponse{}
+
+// GatewayConfirmRequest represents the request body for gateway confirm endpoint.
+type GatewayConfirmRequest struct {
+	CompanyID string  `json:"company_id"`
+	UII       string  `json:"uii"`
+	Action    string  `json:"action"`
+	AntennaID *string `json:"antenna_id,omitempty"`
+}
 
 // VPSClient provides HTTP client for VPS REST API.
 type VPSClient struct {
 	baseURL    string
 	httpClient *http.Client
 	timeout    time.Duration
+	jwtToken   string
 }
 
 // BaseURL returns the VPS API base URL.
@@ -28,7 +41,8 @@ func (c *VPSClient) BaseURL() string {
 // NewVPSClient creates a new VPS HTTP client.
 // baseURL: The VPS API base URL (e.g., "http://vps.example.com")
 // timeout: Request timeout (0 defaults to 30 seconds)
-func NewVPSClient(baseURL string, timeout time.Duration) *VPSClient {
+// jwtToken: JWT token for authentication (can be empty for unauthenticated endpoints)
+func NewVPSClient(baseURL string, timeout time.Duration, jwtToken string) *VPSClient {
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
@@ -41,7 +55,8 @@ func NewVPSClient(baseURL string, timeout time.Duration) *VPSClient {
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
-		timeout: timeout,
+		timeout:  timeout,
+		jwtToken: jwtToken,
 	}
 }
 
@@ -115,16 +130,25 @@ func (c *VPSClient) FetchUsers(companyID string) ([]localstore.User, error) {
 	return users, nil
 }
 
-// SendConfirmation sends a confirmation to the VPS (legacy endpoint).
-// Calls POST /api/v1/tools/confirm
-// Deprecated: Use SendGatewayConfirmation instead for gateway-specific confirm endpoint.
+// SendConfirmation sends a confirmation to the VPS.
+// Calls POST /api/v1/tools/confirm (legacy endpoint)
 func (c *VPSClient) SendConfirmation(companyID, uii, action string) error {
-	url := fmt.Sprintf("%s/api/v1/tools/confirm", c.baseURL)
+	return c.SendConfirmationV2(companyID, uii, action, "")
+}
 
-	payload := map[string]string{
-		"company_id": companyID,
-		"uii":        uii,
-		"action":     action,
+// SendConfirmationV2 sends a confirmation to the VPS with optional antenna ID.
+// Calls POST /api/v1/gateway/confirm (new gateway-specific endpoint)
+// This endpoint requires GatewayAuth (JWT token).
+func (c *VPSClient) SendConfirmationV2(companyID, uii, action, antennaID string) error {
+	url := fmt.Sprintf("%s/api/v1/gateway/confirm", c.baseURL)
+
+	payload := GatewayConfirmRequest{
+		CompanyID: companyID,
+		UII:       uii,
+		Action:    action,
+	}
+	if antennaID != "" {
+		payload.AntennaID = &antennaID
 	}
 
 	jsonBody, err := json.Marshal(payload)
@@ -139,6 +163,10 @@ func (c *VPSClient) SendConfirmation(companyID, uii, action string) error {
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	// Add Authorization header for protected gateway endpoint
+	if c.jwtToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -154,16 +182,11 @@ func (c *VPSClient) SendConfirmation(companyID, uii, action string) error {
 	return nil
 }
 
-// SyncDataResponse is the envelope from the gateway sync-data endpoint.
-type SyncDataResponse struct {
-	Status    string                 `json:"status"`
-	Tools     []localstore.SyncDataItem `json:"tools"`
-	Timestamp string                 `json:"timestamp"`
-}
-
-// FetchSyncData retrieves flattened tool+tag data from the gateway sync endpoint.
+// FetchSyncData retrieves flattened tool+tag sync data from the VPS gateway endpoint.
 // Calls GET /api/v1/gateway/sync-data?company_id={company_id}
-func (c *VPSClient) FetchSyncData(companyID string) ([]localstore.SyncDataItem, error) {
+// This endpoint requires GatewayAuth (JWT token).
+// Returns *sync.SyncDataResponse to match the sync package VPSClient interface.
+func (c *VPSClient) FetchSyncData(companyID string) (*sync.SyncDataResponse, error) {
 	url := fmt.Sprintf("%s/api/v1/gateway/sync-data?company_id=%s", c.baseURL, companyID)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -172,6 +195,10 @@ func (c *VPSClient) FetchSyncData(companyID string) ([]localstore.SyncDataItem, 
 	}
 
 	req.Header.Set("Accept", "application/json")
+	// Add Authorization header for protected gateway endpoint
+	if c.jwtToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -188,7 +215,7 @@ func (c *VPSClient) FetchSyncData(companyID string) ([]localstore.SyncDataItem, 
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	var syncResp SyncDataResponse
+	var syncResp sync.SyncDataResponse
 	if err := json.Unmarshal(body, &syncResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
@@ -197,7 +224,7 @@ func (c *VPSClient) FetchSyncData(companyID string) ([]localstore.SyncDataItem, 
 		return nil, fmt.Errorf("unexpected response status: %s", syncResp.Status)
 	}
 
-	return syncResp.Tools, nil
+	return &syncResp, nil
 }
 
 // GatewayConfirmResponse is the response from the gateway confirm endpoint.
@@ -211,16 +238,17 @@ type GatewayConfirmResponse struct {
 
 // SendGatewayConfirmation sends a confirmation to the VPS gateway endpoint with antenna_id.
 // Calls POST /api/v1/gateway/confirm
+// This endpoint requires GatewayAuth (JWT token).
 func (c *VPSClient) SendGatewayConfirmation(companyID, uii, action, antennaID string) error {
 	url := fmt.Sprintf("%s/api/v1/gateway/confirm", c.baseURL)
 
-	payload := map[string]string{
-		"company_id": companyID,
-		"uii":        uii,
-		"action":     action,
+	payload := GatewayConfirmRequest{
+		CompanyID: companyID,
+		UII:       uii,
+		Action:    action,
 	}
 	if antennaID != "" {
-		payload["antenna_id"] = antennaID
+		payload.AntennaID = &antennaID
 	}
 
 	jsonBody, err := json.Marshal(payload)
@@ -235,6 +263,10 @@ func (c *VPSClient) SendGatewayConfirmation(companyID, uii, action, antennaID st
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	// Add Authorization header for protected gateway endpoint
+	if c.jwtToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
