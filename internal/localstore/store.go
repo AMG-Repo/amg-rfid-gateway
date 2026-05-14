@@ -508,10 +508,12 @@ func (s *LocalStore) IncrementRetryCount(id int64) error {
 	return err
 }
 
-// GetToolsCount returns count of cached tools.
+// GetToolsCount returns count of cached tool tags (individual RFID instances).
+// For normalized schema, this counts tool_tags table which represents actual
+// trackable items, not the tools table which only contains SKU master records.
 func (s *LocalStore) GetToolsCount() (int, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM tools`).Scan(&count)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM tool_tags WHERE active = 1`).Scan(&count)
 	return count, err
 }
 

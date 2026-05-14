@@ -874,9 +874,22 @@ func TestHandleStatus_VPSOnline(t *testing.T) {
 			company_id TEXT NOT NULL,
 			sku TEXT NOT NULL,
 			name TEXT NOT NULL,
+			description TEXT,
+			default_destination TEXT,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE tool_tags (
+			id INTEGER PRIMARY KEY,
+			tool_id INTEGER NOT NULL,
 			uii TEXT NOT NULL UNIQUE,
+			unit_number TEXT,
 			status TEXT,
 			location TEXT,
+			location_id INTEGER,
+			display_name TEXT,
+			notes TEXT,
+			active BOOLEAN DEFAULT 1,
+			kanban_zone TEXT,
 			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 	`)
@@ -886,15 +899,26 @@ func TestHandleStatus_VPSOnline(t *testing.T) {
 
 	store := localstore.New(db)
 
-	// Insert some tools
+	// Insert tool master records
 	_, err = db.Exec(`
-		INSERT INTO tools (id, company_id, sku, name, uii, status)
+		INSERT INTO tools (id, company_id, sku, name, description)
 		VALUES 
-			(1, 'comp-001', 'SKU-001', 'Tool 1', 'EPC-001', 'active'),
-			(2, 'comp-001', 'SKU-002', 'Tool 2', 'EPC-002', 'active')
+			(1, 'comp-001', 'SKU-001', 'Tool 1', 'Description 1'),
+			(2, 'comp-001', 'SKU-002', 'Tool 2', 'Description 2')
 	`)
 	if err != nil {
 		t.Fatalf("failed to insert tools: %v", err)
+	}
+
+	// Insert tool tags (actual RFID instances that GetToolsCount now counts)
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, active)
+		VALUES 
+			(1, 1, 'EPC-001', 'UNIT-001', 'active', 'Almacén General', 1),
+			(2, 2, 'EPC-002', 'UNIT-002', 'active', 'Línea 1', 1)
+	`)
+	if err != nil {
+		t.Fatalf("failed to insert tool tags: %v", err)
 	}
 
 	// Create pending confirmations

@@ -276,7 +276,12 @@ func (a *toolStoreAdapter) GetToolByUII(uii string) (*verify.Tool, error) {
 	// 2. Load master data from tools (SKU-level: name, default_destination)
 	var master *localstore.ToolRecord
 	if tag.ToolID > 0 {
-		master, _ = a.store.GetToolRecordByID(tag.ToolID)
+		var masterErr error
+		master, masterErr = a.store.GetToolRecordByID(tag.ToolID)
+		if masterErr != nil {
+			// Log the error but don't fail - tool tag data is sufficient for operation
+			log.Printf("[toolStoreAdapter] Failed to load master record for tool_id=%d, uii=%s: %v", tag.ToolID, uii, masterErr)
+		}
 	}
 
 	// 3. Merge into verify.Tool (normalized view)
