@@ -351,6 +351,11 @@ func TestToolsSync_SyncToolsAndUsers(t *testing.T) {
 		t.Fatal("Timeout waiting for users upsert")
 	}
 
+	// Small delay to allow setVPSOnline(true) to complete after UpsertUsers returns.
+	// This prevents a race condition where the channel send (buffered, non-blocking)
+	// returns before performSync() has called setVPSOnline(true).
+	time.Sleep(10 * time.Millisecond)
+
 	// Check VPS is marked as online
 	if !ts.IsVPSOnline() {
 		t.Error("VPS should be marked as online after successful sync")
@@ -575,6 +580,11 @@ func TestToolsSync_FlushWhenBackOnline(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 		t.Fatal("Timeout waiting for confirmation to be flushed after VPS came back online")
 	}
+
+	// Small delay to allow setVPSOnline(true) to complete after the confirmation is sent.
+	// This prevents a race condition where the channel send (buffered, non-blocking)
+	// returns before performFlush() has called setVPSOnline(true).
+	time.Sleep(10 * time.Millisecond)
 
 	// VPS should be marked as online
 	if !ts.IsVPSOnline() {

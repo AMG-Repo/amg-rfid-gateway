@@ -671,26 +671,38 @@ func TestGetToolsCount(t *testing.T) {
 		t.Errorf("expected 0 tools initially, got %d", count)
 	}
 
-	// Insert tools using normalized schema
+	// Insert master tool records first (required for FK constraint)
 	now := time.Now()
 	_, err = db.Exec(`
 		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
 		VALUES 
 			(1, 'comp-001', 'SKU-001', 'Tool One', 'Desc 1', 'Loc 1', ?),
-			(2, 'comp-001', 'SKU-002', 'Tool Two', 'Desc 2', 'Loc 2', ?),
-			(3, 'comp-001', 'SKU-003', 'Tool Three', 'Desc 3', 'Loc 3', ?)
-	`, now, now, now)
+			(2, 'comp-001', 'SKU-002', 'Tool Two', 'Desc 2', 'Loc 2', ?)
+	`, now, now)
 	if err != nil {
 		t.Fatalf("failed to insert tools: %v", err)
 	}
 
-	// Should be 3
+	// Insert tool tags (actual RFID instances) - only active ones count
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, active, last_synced_at)
+		VALUES 
+			(1, 1, 'EPC-001', 'UNIT-001', 'active', 'Almacén General', 1, ?),
+			(2, 1, 'EPC-002', 'UNIT-002', 'active', 'Almacén General', 1, ?),
+			(3, 2, 'EPC-003', 'UNIT-003', 'active', 'Línea 1', 1, ?),
+			(4, 2, 'EPC-004', 'UNIT-004', 'inactive', 'Línea 2', 0, ?)
+	`, now, now, now, now)
+	if err != nil {
+		t.Fatalf("failed to insert tool tags: %v", err)
+	}
+
+	// Should be 3 (only active tool_tags count, excluding inactive EPC-004)
 	count, err = store.GetToolsCount()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if count != 3 {
-		t.Errorf("expected 3 tools, got %d", count)
+		t.Errorf("expected 3 active tool tags, got %d", count)
 	}
 }
 

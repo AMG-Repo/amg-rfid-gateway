@@ -140,6 +140,13 @@ func (c *VPSClient) SendConfirmation(companyID, uii, action string) error {
 // Calls POST /api/v1/gateway/confirm (new gateway-specific endpoint)
 // This endpoint requires GatewayAuth (JWT token).
 func (c *VPSClient) SendConfirmationV2(companyID, uii, action, antennaID string) error {
+	_, err := c.sendGatewayConfirmation(companyID, uii, action, antennaID)
+	return err
+}
+
+// sendGatewayConfirmation is the internal implementation for gateway confirm.
+// It performs the HTTP request and returns the response body for parsing.
+func (c *VPSClient) sendGatewayConfirmation(companyID, uii, action, antennaID string) ([]byte, error) {
 	url := fmt.Sprintf("%s/api/v1/gateway/confirm", c.baseURL)
 
 	payload := GatewayConfirmRequest{
@@ -153,12 +160,12 @@ func (c *VPSClient) SendConfirmationV2(companyID, uii, action, antennaID string)
 
 	jsonBody, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonBody))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -170,16 +177,20 @@ func (c *VPSClient) SendConfirmationV2(companyID, uii, action, antennaID string)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	return nil
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return body, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	return body, nil
 }
 
 // FetchSyncData retrieves flattened tool+tag sync data from the VPS gateway endpoint.
@@ -239,52 +250,14 @@ type GatewayConfirmResponse struct {
 // SendGatewayConfirmation sends a confirmation to the VPS gateway endpoint with antenna_id.
 // Calls POST /api/v1/gateway/confirm
 // This endpoint requires GatewayAuth (JWT token).
+// Deprecated: Use SendConfirmationV2 instead. This method is kept for backward compatibility.
 func (c *VPSClient) SendGatewayConfirmation(companyID, uii, action, antennaID string) error {
-	url := fmt.Sprintf("%s/api/v1/gateway/confirm", c.baseURL)
-
-	payload := GatewayConfirmRequest{
-		CompanyID: companyID,
-		UII:       uii,
-		Action:    action,
-	}
-	if antennaID != "" {
-		payload.AntennaID = &antennaID
-	}
-
-	jsonBody, err := json.Marshal(payload)
+	body, err := c.sendGatewayConfirmation(companyID, uii, action, antennaID)
 	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	// Add Authorization header for protected gateway endpoint
-	if c.jwtToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+		return err
 	}
 
 	// Parse response to verify success
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
 	var confirmResp GatewayConfirmResponse
 	if err := json.Unmarshal(body, &confirmResp); err != nil {
 		// Non-JSON success response is acceptable

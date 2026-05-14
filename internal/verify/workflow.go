@@ -42,31 +42,9 @@ type ToolStore interface {
 	GetToolByUII(uii string) (*Tool, error)
 }
 
-// NormalizedStore defines the interface for normalized schema lookups.
-// Supports the tools + tool_tags JOIN pattern for offline resolution.
-type NormalizedStore interface {
-	ToolStore
-	GetToolTagByUII(uii string) (*ToolTagInfo, error)
-	GetToolRecordByID(id int64) (*ToolMasterInfo, error)
-}
-
-// ToolTagInfo holds per-tag state from tool_tags table.
-type ToolTagInfo struct {
-	ID         int64   `json:"id"`
-	ToolID     int64   `json:"tool_id"`
-	UII        string  `json:"uii"`
-	Location   string  `json:"location"`
-	Status     string  `json:"status"`
-	KanbanZone *string `json:"kanban_zone,omitempty"`
-}
-
-// ToolMasterInfo holds SKU-level data from tools table.
-type ToolMasterInfo struct {
-	ID                 int64   `json:"id"`
-	SKU                string  `json:"sku"`
-	Name               string  `json:"name"`
-	DefaultDestination *string `json:"default_destination,omitempty"`
-}
+// Note: The NormalizedStore interface and related types (ToolTagInfo, ToolMasterInfo)
+// were removed as they were unused. The adapter pattern in cmd/gateway/main.go
+// directly uses localstore types for normalized schema lookups.
 
 // Verifier handles verification workflow logic.
 type Verifier struct {
