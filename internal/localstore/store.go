@@ -27,7 +27,7 @@ type ToolRecord struct {
 	CompanyID          string    `json:"company_id"`
 	SKU                string    `json:"sku"`
 	Name               string    `json:"name"`
-	Description        string    `json:"description"`
+	Description        *string   `json:"description,omitempty"`
 	DefaultDestination *string   `json:"default_destination,omitempty"`
 	LastSyncedAt       time.Time `json:"last_synced_at"`
 }
@@ -37,11 +37,11 @@ type ToolTagRecord struct {
 	ID           int64     `json:"id"`
 	ToolID       int64     `json:"tool_id"`
 	UII          string    `json:"uii"`
-	UnitNumber   string    `json:"unit_number"`
+	UnitNumber   *string   `json:"unit_number,omitempty"`
 	Status       string    `json:"status"`
-	Location     string    `json:"location"`
+	Location     *string   `json:"location,omitempty"`
 	LocationID   *int64    `json:"location_id,omitempty"`
-	DisplayName  string    `json:"display_name"`
+	DisplayName  *string   `json:"display_name,omitempty"`
 	Notes        *string   `json:"notes,omitempty"`
 	Active       bool      `json:"active"`
 	KanbanZone   *string   `json:"kanban_zone,omitempty"`
@@ -56,12 +56,12 @@ type SyncDataItem struct {
 	UII             string  `json:"uii"`
 	SKU             string  `json:"sku"`
 	Name            string  `json:"name"`
-	Description     string  `json:"description"`
+	Description     *string `json:"description,omitempty"`
 	Status          string  `json:"status"`
-	Location        string  `json:"location"`
+	Location        *string `json:"location,omitempty"`
 	LocationID      *int64  `json:"location_id,omitempty"`
-	UnitNumber      string  `json:"unit_number"`
-	DisplayName     string  `json:"display_name"`
+	UnitNumber      *string `json:"unit_number,omitempty"`
+	DisplayName     *string `json:"display_name,omitempty"`
 	Notes           *string `json:"notes,omitempty"`
 	Active          bool    `json:"active"`
 	KanbanZone      *string `json:"kanban_zone,omitempty"`
@@ -102,8 +102,27 @@ func New(db *sql.DB) *LocalStore {
 	return &LocalStore{db: db}
 }
 
+// toNullString converts a *string to sql.NullString.
+// nil -> SQL NULL, non-nil -> the string value (including empty string).
+func toNullString(s *string) sql.NullString {
+	if s == nil {
+		return sql.NullString{Valid: false}
+	}
+	return sql.NullString{String: *s, Valid: true}
+}
+
+// scanNullStringPtr scans a sql.NullString into a *string.
+// Valid=false -> nil, Valid=true -> pointer to the string value.
+func scanNullStringPtr(ns sql.NullString) *string {
+	if !ns.Valid {
+		return nil
+	}
+	return &ns.String
+}
+
 // GetToolByUII retrieves a tool by UII (EPC) using normalized schema.
 // Performs a JOIN between tool_tags and tools to get complete metadata.
+// Legacy adapter: NULL values are mapped to empty strings for backward compatibility.
 func (s *LocalStore) GetToolByUII(uii string) (*Tool, error) {
 	row := s.db.QueryRow(`
 		SELECT tt.id, t.company_id, t.sku, t.name, t.description, tt.uii, tt.status, tt.location, tt.last_synced_at
@@ -113,15 +132,16 @@ func (s *LocalStore) GetToolByUII(uii string) (*Tool, error) {
 	`, uii)
 
 	var tool Tool
+	var description, location sql.NullString
 	err := row.Scan(
 		&tool.ID,
 		&tool.CompanyID,
 		&tool.SKU,
 		&tool.Name,
-		&tool.Description,
+		&description,
 		&tool.UII,
 		&tool.Status,
-		&tool.Location,
+		&location,
 		&tool.LastSyncedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -130,6 +150,11 @@ func (s *LocalStore) GetToolByUII(uii string) (*Tool, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Adapter boundary: NULL -> ""
+	tool.Description = description.String // Empty string if NULL
+	tool.Location = location.String       // Empty string if NULL
+
 	return &tool, nil
 }
 
@@ -294,8 +319,8 @@ func (s *LocalStore) UpsertToolsFromSync(rows []SyncDataItem) error {
 	for _, row := range rows {
 		// Upsert tool master record (using ToolID from sync data)
 		defaultDest := row.ToolDestination
-		if defaultDest == nil || *defaultDest == "" {
-			defaultDest = &row.Location
+		if defaultDest == nil && row.Location != nil && *row.Location != "" {
+			defaultDest = row.Location
 		}
 
 		_, err := toolStmt.Exec(
@@ -303,8 +328,8 @@ func (s *LocalStore) UpsertToolsFromSync(rows []SyncDataItem) error {
 			"", // company_id not provided in sync data
 			row.SKU,
 			row.Name,
-			row.Description,
-			defaultDest,
+			toNullString(row.Description),
+			toNullString(defaultDest),
 			now,
 		)
 		if err != nil {
@@ -312,11 +337,6 @@ func (s *LocalStore) UpsertToolsFromSync(rows []SyncDataItem) error {
 		}
 
 		// Upsert tool tag record
-		location := row.Location
-		if location == "" {
-			location = "Almacén General"
-		}
-
 		var locationID sql.NullInt64
 		if row.LocationID != nil {
 			locationID.Int64 = *row.LocationID
@@ -327,11 +347,11 @@ func (s *LocalStore) UpsertToolsFromSync(rows []SyncDataItem) error {
 			row.ID,        // tag id
 			row.ToolID,    // references tools.id
 			row.UII,
-			row.UnitNumber,
+			toNullString(row.UnitNumber),
 			row.Status,
-			location,
+			toNullString(row.Location),
 			locationID,
-			row.DisplayName,
+			toNullString(row.DisplayName),
 			row.Notes,
 			row.Active,
 			row.KanbanZone,
@@ -594,11 +614,11 @@ func (s *LocalStore) UpsertToolTags(tags []ToolTagRecord) error {
 			tag.ID,
 			tag.ToolID,
 			tag.UII,
-			tag.UnitNumber,
+			toNullString(tag.UnitNumber),
 			tag.Status,
-			tag.Location,
+			toNullString(tag.Location),
 			tag.LocationID,
-			tag.DisplayName,
+			toNullString(tag.DisplayName),
 			tag.Notes,
 			tag.Active,
 			tag.KanbanZone,
@@ -621,15 +641,16 @@ func (s *LocalStore) GetToolTagByUII(uii string) (*ToolTagRecord, error) {
 	`, uii)
 
 	var tag ToolTagRecord
+	var unitNumber, location, displayName sql.NullString
 	err := row.Scan(
 		&tag.ID,
 		&tag.ToolID,
 		&tag.UII,
-		&tag.UnitNumber,
+		&unitNumber,
 		&tag.Status,
-		&tag.Location,
+		&location,
 		&tag.LocationID,
-		&tag.DisplayName,
+		&displayName,
 		&tag.Notes,
 		&tag.Active,
 		&tag.KanbanZone,
@@ -641,6 +662,11 @@ func (s *LocalStore) GetToolTagByUII(uii string) (*ToolTagRecord, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	tag.UnitNumber = scanNullStringPtr(unitNumber)
+	tag.Location = scanNullStringPtr(location)
+	tag.DisplayName = scanNullStringPtr(displayName)
+
 	return &tag, nil
 }
 
@@ -659,15 +685,16 @@ func (s *LocalStore) GetToolTagsByToolID(toolID int64) ([]ToolTagRecord, error) 
 	var tags []ToolTagRecord
 	for rows.Next() {
 		var tag ToolTagRecord
+		var unitNumber, location, displayName sql.NullString
 		err := rows.Scan(
 			&tag.ID,
 			&tag.ToolID,
 			&tag.UII,
-			&tag.UnitNumber,
+			&unitNumber,
 			&tag.Status,
-			&tag.Location,
+			&location,
 			&tag.LocationID,
-			&tag.DisplayName,
+			&displayName,
 			&tag.Notes,
 			&tag.Active,
 			&tag.KanbanZone,
@@ -676,6 +703,11 @@ func (s *LocalStore) GetToolTagsByToolID(toolID int64) ([]ToolTagRecord, error) 
 		if err != nil {
 			continue
 		}
+
+		tag.UnitNumber = scanNullStringPtr(unitNumber)
+		tag.Location = scanNullStringPtr(location)
+		tag.DisplayName = scanNullStringPtr(displayName)
+
 		tags = append(tags, tag)
 	}
 
@@ -718,7 +750,7 @@ func (s *LocalStore) UpsertToolsRecords(tools []ToolRecord) error {
 			tool.CompanyID,
 			tool.SKU,
 			tool.Name,
-			tool.Description,
+			toNullString(tool.Description),
 			tool.DefaultDestination,
 			now,
 		)
@@ -739,12 +771,13 @@ func (s *LocalStore) GetToolRecordByID(id int64) (*ToolRecord, error) {
 	`, id)
 
 	var tool ToolRecord
+	var description sql.NullString
 	err := row.Scan(
 		&tool.ID,
 		&tool.CompanyID,
 		&tool.SKU,
 		&tool.Name,
-		&tool.Description,
+		&description,
 		&tool.DefaultDestination,
 		&tool.LastSyncedAt,
 	)
@@ -754,5 +787,7 @@ func (s *LocalStore) GetToolRecordByID(id int64) (*ToolRecord, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	tool.Description = scanNullStringPtr(description)
 	return &tool, nil
 }

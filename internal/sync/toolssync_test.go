@@ -11,6 +11,11 @@ import (
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 )
 
+// Helper function for string pointers
+func strPtr(s string) *string {
+	return &s
+}
+
 // mockVPSClient is a mock implementation for testing
 type mockVPSClient struct {
 	fetchToolsFunc    func(companyID string) ([]localstore.Tool, error)
@@ -270,7 +275,7 @@ func TestToolsSync_SyncToolsAndUsers(t *testing.T) {
 						SKU:      "TOOL-001",
 						Name:     "Hammer",
 						Status:   "active",
-						Location: "Almacen A",
+						Location: strPtr("Almacen A"),
 					},
 				},
 			}, nil
@@ -581,14 +586,21 @@ func TestToolsSync_FlushWhenBackOnline(t *testing.T) {
 		t.Fatal("Timeout waiting for confirmation to be flushed after VPS came back online")
 	}
 
-	// Small delay to allow setVPSOnline(true) to complete after the confirmation is sent.
-	// This prevents a race condition where the channel send (buffered, non-blocking)
-	// returns before performFlush() has called setVPSOnline(true).
-	time.Sleep(10 * time.Millisecond)
+	// Wait until the async flush path marks VPS as online.
+	deadline := time.After(200 * time.Millisecond)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
 
-	// VPS should be marked as online
-	if !ts.IsVPSOnline() {
-		t.Error("VPS should be marked as online")
+	for {
+		if ts.IsVPSOnline() {
+			break
+		}
+
+		select {
+		case <-deadline:
+			t.Fatal("Timeout waiting for VPS to be marked as online")
+		case <-ticker.C:
+		}
 	}
 }
 

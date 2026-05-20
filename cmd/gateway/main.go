@@ -285,13 +285,19 @@ func (a *toolStoreAdapter) GetToolByUII(uii string) (*verify.Tool, error) {
 	}
 
 	// 3. Merge into verify.Tool (normalized view)
+	// Adapter boundary: nil -> ""
 	tool := &verify.Tool{
 		ID:         tag.ID,
 		ToolID:     tag.ToolID,
 		UII:        tag.UII,
-		Location:   tag.Location,
+		Location:   "",
 		Status:     tag.Status,
 		KanbanZone: tag.KanbanZone,
+	}
+
+	// Map nil Location to empty string for backward compatibility
+	if tag.Location != nil {
+		tool.Location = *tag.Location
 	}
 
 	// Add master data if available

@@ -973,7 +973,7 @@ func TestUpsertToolsFromSync_Insert(t *testing.T) {
 			SKU:      "SKU-001",
 			Name:     "Tool One",
 			Status:   "available",
-			Location: "Almacén General",
+			Location: strPtr("Almacén General"),
 			Active:   true,
 		},
 		{
@@ -983,7 +983,7 @@ func TestUpsertToolsFromSync_Insert(t *testing.T) {
 			SKU:      "SKU-001",
 			Name:     "Tool One",
 			Status:   "in_use",
-			Location: "Línea 1",
+			Location: strPtr("Línea 1"),
 			Active:   true,
 		},
 	}
@@ -1019,8 +1019,8 @@ func TestUpsertToolsFromSync_Insert(t *testing.T) {
 	if tag1.Status != "available" {
 		t.Errorf("expected Status 'available', got %q", tag1.Status)
 	}
-	if tag1.Location != "Almacén General" {
-		t.Errorf("expected Location 'Almacén General', got %q", tag1.Location)
+	if tag1.Location == nil || *tag1.Location != "Almacén General" {
+		t.Errorf("expected Location 'Almacén General', got %v", tag1.Location)
 	}
 
 	tag2, err := store.GetToolTagByUII("EPC-002")
@@ -1030,8 +1030,8 @@ func TestUpsertToolsFromSync_Insert(t *testing.T) {
 	if tag2 == nil {
 		t.Fatal("expected tag 2 to exist")
 	}
-	if tag2.Location != "Línea 1" {
-		t.Errorf("expected Location 'Línea 1', got %q", tag2.Location)
+	if tag2.Location == nil || *tag2.Location != "Línea 1" {
+		t.Errorf("expected Location 'Línea 1', got %v", tag2.Location)
 	}
 
 	// Verify legacy GetToolByUII still works via JOIN
@@ -1079,7 +1079,7 @@ func TestUpsertToolsFromSync_Update(t *testing.T) {
 			SKU:      "SKU-001",
 			Name:     "New Name",
 			Status:   "in_use",
-			Location: "New Location",
+			Location: strPtr("New Location"),
 			Active:   true,
 		},
 	}
@@ -1106,8 +1106,8 @@ func TestUpsertToolsFromSync_Update(t *testing.T) {
 	if tag.Status != "in_use" {
 		t.Errorf("expected Status 'in_use', got %q", tag.Status)
 	}
-	if tag.Location != "New Location" {
-		t.Errorf("expected Location 'New Location', got %q", tag.Location)
+	if tag.Location == nil || *tag.Location != "New Location" {
+		t.Errorf("expected Location 'New Location', got %v", tag.Location)
 	}
 
 	// Verify legacy GetToolByUII still works
@@ -1123,13 +1123,13 @@ func TestUpsertToolsFromSync_Update(t *testing.T) {
 	}
 }
 
-func TestUpsertToolsFromSync_EmptyLocationFallback(t *testing.T) {
+func TestUpsertToolsFromSync_NilLocationPreservesNull(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
 
 	store := New(db)
 
-	// Insert with empty location (should default to "Almacén General")
+	// Insert with nil location (should preserve NULL in database, not default)
 	rows := []SyncDataItem{
 		{
 			ID:       1,
@@ -1138,7 +1138,7 @@ func TestUpsertToolsFromSync_EmptyLocationFallback(t *testing.T) {
 			SKU:      "SKU-001",
 			Name:     "Tool One",
 			Status:   "available",
-			Location: "", // Empty location
+			Location: nil, // Nil location - should store as NULL
 			Active:   true,
 		},
 	}
@@ -1148,22 +1148,22 @@ func TestUpsertToolsFromSync_EmptyLocationFallback(t *testing.T) {
 		t.Fatalf("failed to upsert tools from sync: %v", err)
 	}
 
-	// Verify tag location defaults to "Almacén General"
+	// Verify tag location is nil (NULL in database)
 	tag, err := store.GetToolTagByUII("EPC-001")
 	if err != nil {
 		t.Fatalf("failed to get tag: %v", err)
 	}
-	if tag.Location != "Almacén General" {
-		t.Errorf("expected Location 'Almacén General' for empty input, got %q", tag.Location)
+	if tag.Location != nil {
+		t.Errorf("expected Location to be nil for nil input, got %v", *tag.Location)
 	}
 
-	// Verify legacy GetToolByUII also gets the defaulted location
+	// Verify legacy GetToolByUII gets empty string for NULL location
 	tool, err := store.GetToolByUII("EPC-001")
 	if err != nil {
 		t.Fatalf("failed to get tool: %v", err)
 	}
-	if tool.Location != "Almacén General" {
-		t.Errorf("expected Location 'Almacén General' via legacy method, got %q", tool.Location)
+	if tool.Location != "" {
+		t.Errorf("expected Location '' via legacy method (NULL maps to empty), got %q", tool.Location)
 	}
 }
 
@@ -1212,20 +1212,20 @@ func TestUpsertToolTags_Insert(t *testing.T) {
 			ID:          1,
 			ToolID:      10,
 			UII:         "EPC-001",
-			UnitNumber:  "001",
+			UnitNumber:  strPtr("001"),
 			Status:      "available",
-			Location:    "Warehouse A",
-			DisplayName: "Tool One",
+			Location:    strPtr("Warehouse A"),
+			DisplayName: strPtr("Tool One"),
 			Active:      true,
 		},
 		{
 			ID:          2,
 			ToolID:      10,
 			UII:         "EPC-002",
-			UnitNumber:  "002",
+			UnitNumber:  strPtr("002"),
 			Status:      "in_use",
-			Location:    "Line 1",
-			DisplayName: "Tool Two",
+			Location:    strPtr("Line 1"),
+			DisplayName: strPtr("Tool Two"),
 			Active:      true,
 		},
 	}
@@ -1276,11 +1276,11 @@ func TestUpsertToolTags_Update(t *testing.T) {
 			ID:          1,
 			ToolID:      10,
 			UII:         "EPC-001",
-			UnitNumber:  "001",
-			Status:      "in_use",       // Changed
-			Location:    "Line 1",       // Changed
-			DisplayName: "Updated Name", // Changed
-			Active:      false,          // Changed
+			UnitNumber:  strPtr("001"),
+			Status:      "in_use",           // Changed
+			Location:    strPtr("Line 1"),   // Changed
+			DisplayName: strPtr("Updated Name"), // Changed
+			Active:      false,              // Changed
 		},
 	}
 
@@ -1297,11 +1297,11 @@ func TestUpsertToolTags_Update(t *testing.T) {
 	if tag.Status != "in_use" {
 		t.Errorf("expected Status 'in_use', got %s", tag.Status)
 	}
-	if tag.Location != "Line 1" {
-		t.Errorf("expected Location 'Line 1', got %s", tag.Location)
+	if tag.Location == nil || *tag.Location != "Line 1" {
+		t.Errorf("expected Location 'Line 1', got %v", tag.Location)
 	}
-	if tag.DisplayName != "Updated Name" {
-		t.Errorf("expected DisplayName 'Updated Name', got %s", tag.DisplayName)
+	if tag.DisplayName == nil || *tag.DisplayName != "Updated Name" {
+		t.Errorf("expected DisplayName 'Updated Name', got %v", tag.DisplayName)
 	}
 	if tag.Active {
 		t.Error("expected Active to be false")
@@ -1332,6 +1332,15 @@ func TestGetToolTagByUII_Existing(t *testing.T) {
 		t.Fatalf("failed to insert tag: %v", err)
 	}
 
+	// Test nil/null values
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, display_name, active, last_synced_at)
+		VALUES (2, 10, 'EPC-002', NULL, 'available', NULL, NULL, 1, ?)
+	`, now)
+	if err != nil {
+		t.Fatalf("failed to insert tag with nulls: %v", err)
+	}
+
 	// Get the tag
 	tag, err := store.GetToolTagByUII("EPC-001")
 	if err != nil {
@@ -1350,17 +1359,17 @@ func TestGetToolTagByUII_Existing(t *testing.T) {
 	if tag.UII != "EPC-001" {
 		t.Errorf("expected UII 'EPC-001', got %s", tag.UII)
 	}
-	if tag.UnitNumber != "001" {
-		t.Errorf("expected UnitNumber '001', got %s", tag.UnitNumber)
+	if tag.UnitNumber == nil || *tag.UnitNumber != "001" {
+		t.Errorf("expected UnitNumber '001', got %v", tag.UnitNumber)
 	}
 	if tag.Status != "available" {
 		t.Errorf("expected Status 'available', got %s", tag.Status)
 	}
-	if tag.Location != "Warehouse A" {
-		t.Errorf("expected Location 'Warehouse A', got %s", tag.Location)
+	if tag.Location == nil || *tag.Location != "Warehouse A" {
+		t.Errorf("expected Location 'Warehouse A', got %v", tag.Location)
 	}
-	if tag.DisplayName != "Test Tag" {
-		t.Errorf("expected DisplayName 'Test Tag', got %s", tag.DisplayName)
+	if tag.DisplayName == nil || *tag.DisplayName != "Test Tag" {
+		t.Errorf("expected DisplayName 'Test Tag', got %v", tag.DisplayName)
 	}
 	if !tag.Active {
 		t.Error("expected Active to be true")
@@ -1449,14 +1458,14 @@ func TestUpsertToolsRecords_Insert(t *testing.T) {
 			CompanyID:   "comp-001",
 			SKU:         "SKU-001",
 			Name:        "Tool One",
-			Description: "Description 1",
+			Description: strPtr("Description 1"),
 		},
 		{
 			ID:          2,
 			CompanyID:   "comp-001",
 			SKU:         "SKU-002",
 			Name:        "Tool Two",
-			Description: "Description 2",
+			Description: strPtr("Description 2"),
 		},
 	}
 
@@ -1497,11 +1506,11 @@ func TestUpsertToolsRecords_Update(t *testing.T) {
 	updatedTools := []ToolRecord{
 		{
 			ID:                 1,
-			CompanyID:          "comp-002",     // Changed
+			CompanyID:          "comp-002",              // Changed
 			SKU:                "SKU-001",
-			Name:               "New Name",     // Changed
-			Description:        "New Desc",     // Changed
-			DefaultDestination: strPtr("New Location"), // Changed
+			Name:               "New Name",              // Changed
+			Description:        strPtr("New Desc"),      // Changed
+			DefaultDestination: strPtr("New Location"),  // Changed
 		},
 	}
 
@@ -1521,8 +1530,8 @@ func TestUpsertToolsRecords_Update(t *testing.T) {
 	if tool.Name != "New Name" {
 		t.Errorf("expected Name 'New Name', got %s", tool.Name)
 	}
-	if tool.Description != "New Desc" {
-		t.Errorf("expected Description 'New Desc', got %s", tool.Description)
+	if tool.Description == nil || *tool.Description != "New Desc" {
+		t.Errorf("expected Description 'New Desc', got %v", tool.Description)
 	}
 	if tool.DefaultDestination == nil || *tool.DefaultDestination != "New Location" {
 		t.Errorf("expected DefaultDestination 'New Location', got %v", tool.DefaultDestination)
@@ -1567,8 +1576,8 @@ func TestGetToolRecordByID_Existing(t *testing.T) {
 	if tool.Name != "Test Tool" {
 		t.Errorf("expected Name 'Test Tool', got %s", tool.Name)
 	}
-	if tool.Description != "Description" {
-		t.Errorf("expected Description 'Description', got %s", tool.Description)
+	if tool.Description == nil || *tool.Description != "Description" {
+		t.Errorf("expected Description 'Description', got %v", tool.Description)
 	}
 	if tool.DefaultDestination == nil || *tool.DefaultDestination != "Warehouse A" {
 		t.Errorf("expected DefaultDestination 'Warehouse A', got %v", tool.DefaultDestination)
@@ -1594,4 +1603,159 @@ func TestGetToolRecordByID_NotFound(t *testing.T) {
 // Helper function for string pointers
 func strPtr(s string) *string {
 	return &s
+}
+
+// Test NULL preservation for optional fields (sync-nullability requirement)
+func TestNullability_PreservesNullInDatabase(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+	now := time.Now()
+
+	// Insert tool master record with nil description
+	_, err := db.Exec(`
+		INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at)
+		VALUES (10, 'comp-001', 'SKU-001', 'Test Tool', NULL, 'Warehouse A', ?)
+	`, now)
+	if err != nil {
+		t.Fatalf("failed to insert tool with NULL description: %v", err)
+	}
+
+	// Insert tool tag with NULL optional fields
+	_, err = db.Exec(`
+		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, display_name, active, last_synced_at)
+		VALUES (1, 10, 'EPC-001', NULL, 'available', NULL, NULL, 1, ?)
+	`, now)
+	if err != nil {
+		t.Fatalf("failed to insert tag with NULL fields: %v", err)
+	}
+
+	// Verify ToolRecord reads NULL as nil
+	toolRecord, err := store.GetToolRecordByID(10)
+	if err != nil {
+		t.Fatalf("failed to get tool record: %v", err)
+	}
+	if toolRecord.Description != nil {
+		t.Errorf("expected Description to be nil, got %v", *toolRecord.Description)
+	}
+
+	// Verify ToolTagRecord reads NULL as nil
+	tag, err := store.GetToolTagByUII("EPC-001")
+	if err != nil {
+		t.Fatalf("failed to get tool tag: %v", err)
+	}
+	if tag.UnitNumber != nil {
+		t.Errorf("expected UnitNumber to be nil, got %v", *tag.UnitNumber)
+	}
+	if tag.Location != nil {
+		t.Errorf("expected Location to be nil, got %v", *tag.Location)
+	}
+	if tag.DisplayName != nil {
+		t.Errorf("expected DisplayName to be nil, got %v", *tag.DisplayName)
+	}
+
+	// Verify legacy GetToolByUII maps NULL to empty string
+	tool, err := store.GetToolByUII("EPC-001")
+	if err != nil {
+		t.Fatalf("failed to get tool via legacy method: %v", err)
+	}
+	if tool.Description != "" {
+		t.Errorf("expected legacy Description to be empty string, got %q", tool.Description)
+	}
+	if tool.Location != "" {
+		t.Errorf("expected legacy Location to be empty string, got %q", tool.Location)
+	}
+}
+
+// Test UpsertToolsFromSync stores nil as NULL
+func TestNullability_UpsertStoresNilAsNull(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	// Insert with nil optional fields
+	rows := []SyncDataItem{
+		{
+			ID:          1,
+			ToolID:      10,
+			UII:         "EPC-001",
+			SKU:         "SKU-001",
+			Name:        "Test Tool",
+			Description: nil, // nil -> NULL
+			Status:      "available",
+			Location:    nil, // nil -> NULL
+			UnitNumber:  nil, // nil -> NULL
+			DisplayName: nil, // nil -> NULL
+			Active:      true,
+		},
+	}
+
+	err := store.UpsertToolsFromSync(rows)
+	if err != nil {
+		t.Fatalf("failed to upsert: %v", err)
+	}
+
+	// Verify NULL was stored
+	var description sql.NullString
+	err = db.QueryRow("SELECT description FROM tools WHERE id = 10").Scan(&description)
+	if err != nil {
+		t.Fatalf("failed to query description: %v", err)
+	}
+	if description.Valid {
+		t.Errorf("expected description to be NULL, got %q", description.String)
+	}
+
+	var location sql.NullString
+	err = db.QueryRow("SELECT location FROM tool_tags WHERE uii = 'EPC-001'").Scan(&location)
+	if err != nil {
+		t.Fatalf("failed to query location: %v", err)
+	}
+	if location.Valid {
+		t.Errorf("expected location to be NULL, got %q", location.String)
+	}
+}
+
+// Test UpsertToolsFromSync stores empty string as empty string (not NULL)
+func TestNullability_UpsertStoresEmptyStringAsEmpty(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	store := New(db)
+
+	emptyStr := ""
+	// Insert with empty string (not nil)
+	rows := []SyncDataItem{
+		{
+			ID:          1,
+			ToolID:      10,
+			UII:         "EPC-001",
+			SKU:         "SKU-001",
+			Name:        "Test Tool",
+			Description: &emptyStr, // "" -> ""
+			Status:      "available",
+			Location:    &emptyStr, // "" -> ""
+			UnitNumber:  &emptyStr, // "" -> ""
+			DisplayName: &emptyStr, // "" -> ""
+			Active:      true,
+		},
+	}
+
+	err := store.UpsertToolsFromSync(rows)
+	if err != nil {
+		t.Fatalf("failed to upsert: %v", err)
+	}
+
+	// Verify empty string was stored (not NULL)
+	var description sql.NullString
+	err = db.QueryRow("SELECT description FROM tools WHERE id = 10").Scan(&description)
+	if err != nil {
+		t.Fatalf("failed to query description: %v", err)
+	}
+	if !description.Valid {
+		t.Error("expected description to be valid (not NULL)")
+	} else if description.String != "" {
+		t.Errorf("expected description to be empty string, got %q", description.String)
+	}
 }
