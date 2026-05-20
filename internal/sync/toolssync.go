@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -187,6 +188,12 @@ func (t *ToolsSync) performSync() {
 	seenToolIDs := make(map[int64]bool)
 
 	for _, item := range syncResp.Tools {
+		// Validate SKU is non-empty and non-whitespace
+		if strings.TrimSpace(item.SKU) == "" {
+			log.Printf("[ToolsSync] Skipping item ID=%d: missing or empty SKU (UII=%s)", item.ID, item.UII)
+			continue
+		}
+
 		// Only upsert each tool master once
 		if !seenToolIDs[item.ToolID] {
 			seenToolIDs[item.ToolID] = true

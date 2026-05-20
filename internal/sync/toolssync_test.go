@@ -650,3 +650,368 @@ done:
 		t.Errorf("Expected 5 confirmations sent, got %d: %v", len(sentUIIs), sentUIIs)
 	}
 }
+
+// TestToolsSync_SKUValidation_EmptySKURejected tests that items with empty SKU are rejected
+func TestToolsSync_SKUValidation_EmptySKURejected(t *testing.T) {
+	toolsRecordsUpserted := make(chan []localstore.ToolRecord, 1)
+	toolTagsUpserted := make(chan []localstore.ToolTagRecord, 1)
+
+	vpsClient := &mockVPSClient{
+		fetchSyncDataFunc: func(companyID string) (*SyncDataResponse, error) {
+			return &SyncDataResponse{
+				Status: "OK",
+				Tools: []localstore.SyncDataItem{
+					{
+						ID:       1,
+						ToolID:   1,
+						UII:      "E200123456",
+						SKU:      "", // Empty SKU - should be rejected
+						Name:     "Invalid Tool",
+						Status:   "active",
+					},
+				},
+			}, nil
+		},
+		fetchUsersFunc: func(companyID string) ([]localstore.User, error) {
+			return []localstore.User{}, nil
+		},
+	}
+
+	store := &mockLocalStore{
+		toolsUpsertedFunc: func(tools []localstore.ToolRecord) error {
+			toolsRecordsUpserted <- tools
+			return nil
+		},
+		toolTagsUpsertedFunc: func(tags []localstore.ToolTagRecord) error {
+			toolTagsUpserted <- tags
+			return nil
+		},
+	}
+
+	ts := NewToolsSync(vpsClient, store, "company123", 1*time.Hour, 1*time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := ts.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ts.Stop()
+
+	// Wait a bit for sync to run
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify no tools were upserted (empty SKU rejected)
+	select {
+	case tools := <-toolsRecordsUpserted:
+		if len(tools) > 0 {
+			t.Errorf("Expected 0 tool records upserted (empty SKU rejected), got %d", len(tools))
+		}
+	case <-time.After(200 * time.Millisecond):
+		// Expected - no upserts should happen
+	}
+
+	select {
+	case tags := <-toolTagsUpserted:
+		if len(tags) > 0 {
+			t.Errorf("Expected 0 tool tags upserted (empty SKU rejected), got %d", len(tags))
+		}
+	case <-time.After(200 * time.Millisecond):
+		// Expected - no upserts should happen
+	}
+}
+
+// TestToolsSync_SKUValidation_WhitespaceSKURejected tests that whitespace-only SKU is rejected
+func TestToolsSync_SKUValidation_WhitespaceSKURejected(t *testing.T) {
+	toolsRecordsUpserted := make(chan []localstore.ToolRecord, 1)
+	toolTagsUpserted := make(chan []localstore.ToolTagRecord, 1)
+
+	vpsClient := &mockVPSClient{
+		fetchSyncDataFunc: func(companyID string) (*SyncDataResponse, error) {
+			return &SyncDataResponse{
+				Status: "OK",
+				Tools: []localstore.SyncDataItem{
+					{
+						ID:       1,
+						ToolID:   1,
+						UII:      "E200123456",
+						SKU:      "   ", // Whitespace-only SKU - should be rejected
+						Name:     "Invalid Tool",
+						Status:   "active",
+					},
+				},
+			}, nil
+		},
+		fetchUsersFunc: func(companyID string) ([]localstore.User, error) {
+			return []localstore.User{}, nil
+		},
+	}
+
+	store := &mockLocalStore{
+		toolsUpsertedFunc: func(tools []localstore.ToolRecord) error {
+			toolsRecordsUpserted <- tools
+			return nil
+		},
+		toolTagsUpsertedFunc: func(tags []localstore.ToolTagRecord) error {
+			toolTagsUpserted <- tags
+			return nil
+		},
+	}
+
+	ts := NewToolsSync(vpsClient, store, "company123", 1*time.Hour, 1*time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := ts.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ts.Stop()
+
+	// Wait a bit for sync to run
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify no tools were upserted (whitespace-only SKU rejected)
+	select {
+	case tools := <-toolsRecordsUpserted:
+		if len(tools) > 0 {
+			t.Errorf("Expected 0 tool records upserted (whitespace SKU rejected), got %d", len(tools))
+		}
+	case <-time.After(200 * time.Millisecond):
+		// Expected - no upserts should happen
+	}
+
+	select {
+	case tags := <-toolTagsUpserted:
+		if len(tags) > 0 {
+			t.Errorf("Expected 0 tool tags upserted (whitespace SKU rejected), got %d", len(tags))
+		}
+	case <-time.After(200 * time.Millisecond):
+		// Expected - no upserts should happen
+	}
+}
+
+// TestToolsSync_SKUValidation_BatchContinuity tests that valid items are processed even when some have invalid SKUs
+func TestToolsSync_SKUValidation_BatchContinuity(t *testing.T) {
+	toolsRecordsUpserted := make(chan []localstore.ToolRecord, 1)
+	toolTagsUpserted := make(chan []localstore.ToolTagRecord, 1)
+
+	vpsClient := &mockVPSClient{
+		fetchSyncDataFunc: func(companyID string) (*SyncDataResponse, error) {
+			return &SyncDataResponse{
+				Status: "OK",
+				Tools: []localstore.SyncDataItem{
+					{
+						ID:       1,
+						ToolID:   1,
+						UII:      "E200111111",
+						SKU:      "TOOL-VALID-001", // Valid SKU
+						Name:     "Valid Tool 1",
+						Status:   "active",
+					},
+					{
+						ID:       2,
+						ToolID:   2,
+						UII:      "E200222222",
+						SKU:      "", // Empty SKU - should be rejected
+						Name:     "Invalid Tool",
+						Status:   "active",
+					},
+					{
+						ID:       3,
+						ToolID:   3,
+						UII:      "E200333333",
+						SKU:      "TOOL-VALID-002", // Valid SKU
+						Name:     "Valid Tool 2",
+						Status:   "active",
+					},
+				},
+			}, nil
+		},
+		fetchUsersFunc: func(companyID string) ([]localstore.User, error) {
+			return []localstore.User{}, nil
+		},
+	}
+
+	store := &mockLocalStore{
+		toolsUpsertedFunc: func(tools []localstore.ToolRecord) error {
+			toolsRecordsUpserted <- tools
+			return nil
+		},
+		toolTagsUpsertedFunc: func(tags []localstore.ToolTagRecord) error {
+			toolTagsUpserted <- tags
+			return nil
+		},
+	}
+
+	ts := NewToolsSync(vpsClient, store, "company123", 1*time.Hour, 1*time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := ts.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ts.Stop()
+
+	// Wait for sync to run
+	var upsertedTools []localstore.ToolRecord
+	var upsertedTags []localstore.ToolTagRecord
+
+	select {
+	case upsertedTools = <-toolsRecordsUpserted:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Timeout waiting for tool records upsert")
+	}
+
+	select {
+	case upsertedTags = <-toolTagsUpserted:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Timeout waiting for tool tags upsert")
+	}
+
+	// Should have 2 tools (valid ones), not 3
+	if len(upsertedTools) != 2 {
+		t.Errorf("Expected 2 tool records upserted (1 invalid SKU rejected), got %d", len(upsertedTools))
+	}
+
+	// Should have 2 tool tags (valid ones), not 3
+	if len(upsertedTags) != 2 {
+		t.Errorf("Expected 2 tool tags upserted (1 invalid SKU rejected), got %d", len(upsertedTags))
+	}
+
+	// Verify the valid tools are the ones we expect
+	foundSKU1 := false
+	foundSKU2 := false
+	for _, tool := range upsertedTools {
+		if tool.SKU == "TOOL-VALID-001" {
+			foundSKU1 = true
+		}
+		if tool.SKU == "TOOL-VALID-002" {
+			foundSKU2 = true
+		}
+	}
+
+	if !foundSKU1 {
+		t.Error("Expected TOOL-VALID-001 to be upserted")
+	}
+	if !foundSKU2 {
+		t.Error("Expected TOOL-VALID-002 to be upserted")
+	}
+
+	// Verify the valid tags are the ones we expect
+	foundUII1 := false
+	foundUII3 := false
+	for _, tag := range upsertedTags {
+		if tag.UII == "E200111111" {
+			foundUII1 = true
+		}
+		if tag.UII == "E200333333" {
+			foundUII3 = true
+		}
+		// The invalid item (UII: E200222222) should NOT be present
+		if tag.UII == "E200222222" {
+			t.Error("Invalid item with empty SKU should not be upserted")
+		}
+	}
+
+	if !foundUII1 {
+		t.Error("Expected tag with UII E200111111 to be upserted")
+	}
+	if !foundUII3 {
+		t.Error("Expected tag with UII E200333333 to be upserted")
+	}
+}
+
+// TestToolsSync_SKUValidation_ValidSKUs tests that various valid SKU formats are accepted
+func TestToolsSync_SKUValidation_ValidSKUs(t *testing.T) {
+	toolsRecordsUpserted := make(chan []localstore.ToolRecord, 1)
+	toolTagsUpserted := make(chan []localstore.ToolTagRecord, 1)
+
+	vpsClient := &mockVPSClient{
+		fetchSyncDataFunc: func(companyID string) (*SyncDataResponse, error) {
+			return &SyncDataResponse{
+				Status: "OK",
+				Tools: []localstore.SyncDataItem{
+					{
+						ID:       1,
+						ToolID:   1,
+						UII:      "E200111111",
+						SKU:      "A", // Single character - valid
+						Name:     "Tool A",
+						Status:   "active",
+					},
+					{
+						ID:       2,
+						ToolID:   2,
+						UII:      "E200222222",
+						SKU:      "TOOL-WITH-SPACES ", // Trailing space - trimmed, valid
+						Name:     "Tool B",
+						Status:   "active",
+					},
+					{
+						ID:       3,
+						ToolID:   3,
+						UII:      "E200333333",
+						SKU:      "TOOL-WITH-HYPHENS-123", // Hyphens and numbers - valid
+						Name:     "Tool C",
+						Status:   "active",
+					},
+				},
+			}, nil
+		},
+		fetchUsersFunc: func(companyID string) ([]localstore.User, error) {
+			return []localstore.User{}, nil
+		},
+	}
+
+	store := &mockLocalStore{
+		toolsUpsertedFunc: func(tools []localstore.ToolRecord) error {
+			toolsRecordsUpserted <- tools
+			return nil
+		},
+		toolTagsUpsertedFunc: func(tags []localstore.ToolTagRecord) error {
+			toolTagsUpserted <- tags
+			return nil
+		},
+	}
+
+	ts := NewToolsSync(vpsClient, store, "company123", 1*time.Hour, 1*time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := ts.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ts.Stop()
+
+	// Wait for sync to run
+	var upsertedTools []localstore.ToolRecord
+	var upsertedTags []localstore.ToolTagRecord
+
+	select {
+	case upsertedTools = <-toolsRecordsUpserted:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Timeout waiting for tool records upsert")
+	}
+
+	select {
+	case upsertedTags = <-toolTagsUpserted:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Timeout waiting for tool tags upsert")
+	}
+
+	// All 3 should be processed
+	if len(upsertedTools) != 3 {
+		t.Errorf("Expected 3 tool records upserted, got %d", len(upsertedTools))
+	}
+
+	if len(upsertedTags) != 3 {
+		t.Errorf("Expected 3 tool tags upserted, got %d", len(upsertedTags))
+	}
+}
