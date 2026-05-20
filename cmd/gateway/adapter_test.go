@@ -49,7 +49,7 @@ func TestToolStoreAdapter_GetToolByUII_NormalizedFields(t *testing.T) {
 				ID:         100,
 				ToolID:     42,
 				UII:        "E200341502001080",
-				Location:   "Almacén General",
+				Location:   strPtr("Almacén General"),
 				Status:     "active",
 				KanbanZone: strPtr("Zona A"),
 				LastSyncedAt: now,
@@ -71,7 +71,7 @@ func TestToolStoreAdapter_GetToolByUII_NormalizedFields(t *testing.T) {
 				ID:         101,
 				ToolID:     43,
 				UII:        "E200341502001081",
-				Location:   "Almacén B",
+				Location:   strPtr("Almacén B"),
 				Status:     "active",
 				KanbanZone: nil,
 				LastSyncedAt: now,
@@ -93,7 +93,7 @@ func TestToolStoreAdapter_GetToolByUII_NormalizedFields(t *testing.T) {
 				ID:         102,
 				ToolID:     44,
 				UII:        "E200341502001082",
-				Location:   "Taller",
+				Location:   strPtr("Taller"),
 				Status:     "active",
 				KanbanZone: strPtr("Zona B"),
 				LastSyncedAt: now,
@@ -115,7 +115,7 @@ func TestToolStoreAdapter_GetToolByUII_NormalizedFields(t *testing.T) {
 				ID:         103,
 				ToolID:     999, // Non-existent tool ID
 				UII:        "E200341502001083",
-				Location:   "Unknown",
+				Location:   strPtr("Unknown"),
 				Status:     "active",
 				KanbanZone: nil,
 				LastSyncedAt: now,
@@ -158,8 +158,13 @@ func TestToolStoreAdapter_GetToolByUII_NormalizedFields(t *testing.T) {
 			if tool.UII != tt.tag.UII {
 				t.Errorf("UII = %s, expected %s", tool.UII, tt.tag.UII)
 			}
-			if tool.Location != tt.tag.Location {
-				t.Errorf("Location = %s, expected %s", tool.Location, tt.tag.Location)
+			// Adapter boundary: nil -> ""
+			expectedLocation := ""
+			if tt.tag.Location != nil {
+				expectedLocation = *tt.tag.Location
+			}
+			if tool.Location != expectedLocation {
+				t.Errorf("Location = %s, expected %s", tool.Location, expectedLocation)
 			}
 			if tool.Status != tt.tag.Status {
 				t.Errorf("Status = %s, expected %s", tool.Status, tt.tag.Status)
@@ -263,7 +268,7 @@ func TestToolStoreAdapter_ToolIDField(t *testing.T) {
 		ID:       100,
 		ToolID:   9999,
 		UII:      "E200341502001080",
-		Location: "Almacén General",
+		Location: strPtr("Almacén General"),
 		Status:   "active",
 	}
 
@@ -287,11 +292,17 @@ func TestToolStoreAdapter_ToolIDField(t *testing.T) {
 
 // mapToVerifyTool is a helper that mimics the toolStoreAdapter mapping logic
 func mapToVerifyTool(tag *localstore.ToolTagRecord, master *localstore.ToolRecord) *verify.Tool {
+	// Adapter boundary: nil -> ""
+	location := ""
+	if tag.Location != nil {
+		location = *tag.Location
+	}
+
 	tool := &verify.Tool{
 		ID:         tag.ID,
 		ToolID:     tag.ToolID,
 		UII:        tag.UII,
-		Location:   tag.Location,
+		Location:   location,
 		Status:     tag.Status,
 		KanbanZone: tag.KanbanZone,
 	}

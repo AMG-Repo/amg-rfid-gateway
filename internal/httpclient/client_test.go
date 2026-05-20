@@ -296,10 +296,14 @@ func containsError(err error, substr string) bool {
 	return len(substr) > 0 && fmt.Sprintf("%v", err) != ""
 }
 
+func strPtr(s string) *string {
+	return &s
+}
+
 func TestFetchSyncData_Success(t *testing.T) {
 	expectedItems := []localstore.SyncDataItem{
-		{ID: 1, ToolID: 10, UII: "EPC-001", SKU: "SKU-001", Name: "Tool 1", Status: "available", Location: "Almacén General"},
-		{ID: 2, ToolID: 10, UII: "EPC-002", SKU: "SKU-001", Name: "Tool 1", Status: "in_use", Location: "Línea 1"},
+		{ID: 1, ToolID: 10, UII: "EPC-001", SKU: "SKU-001", Name: "Tool 1", Status: "available", Location: strPtr("Almacén General")},
+		{ID: 2, ToolID: 10, UII: "EPC-002", SKU: "SKU-001", Name: "Tool 1", Status: "in_use", Location: strPtr("Línea 1")},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -609,5 +613,229 @@ func TestFetchSyncData_WithoutToken_DoesNotSendAuthHeader(t *testing.T) {
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// === Nullability Tests for SyncDataItem ===
+
+// TestFetchSyncData_NullableFields_NullValue verifies that JSON null deserializes to Go nil
+func TestFetchSyncData_NullableFields_NullValue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Return sync data with explicit JSON null values
+		w.Write([]byte(`{
+			"status": "OK",
+			"tools": [
+				{
+					"id": 1,
+					"tool_id": 10,
+					"uii": "EPC-001",
+					"sku": "SKU-001",
+					"name": "Test Tool",
+					"description": null,
+					"status": "available",
+					"location": null,
+					"unit_number": null,
+					"display_name": null,
+					"active": true
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	resp, err := client.FetchSyncData("comp-1")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if len(resp.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(resp.Tools))
+	}
+
+	tool := resp.Tools[0]
+	if tool.Description != nil {
+		t.Errorf("expected Description to be nil for JSON null, got %v", *tool.Description)
+	}
+	if tool.Location != nil {
+		t.Errorf("expected Location to be nil for JSON null, got %v", *tool.Location)
+	}
+	if tool.UnitNumber != nil {
+		t.Errorf("expected UnitNumber to be nil for JSON null, got %v", *tool.UnitNumber)
+	}
+	if tool.DisplayName != nil {
+		t.Errorf("expected DisplayName to be nil for JSON null, got %v", *tool.DisplayName)
+	}
+}
+
+// TestFetchSyncData_NullableFields_EmptyString verifies that JSON empty string deserializes to non-nil pointer to ""
+func TestFetchSyncData_NullableFields_EmptyString(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Return sync data with explicit empty strings
+		w.Write([]byte(`{
+			"status": "OK",
+			"tools": [
+				{
+					"id": 1,
+					"tool_id": 10,
+					"uii": "EPC-001",
+					"sku": "SKU-001",
+					"name": "Test Tool",
+					"description": "",
+					"status": "available",
+					"location": "",
+					"unit_number": "",
+					"display_name": "",
+					"active": true
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	resp, err := client.FetchSyncData("comp-1")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(resp.Tools))
+	}
+
+	tool := resp.Tools[0]
+	if tool.Description == nil {
+		t.Error("expected Description to be non-nil for empty string JSON")
+	} else if *tool.Description != "" {
+		t.Errorf("expected Description to be empty string, got %q", *tool.Description)
+	}
+	if tool.Location == nil {
+		t.Error("expected Location to be non-nil for empty string JSON")
+	} else if *tool.Location != "" {
+		t.Errorf("expected Location to be empty string, got %q", *tool.Location)
+	}
+	if tool.UnitNumber == nil {
+		t.Error("expected UnitNumber to be non-nil for empty string JSON")
+	} else if *tool.UnitNumber != "" {
+		t.Errorf("expected UnitNumber to be empty string, got %q", *tool.UnitNumber)
+	}
+	if tool.DisplayName == nil {
+		t.Error("expected DisplayName to be non-nil for empty string JSON")
+	} else if *tool.DisplayName != "" {
+		t.Errorf("expected DisplayName to be empty string, got %q", *tool.DisplayName)
+	}
+}
+
+// TestFetchSyncData_NullableFields_Omitted verifies that omitted fields deserialize to nil
+func TestFetchSyncData_NullableFields_Omitted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Return sync data with omitted optional fields
+		w.Write([]byte(`{
+			"status": "OK",
+			"tools": [
+				{
+					"id": 1,
+					"tool_id": 10,
+					"uii": "EPC-001",
+					"sku": "SKU-001",
+					"name": "Test Tool",
+					"status": "available",
+					"active": true
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	resp, err := client.FetchSyncData("comp-1")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(resp.Tools))
+	}
+
+	tool := resp.Tools[0]
+	if tool.Description != nil {
+		t.Errorf("expected Description to be nil for omitted field, got %v", *tool.Description)
+	}
+	if tool.Location != nil {
+		t.Errorf("expected Location to be nil for omitted field, got %v", *tool.Location)
+	}
+	if tool.UnitNumber != nil {
+		t.Errorf("expected UnitNumber to be nil for omitted field, got %v", *tool.UnitNumber)
+	}
+	if tool.DisplayName != nil {
+		t.Errorf("expected DisplayName to be nil for omitted field, got %v", *tool.DisplayName)
+	}
+}
+
+// TestFetchSyncData_NullableFields_ValidValues verifies that valid strings deserialize correctly
+func TestFetchSyncData_NullableFields_ValidValues(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"status": "OK",
+			"tools": [
+				{
+					"id": 1,
+					"tool_id": 10,
+					"uii": "EPC-001",
+					"sku": "SKU-001",
+					"name": "Test Tool",
+					"description": "A useful tool",
+					"status": "available",
+					"location": "Warehouse A",
+					"unit_number": "UNIT-001",
+					"display_name": "Tool Display Name",
+					"active": true
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	resp, err := client.FetchSyncData("comp-1")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(resp.Tools))
+	}
+
+	tool := resp.Tools[0]
+	if tool.Description == nil {
+		t.Error("expected Description to be non-nil")
+	} else if *tool.Description != "A useful tool" {
+		t.Errorf("expected Description 'A useful tool', got %q", *tool.Description)
+	}
+	if tool.Location == nil {
+		t.Error("expected Location to be non-nil")
+	} else if *tool.Location != "Warehouse A" {
+		t.Errorf("expected Location 'Warehouse A', got %q", *tool.Location)
+	}
+	if tool.UnitNumber == nil {
+		t.Error("expected UnitNumber to be non-nil")
+	} else if *tool.UnitNumber != "UNIT-001" {
+		t.Errorf("expected UnitNumber 'UNIT-001', got %q", *tool.UnitNumber)
+	}
+	if tool.DisplayName == nil {
+		t.Error("expected DisplayName to be non-nil")
+	} else if *tool.DisplayName != "Tool Display Name" {
+		t.Errorf("expected DisplayName 'Tool Display Name', got %q", *tool.DisplayName)
 	}
 }

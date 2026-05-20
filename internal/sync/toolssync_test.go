@@ -11,6 +11,11 @@ import (
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 )
 
+// Helper function for string pointers
+func strPtr(s string) *string {
+	return &s
+}
+
 // mockVPSClient is a mock implementation for testing
 type mockVPSClient struct {
 	fetchToolsFunc    func(companyID string) ([]localstore.Tool, error)
@@ -270,7 +275,7 @@ func TestToolsSync_SyncToolsAndUsers(t *testing.T) {
 						SKU:      "TOOL-001",
 						Name:     "Hammer",
 						Status:   "active",
-						Location: "Almacen A",
+						Location: strPtr("Almacen A"),
 					},
 				},
 			}, nil

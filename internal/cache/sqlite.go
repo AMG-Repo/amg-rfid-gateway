@@ -86,6 +86,12 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 		return nil, fmt.Errorf("failed to migrate normalized schema: %w", err)
 	}
 
+	// Run nullability migration: convert empty strings to NULL for optional fields
+	if err := migrateNullableFields(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate nullable fields: %w", err)
+	}
+
 	// HAPPY PATH: Create cache instance with buffered channel
 	cache := &SQLite{
 		db:       db,
@@ -487,6 +493,56 @@ func migrateNormalizedSchema(db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("failed to create tool_tags indexes: %w", err)
 		}
+	}
+
+	return tx.Commit()
+}
+
+// migrateNullableFields converts empty strings to NULL for nullable fields.
+// This is idempotent and safe to run multiple times.
+func migrateNullableFields(db *sql.DB) error {
+	// Check if tools table exists
+	var toolsExists bool
+	err := db.QueryRow(`
+		SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='tools'
+	`).Scan(&toolsExists)
+	if err != nil {
+		return fmt.Errorf("failed to check tools table existence: %w", err)
+	}
+
+	if !toolsExists {
+		return nil // No tables yet, nothing to migrate
+	}
+
+	// Run migration inside a transaction
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Convert empty strings to NULL in tools.description
+	_, err = tx.Exec(`UPDATE tools SET description = NULL WHERE description = ''`)
+	if err != nil {
+		return fmt.Errorf("failed to normalize tools.description: %w", err)
+	}
+
+	// Convert empty strings to NULL in tool_tags.location
+	_, err = tx.Exec(`UPDATE tool_tags SET location = NULL WHERE location = ''`)
+	if err != nil {
+		return fmt.Errorf("failed to normalize tool_tags.location: %w", err)
+	}
+
+	// Convert empty strings to NULL in tool_tags.unit_number
+	_, err = tx.Exec(`UPDATE tool_tags SET unit_number = NULL WHERE unit_number = ''`)
+	if err != nil {
+		return fmt.Errorf("failed to normalize tool_tags.unit_number: %w", err)
+	}
+
+	// Convert empty strings to NULL in tool_tags.display_name
+	_, err = tx.Exec(`UPDATE tool_tags SET display_name = NULL WHERE display_name = ''`)
+	if err != nil {
+		return fmt.Errorf("failed to normalize tool_tags.display_name: %w", err)
 	}
 
 	return tx.Commit()
