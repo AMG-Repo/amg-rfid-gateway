@@ -33,9 +33,12 @@ import (
 
 const (
 	appName   = "AMG RFID Gateway"
-	dataDir   = "./data"
 	configDir = "./configs"
 )
+
+func cacheDBPath(cfg *config.GatewayConfig) string {
+	return filepath.Join(cfg.DataPath, "cache.db")
+}
 
 func main() {
 	var configPath string
@@ -66,7 +69,7 @@ func main() {
 	log.Printf("Antennas: %d", len(cfg.Antennas))
 
 	// Initialize SQLite cache
-	dbPath := filepath.Join(dataDir, "cache.db")
+	dbPath := cacheDBPath(cfg)
 	cacheStore, err := cachepkg.NewSQLite(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize cache: %v", err)
@@ -104,7 +107,7 @@ func main() {
 	// Initialize web server (if enabled)
 	var webServer *web.Server
 	if cfg.WebEnabled {
-		webServer = web.NewServer(
+		webServer = web.NewServerWithConfig(
 			cfg.WebListenAddr,
 			cfg.WebPort,
 			eventBus,
@@ -112,6 +115,7 @@ func main() {
 			verifier,
 			vpsClient,
 			cfg.CompanyID,
+			cfg,
 		)
 		log.Printf("Web server initialized on %s:%d", cfg.WebListenAddr, cfg.WebPort)
 	}
@@ -315,10 +319,13 @@ func loadConfig(path string) (*config.GatewayConfig, error) {
 	// Try to load from file first
 	if _, err := os.Stat(path); err == nil {
 		cfg, err := config.LoadFromYAML(path)
-		if err == nil {
-			return cfg, nil
+		if err != nil {
+			return nil, fmt.Errorf("failed to load config from %s: %w", path, err)
 		}
-		log.Printf("Warning: failed to load config from %s: %v", path, err)
+		if err := cfg.Validate(); err != nil {
+			return nil, fmt.Errorf("configuration validation failed: %w", err)
+		}
+		return cfg, nil
 	}
 
 	// Fall back to environment variables

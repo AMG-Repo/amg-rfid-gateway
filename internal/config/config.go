@@ -13,6 +13,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const legacyLANConfigMigrationError = "legacy config detected: web_access_mode is missing while web_listen_addr=0.0.0.0; set web_access_mode: \"lan\" and web_auth_token, or change web_listen_addr to \"127.0.0.1\""
+
 // GatewayConfig holds the complete configuration for the RFID gateway.
 type GatewayConfig struct {
 	GatewayID    string          `yaml:"gateway_id"`
@@ -42,18 +44,20 @@ type GatewayConfig struct {
 	// Web UI configuration (local verification frontend)
 	WebEnabled                bool          `yaml:"web_enabled"`
 	WebPort                   int           `yaml:"web_port"`
+	WebAccessMode             string        `yaml:"web_access_mode"`
 	WebListenAddr             string        `yaml:"web_listen_addr"`
+	WebAuthToken              string        `yaml:"web_auth_token"`
 	VPSAPIURL                 string        `yaml:"vps_api_url"`
 	SyncToolsInterval         time.Duration `yaml:"sync_tools_interval"`
 	ConfirmationRetryInterval time.Duration `yaml:"confirmation_retry_interval"`
 
 	// Queue cap configuration (REQ-S004)
 	// Use pointers to distinguish between "not set" (nil) and "set to 0" (unlimited)
-	MaxPendingConfirmations   *int          `yaml:"max_pending_confirmations,omitempty"`   // nil = default 10000, 0 = unlimited
-	PendingWarningThreshold   *int          `yaml:"pending_warning_threshold,omitempty"`   // nil = default 1000, 0 = never warn
+	MaxPendingConfirmations *int `yaml:"max_pending_confirmations,omitempty"` // nil = default 10000, 0 = unlimited
+	PendingWarningThreshold *int `yaml:"pending_warning_threshold,omitempty"` // nil = default 1000, 0 = never warn
 
 	// Logging configuration
-	LogLevel                  string        `yaml:"log_level"`
+	LogLevel string `yaml:"log_level"`
 }
 
 // AntennaConfig holds configuration for a single antenna.
@@ -102,6 +106,26 @@ func (c *GatewayConfig) Validate() error {
 		return errors.New("listen_mode must be one of: active, passive, auto")
 	}
 
+	// NEGATIVE: WebAccessMode must be valid
+	if c.WebAccessMode != "local" && c.WebAccessMode != "lan" {
+		return errors.New("web_access_mode must be one of: local, lan")
+	}
+
+	// NEGATIVE: local mode must bind only loopback
+	if c.WebAccessMode == "local" && c.WebListenAddr != "127.0.0.1" {
+		return errors.New("web_access_mode=local requires web_listen_addr=127.0.0.1")
+	}
+
+	// NEGATIVE: LAN mode must be explicit and protected
+	if c.WebAccessMode == "lan" {
+		if c.WebListenAddr != "0.0.0.0" {
+			return errors.New("web_access_mode=lan requires web_listen_addr=0.0.0.0")
+		}
+		if c.WebAuthToken == "" {
+			return errors.New("web_access_mode=lan requires web_auth_token to protect write-capable UI")
+		}
+	}
+
 	// HAPPY PATH: All validations passed
 	return nil
 }
@@ -144,6 +168,10 @@ func LoadFromYAML(path string) (*GatewayConfig, error) {
 	var cfg GatewayConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	if cfg.WebAccessMode == "" && cfg.WebListenAddr == "0.0.0.0" {
+		return nil, errors.New(legacyLANConfigMigrationError)
 	}
 
 	// Apply defaults after loading
@@ -472,8 +500,11 @@ func (c *GatewayConfig) ApplyDefaults() {
 	if c.WebPort == 0 {
 		c.WebPort = 9090
 	}
+	if c.WebAccessMode == "" {
+		c.WebAccessMode = "local"
+	}
 	if c.WebListenAddr == "" {
-		c.WebListenAddr = "0.0.0.0"
+		c.WebListenAddr = "127.0.0.1"
 	}
 	if c.SyncToolsInterval == 0 {
 		c.SyncToolsInterval = 1 * time.Hour
