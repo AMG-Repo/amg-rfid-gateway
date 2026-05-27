@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,6 +16,8 @@ func TestGatewayConfig_ListenModeValidation(t *testing.T) {
 			CloudURL:          "wss://example.com/ws",
 			JWTSecret:         "secret",
 			ListenMode:        mode,
+			WebAccessMode:     "local",
+			WebListenAddr:     "127.0.0.1",
 			HeartbeatInterval: 3 * time.Second,
 		}
 		if err := cfg.Validate(); err != nil {
@@ -29,6 +32,8 @@ func TestGatewayConfig_ListenModeValidation(t *testing.T) {
 		CloudURL:          "wss://example.com/ws",
 		JWTSecret:         "secret",
 		ListenMode:        "fast",
+		WebAccessMode:     "local",
+		WebListenAddr:     "127.0.0.1",
 		HeartbeatInterval: 3 * time.Second,
 	}
 	if err := cfg.Validate(); err == nil {
@@ -122,5 +127,96 @@ func TestGatewayConfig_ExplicitValuesNotOverridden(t *testing.T) {
 	}
 	if cfg.SocketPath != "/custom/socket.sock" {
 		t.Errorf("expected SocketPath '/custom/socket.sock', got %q", cfg.SocketPath)
+	}
+}
+
+func TestGatewayConfig_WebAccessModeValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     GatewayConfig
+		wantErr string
+	}{
+		{
+			name: "local mode with loopback is valid",
+			cfg: GatewayConfig{
+				GatewayID:     "gw-001",
+				CompanyID:     "comp-001",
+				CloudURL:      "wss://example.com/ws",
+				JWTSecret:     "secret",
+				ListenMode:    "auto",
+				WebAccessMode: "local",
+				WebListenAddr: "127.0.0.1",
+				WebAuthToken:  "",
+			},
+		},
+		{
+			name: "lan mode requires token",
+			cfg: GatewayConfig{
+				GatewayID:     "gw-001",
+				CompanyID:     "comp-001",
+				CloudURL:      "wss://example.com/ws",
+				JWTSecret:     "secret",
+				ListenMode:    "auto",
+				WebAccessMode: "lan",
+				WebListenAddr: "0.0.0.0",
+			},
+			wantErr: "web_auth_token",
+		},
+		{
+			name: "lan mode with token is valid",
+			cfg: GatewayConfig{
+				GatewayID:     "gw-001",
+				CompanyID:     "comp-001",
+				CloudURL:      "wss://example.com/ws",
+				JWTSecret:     "secret",
+				ListenMode:    "auto",
+				WebAccessMode: "lan",
+				WebListenAddr: "0.0.0.0",
+				WebAuthToken:  "change-me-token",
+			},
+		},
+		{
+			name: "local mode rejects non-loopback address",
+			cfg: GatewayConfig{
+				GatewayID:     "gw-001",
+				CompanyID:     "comp-001",
+				CloudURL:      "wss://example.com/ws",
+				JWTSecret:     "secret",
+				ListenMode:    "auto",
+				WebAccessMode: "local",
+				WebListenAddr: "0.0.0.0",
+			},
+			wantErr: "web_access_mode=local",
+		},
+		{
+			name: "invalid mode rejected",
+			cfg: GatewayConfig{
+				GatewayID:     "gw-001",
+				CompanyID:     "comp-001",
+				CloudURL:      "wss://example.com/ws",
+				JWTSecret:     "secret",
+				ListenMode:    "auto",
+				WebAccessMode: "internet",
+				WebListenAddr: "127.0.0.1",
+			},
+			wantErr: "web_access_mode",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if tt.wantErr == "" && err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+				}
+			}
+		})
 	}
 }

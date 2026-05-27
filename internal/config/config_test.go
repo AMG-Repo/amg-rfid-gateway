@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -166,6 +167,31 @@ func TestLoadFromYAML_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestLoadFromYAML_LegacyLANConfigRequiresMigration(t *testing.T) {
+	content := `
+gateway_id: "gw-legacy"
+company_id: "comp-legacy"
+cloud_url: "wss://cloud.example.com/ws"
+jwt_secret: "legacy-secret"
+web_listen_addr: "0.0.0.0"
+`
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	_, err := LoadFromYAML(configPath)
+	if err == nil {
+		t.Fatal("expected migration error for legacy LAN config, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "web_access_mode is missing") {
+		t.Fatalf("expected migration message, got %q", err.Error())
+	}
+}
+
 func TestLoadFromEnv(t *testing.T) {
 	// Set environment variables
 	os.Setenv("GATEWAY_ID", "gw-env-001")
@@ -210,6 +236,12 @@ func TestApplyDefaults(t *testing.T) {
 	}
 	if cfg.HealthPort != 8080 {
 		t.Errorf("expected default health port 8080, got %d", cfg.HealthPort)
+	}
+	if cfg.WebListenAddr != "127.0.0.1" {
+		t.Errorf("expected default web listen addr 127.0.0.1, got %s", cfg.WebListenAddr)
+	}
+	if cfg.WebAccessMode != "local" {
+		t.Errorf("expected default web access mode local, got %s", cfg.WebAccessMode)
 	}
 }
 
@@ -257,7 +289,7 @@ func TestApplyDefaults_QueueCapZeroMeansUnlimited(t *testing.T) {
 		GatewayID:               "gw-001",
 		CompanyID:               "comp-123",
 		CloudURL:                "wss://cloud.example.com",
-		MaxPendingConfirmations: &zeroMax, // Explicitly set to 0 (unlimited)
+		MaxPendingConfirmations: &zeroMax,       // Explicitly set to 0 (unlimited)
 		PendingWarningThreshold: &zeroThreshold, // Explicitly set to 0
 	}
 
@@ -285,8 +317,8 @@ func TestApplyDefaults_QueueCapCustomValues(t *testing.T) {
 		GatewayID:               "gw-001",
 		CompanyID:               "comp-123",
 		CloudURL:                "wss://cloud.example.com",
-		MaxPendingConfirmations: &customMax,  // Custom cap
-		PendingWarningThreshold: &customThreshold,  // Custom threshold
+		MaxPendingConfirmations: &customMax,       // Custom cap
+		PendingWarningThreshold: &customThreshold, // Custom threshold
 	}
 
 	cfg.ApplyDefaults()
