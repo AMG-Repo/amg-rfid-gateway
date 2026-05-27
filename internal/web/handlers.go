@@ -42,6 +42,12 @@ type StatusResponse struct {
 	PendingWarning bool `json:"pending_warning"`
 }
 
+// AuthModeResponse indicates whether UI write calls require a bearer token.
+type AuthModeResponse struct {
+	WebAccessMode  string `json:"web_access_mode"`
+	RequiresBearer bool   `json:"requires_bearer"`
+}
+
 // handleTags returns all cached tools as JSON.
 // GET /api/tags
 func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
@@ -239,6 +245,25 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PendingCount:   pendingCount,
 		ToolsCount:     toolsCount,
 		PendingWarning: pendingWarning,
+	})
+}
+
+// handleAuthMode returns frontend auth requirements for write endpoints.
+// GET /api/auth-mode
+func (s *Server) handleAuthMode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	mode := "local"
+	if s.config != nil && s.config.WebAccessMode != "" {
+		mode = s.config.WebAccessMode
+	}
+
+	s.jsonResponse(w, AuthModeResponse{
+		WebAccessMode:  mode,
+		RequiresBearer: s.shouldRequireWriteToken(),
 	})
 }
 

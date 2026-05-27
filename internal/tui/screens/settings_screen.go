@@ -62,16 +62,16 @@ type SettingsScreenModel struct {
 
 // SettingsScreenStyles holds styles for the settings screen.
 type SettingsScreenStyles struct {
-	Title       lipgloss.Style
-	Subtitle    lipgloss.Style
-	FieldLabel  lipgloss.Style
-	FieldValue  lipgloss.Style
-	FieldEdit   lipgloss.Style
-	FieldError  lipgloss.Style
-	Selected    lipgloss.Style
-	Help        lipgloss.Style
-	Confirm     lipgloss.Style
-	Changed     lipgloss.Style
+	Title      lipgloss.Style
+	Subtitle   lipgloss.Style
+	FieldLabel lipgloss.Style
+	FieldValue lipgloss.Style
+	FieldEdit  lipgloss.Style
+	FieldError lipgloss.Style
+	Selected   lipgloss.Style
+	Help       lipgloss.Style
+	Confirm    lipgloss.Style
+	Changed    lipgloss.Style
 }
 
 // NewSettingsScreenStyles creates default styles.
@@ -147,11 +147,18 @@ func NewSettingsScreen(cfg *config.GatewayConfig) SettingsScreenModel {
 		}
 	}
 
+	webAccessMode := cfg.WebAccessMode
+	if webAccessMode == "" {
+		webAccessMode = "local"
+	}
+
 	// Define fields
 	fields := []settingsField{
 		{label: "Gateway ID", key: "gateway_id", required: true, validator: validateNotEmpty},
 		{label: "Company ID", key: "company_id", required: false, validator: nil},
 		{label: "Cloud URL", key: "cloud_url", required: true, validator: validateWSSURL},
+		{label: "Web UI Access", key: "web_access_mode", required: true, validator: validateWebAccessMode},
+		{label: "Web UI Token", key: "web_auth_token", required: false, validator: nil},
 		{label: "Log Level", key: "log_level", required: false, validator: validateLogLevel},
 		{label: "Queue Cap", key: "queue_cap", required: false, validator: validateQueueCap},
 		{label: "Warning Threshold", key: "warning_threshold", required: false, validator: validateQueueCap},
@@ -162,6 +169,8 @@ func NewSettingsScreen(cfg *config.GatewayConfig) SettingsScreenModel {
 		cfg.GatewayID,
 		cfg.CompanyID,
 		cfg.CloudURL,
+		webAccessMode,
+		cfg.WebAuthToken,
 		cfg.LogLevel,
 		queueCap,
 		warningThreshold,
@@ -208,7 +217,9 @@ func copyConfig(cfg *config.GatewayConfig) *config.GatewayConfig {
 		SocketPath:                cfg.SocketPath,
 		WebEnabled:                cfg.WebEnabled,
 		WebPort:                   cfg.WebPort,
+		WebAccessMode:             cfg.WebAccessMode,
 		WebListenAddr:             cfg.WebListenAddr,
+		WebAuthToken:              cfg.WebAuthToken,
 		VPSAPIURL:                 cfg.VPSAPIURL,
 		SyncToolsInterval:         cfg.SyncToolsInterval,
 		ConfirmationRetryInterval: cfg.ConfirmationRetryInterval,
@@ -468,13 +479,17 @@ func (m SettingsScreenModel) getOriginalValue(idx int) string {
 	case 2:
 		return m.original.CloudURL
 	case 3:
-		return m.original.LogLevel
+		return m.original.WebAccessMode
 	case 4:
+		return m.original.WebAuthToken
+	case 5:
+		return m.original.LogLevel
+	case 6:
 		if m.original.MaxPendingConfirmations != nil {
 			return strconv.Itoa(*m.original.MaxPendingConfirmations)
 		}
 		return "10000"
-	case 5:
+	case 7:
 		if m.original.PendingWarningThreshold != nil {
 			return strconv.Itoa(*m.original.PendingWarningThreshold)
 		}
@@ -495,15 +510,23 @@ func (m SettingsScreenModel) GetConfig() *config.GatewayConfig {
 	cfg.GatewayID = m.values[0]
 	cfg.CompanyID = m.values[1]
 	cfg.CloudURL = m.values[2]
-	cfg.LogLevel = m.values[3]
+	cfg.WebAccessMode = m.values[3]
+	cfg.WebAuthToken = m.values[4]
+	cfg.LogLevel = m.values[5]
+
+	if cfg.WebAccessMode == "local" {
+		cfg.WebListenAddr = "127.0.0.1"
+	} else if cfg.WebAccessMode == "lan" {
+		cfg.WebListenAddr = "0.0.0.0"
+	}
 
 	// Parse queue cap
-	if val, err := parseQueueCap(m.values[4]); err == nil {
+	if val, err := parseQueueCap(m.values[6]); err == nil {
 		cfg.MaxPendingConfirmations = val
 	}
 
 	// Parse warning threshold
-	if val, err := parseQueueCap(m.values[5]); err == nil {
+	if val, err := parseQueueCap(m.values[7]); err == nil {
 		cfg.PendingWarningThreshold = val
 	}
 
@@ -528,27 +551,29 @@ func (m *SettingsScreenModel) SetConfig(cfg *config.GatewayConfig) {
 	m.values[0] = cfg.GatewayID
 	m.values[1] = cfg.CompanyID
 	m.values[2] = cfg.CloudURL
-	m.values[3] = cfg.LogLevel
+	m.values[3] = cfg.WebAccessMode
+	m.values[4] = cfg.WebAuthToken
+	m.values[5] = cfg.LogLevel
 
 	// Update queue caps
 	if cfg.MaxPendingConfirmations != nil {
 		if *cfg.MaxPendingConfirmations == 0 {
-			m.values[4] = "0 (unlimited)"
+			m.values[6] = "0 (unlimited)"
 		} else {
-			m.values[4] = strconv.Itoa(*cfg.MaxPendingConfirmations)
+			m.values[6] = strconv.Itoa(*cfg.MaxPendingConfirmations)
 		}
 	} else {
-		m.values[4] = "10000"
+		m.values[6] = "10000"
 	}
 
 	if cfg.PendingWarningThreshold != nil {
 		if *cfg.PendingWarningThreshold == 0 {
-			m.values[5] = "0 (never)"
+			m.values[7] = "0 (never)"
 		} else {
-			m.values[5] = strconv.Itoa(*cfg.PendingWarningThreshold)
+			m.values[7] = strconv.Itoa(*cfg.PendingWarningThreshold)
 		}
 	} else {
-		m.values[5] = "1000"
+		m.values[7] = "1000"
 	}
 
 	m.hasChanges = false
@@ -589,6 +614,14 @@ func validateLogLevel(value string) error {
 		}
 	}
 	return errors.New("must be: debug, info, warn, error")
+}
+
+func validateWebAccessMode(value string) error {
+	mode := strings.ToLower(strings.TrimSpace(value))
+	if mode == "local" || mode == "lan" {
+		return nil
+	}
+	return errors.New("must be: local, lan")
 }
 
 func validateQueueCap(value string) error {

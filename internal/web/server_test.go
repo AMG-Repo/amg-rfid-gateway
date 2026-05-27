@@ -250,6 +250,155 @@ func TestHandleConfirmInvalidAction(t *testing.T) {
 	}
 }
 
+func TestHandleConfirmAuth_LANMode(t *testing.T) {
+	tests := []struct {
+		name           string
+		authorization  string
+		expectedStatus int
+	}{
+		{
+			name:           "rejects when token header is missing",
+			authorization:  "",
+			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name:           "rejects when token is wrong",
+			authorization:  "Bearer wrong-token",
+			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name:           "allows when token is correct",
+			authorization:  "Bearer test-web-token",
+			expectedStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eventBus := events.NewEventBus(100)
+			defer eventBus.Close()
+
+			verifier := verify.NewVerifier(nil, nil)
+			cfg := &config.GatewayConfig{
+				WebAccessMode: "lan",
+				WebAuthToken:  "test-web-token",
+			}
+
+			server := NewServerWithConfig("127.0.0.1", 0, eventBus, nil, verifier, nil, "test-company", cfg)
+
+			body := `{"uii":"test-epc","action":"entrada"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/confirm", strings.NewReader(body))
+			if tt.authorization != "" {
+				req.Header.Set("Authorization", tt.authorization)
+			}
+			rec := httptest.NewRecorder()
+
+			handler := server.requireWriteAuth(server.handleConfirm)
+			handler(rec, req)
+
+			if rec.Code != tt.expectedStatus {
+				t.Fatalf("Expected status %d, got %d", tt.expectedStatus, rec.Code)
+			}
+
+			if tt.expectedStatus == http.StatusUnauthorized {
+				if got := rec.Header().Get("WWW-Authenticate"); got == "" {
+					t.Fatal("Expected WWW-Authenticate header for unauthorized response")
+				}
+			}
+		})
+	}
+}
+
+func TestHandleConfirmAuth_LocalModeDoesNotRequireToken(t *testing.T) {
+	eventBus := events.NewEventBus(100)
+	defer eventBus.Close()
+
+	verifier := verify.NewVerifier(nil, nil)
+	cfg := &config.GatewayConfig{
+		WebAccessMode: "local",
+		WebAuthToken:  "test-web-token",
+	}
+
+	server := NewServerWithConfig("127.0.0.1", 0, eventBus, nil, verifier, nil, "test-company", cfg)
+
+	body := `{"uii":"test-epc","action":"entrada"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/confirm", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	handler := server.requireWriteAuth(server.handleConfirm)
+	handler(rec, req)
+
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatalf("Expected local mode request without token to pass auth, got %d", rec.Code)
+	}
+}
+
+func TestHandleAuthMode(t *testing.T) {
+	tests := []struct {
+		name             string
+		cfg              *config.GatewayConfig
+		expectedMode     string
+		expectedRequires bool
+	}{
+		{
+			name:             "defaults to local when config is nil",
+			cfg:              nil,
+			expectedMode:     "local",
+			expectedRequires: false,
+		},
+		{
+			name: "reports local mode without bearer requirement",
+			cfg: &config.GatewayConfig{
+				WebAccessMode: "local",
+				WebAuthToken:  "test-web-token",
+			},
+			expectedMode:     "local",
+			expectedRequires: false,
+		},
+		{
+			name: "reports lan mode with bearer requirement",
+			cfg: &config.GatewayConfig{
+				WebAccessMode: "lan",
+				WebAuthToken:  "test-web-token",
+			},
+			expectedMode:     "lan",
+			expectedRequires: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eventBus := events.NewEventBus(100)
+			defer eventBus.Close()
+
+			verifier := verify.NewVerifier(nil, nil)
+			server := NewServerWithConfig("127.0.0.1", 0, eventBus, nil, verifier, nil, "test-company", tt.cfg)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/auth-mode", nil)
+			rec := httptest.NewRecorder()
+
+			server.handleAuthMode(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d", rec.Code)
+			}
+
+			var response AuthModeResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+
+			if response.WebAccessMode != tt.expectedMode {
+				t.Fatalf("expected mode %q, got %q", tt.expectedMode, response.WebAccessMode)
+			}
+
+			if response.RequiresBearer != tt.expectedRequires {
+				t.Fatalf("expected requires_bearer=%v, got %v", tt.expectedRequires, response.RequiresBearer)
+			}
+		})
+	}
+}
+
 // Helper functions
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)

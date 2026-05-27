@@ -109,54 +109,54 @@ func TestSettingsScreen_Navigation(t *testing.T) {
 			startPos:  0,
 			keyMsg:    tea.KeyMsg{Type: tea.KeyDown},
 			expectPos: 1,
-			numFields: 6,
+			numFields: 8,
 		},
 		{
 			name:      "up from 1",
 			startPos:  1,
 			keyMsg:    tea.KeyMsg{Type: tea.KeyUp},
 			expectPos: 0,
-			numFields: 6,
+			numFields: 8,
 		},
 		{
 			name:      "tab moves down",
 			startPos:  0,
 			keyMsg:    tea.KeyMsg{Type: tea.KeyTab},
 			expectPos: 1,
-			numFields: 6,
+			numFields: 8,
 		},
 		{
 			name:      "shift+tab moves up",
 			startPos:  1,
 			keyMsg:    tea.KeyMsg{Type: tea.KeyShiftTab},
 			expectPos: 0,
-			numFields: 6,
+			numFields: 8,
 		},
 		{
 			name:      "down at bottom wraps",
-			startPos:  5,
+			startPos:  7,
 			keyMsg:    tea.KeyMsg{Type: tea.KeyDown},
 			expectPos: 0,
-			numFields: 6,
+			numFields: 8,
 		},
 		{
 			name:      "up at top wraps",
 			startPos:  0,
 			keyMsg:    tea.KeyMsg{Type: tea.KeyUp},
-			expectPos: 5,
-			numFields: 6,
+			expectPos: 7,
+			numFields: 8,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &config.GatewayConfig{
-				GatewayID: "test",
-				CompanyID: "test",
-				CloudURL:  "wss://test.com",
-				LogLevel:  "info",
+				GatewayID:               "test",
+				CompanyID:               "test",
+				CloudURL:                "wss://test.com",
+				LogLevel:                "info",
 				MaxPendingConfirmations: intPtr(1000),
-				PendingWarningThreshold:   intPtr(100),
+				PendingWarningThreshold: intPtr(100),
 			}
 			m := NewSettingsScreen(cfg)
 			m.cursor = tt.startPos
@@ -322,14 +322,27 @@ func TestSettingsScreen_Validation(t *testing.T) {
 			wantValid: true,
 		},
 		{
-			name:      "LogLevel valid",
+			name:      "Web access mode local is valid",
 			fieldIdx:  3,
+			value:     "local",
+			wantValid: true,
+		},
+		{
+			name:      "Web access mode invalid",
+			fieldIdx:  3,
+			value:     "internet",
+			wantValid: false,
+			wantError: "local, lan",
+		},
+		{
+			name:      "LogLevel valid",
+			fieldIdx:  5,
 			value:     "debug",
 			wantValid: true,
 		},
 		{
 			name:      "LogLevel invalid",
-			fieldIdx:  3,
+			fieldIdx:  5,
 			value:     "invalid",
 			wantValid: false,
 			wantError: "debug, info, warn, error",
@@ -462,6 +475,8 @@ func TestSettingsScreen_GetConfig(t *testing.T) {
 	m := NewSettingsScreen(cfg)
 	m.values[0] = "modified-gateway"
 	m.values[1] = "modified-company"
+	m.values[3] = "lan"
+	m.values[4] = "tablet-token"
 
 	result := m.GetConfig()
 
@@ -470,6 +485,12 @@ func TestSettingsScreen_GetConfig(t *testing.T) {
 	}
 	if result.CompanyID != "modified-company" {
 		t.Errorf("CompanyID = %q, want 'modified-company'", result.CompanyID)
+	}
+	if result.WebAccessMode != "lan" {
+		t.Errorf("WebAccessMode = %q, want 'lan'", result.WebAccessMode)
+	}
+	if result.WebListenAddr != "0.0.0.0" {
+		t.Errorf("WebListenAddr = %q, want '0.0.0.0'", result.WebListenAddr)
 	}
 }
 
@@ -505,6 +526,8 @@ func TestSettingsScreen_FieldLabels(t *testing.T) {
 		"Gateway ID",
 		"Company ID",
 		"Cloud URL",
+		"Web UI Access",
+		"Web UI Token",
 		"Log Level",
 		"Queue Cap",
 		"Warning Threshold",

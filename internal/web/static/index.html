@@ -56,6 +56,53 @@
         const statusText = document.getElementById('status-text');
         const tagsList = document.getElementById('tags-list');
         const pendingCount = document.getElementById('pending-count');
+        const webTokenKey = 'amgWebAuthToken';
+        let requiresBearerToken = false;
+        const authModeReady = initAuthMode();
+
+        function getStoredWebToken() {
+            return sessionStorage.getItem(webTokenKey) || '';
+        }
+
+        function setStoredWebToken(token) {
+            if (token) {
+                sessionStorage.setItem(webTokenKey, token);
+                return;
+            }
+            sessionStorage.removeItem(webTokenKey);
+        }
+
+        async function initAuthMode() {
+            try {
+                const response = await fetch('/api/auth-mode');
+                if (!response.ok) {
+                    return;
+                }
+
+                const data = await response.json();
+                requiresBearerToken = Boolean(data.requires_bearer);
+            } catch (err) {
+                console.warn('Failed to load auth mode:', err);
+            }
+        }
+
+        function ensureWebToken(forcePrompt = false) {
+            if (!forcePrompt && !requiresBearerToken) {
+                return true;
+            }
+
+            if (getStoredWebToken()) {
+                return true;
+            }
+
+            const token = window.prompt('Ingresá el token web para confirmar acciones en modo LAN:');
+            if (!token) {
+                return false;
+            }
+
+            setStoredWebToken(token.trim());
+            return Boolean(getStoredWebToken());
+        }
 
         function connectSSE() {
             eventSource = new EventSource('/events');
@@ -157,11 +204,34 @@
             resultDiv.innerHTML = '<span class="loading">Enviando...</span>';
             
             try {
+                await authModeReady;
+
+                if (!ensureWebToken()) {
+                    resultDiv.innerHTML = '<span class="error">Se requiere token para confirmar en modo LAN.</span>';
+                    return;
+                }
+
+                const headers = { 'Content-Type': 'application/json' };
+                const token = getStoredWebToken();
+                if (token) {
+                    headers.Authorization = `Bearer ${token}`;
+                }
+
                 const response = await fetch('/api/confirm', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: headers,
                     body: JSON.stringify({ uii: epc, action: action, antenna_id: antennaId })
                 });
+
+                if (response.status === 401) {
+                    setStoredWebToken('');
+                    resultDiv.innerHTML = '<span class="error">Token LAN inválido o faltante. Volvé a intentar e ingresá el token correcto.</span>';
+                    requiresBearerToken = true;
+                    if (!ensureWebToken(true)) {
+                        resultDiv.innerHTML = '<span class="error">Token LAN inválido o faltante. Ingresá el token para volver a intentar.</span>';
+                    }
+                    return;
+                }
                 
                 const data = await response.json();
                 

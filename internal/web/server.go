@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -96,8 +97,9 @@ func (s *Server) Start(ctx context.Context) error {
 	// API routes
 	mux.HandleFunc("/events", s.SSEHandler)
 	mux.HandleFunc("/api/tags", s.handleTags)
-	mux.HandleFunc("/api/confirm", s.handleConfirm)
+	mux.HandleFunc("/api/confirm", s.requireWriteAuth(s.handleConfirm))
 	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/auth-mode", s.handleAuthMode)
 
 	s.httpServer.Handler = mux
 
@@ -110,6 +112,53 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+func (s *Server) requireWriteAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.shouldRequireWriteToken() {
+			next(w, r)
+			return
+		}
+
+		if !s.hasValidBearerToken(r.Header.Get("Authorization")) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="amg-rfid-gateway"`)
+			s.jsonError(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next(w, r)
+	}
+}
+
+func (s *Server) shouldRequireWriteToken() bool {
+	if s.config == nil {
+		return false
+	}
+
+	return strings.EqualFold(strings.TrimSpace(s.config.WebAccessMode), "lan")
+}
+
+func (s *Server) hasValidBearerToken(authHeader string) bool {
+	if s.config == nil {
+		return false
+	}
+
+	token := strings.TrimSpace(s.config.WebAuthToken)
+	if token == "" {
+		return false
+	}
+
+	parts := strings.SplitN(strings.TrimSpace(authHeader), " ", 2)
+	if len(parts) != 2 {
+		return false
+	}
+
+	if !strings.EqualFold(parts[0], "Bearer") {
+		return false
+	}
+
+	return parts[1] == token
 }
 
 // Stop gracefully shuts down the HTTP server.
