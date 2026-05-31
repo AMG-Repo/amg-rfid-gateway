@@ -1,216 +1,193 @@
 package protocol
 
 import (
+	"encoding/hex"
 	"testing"
 )
 
-func TestParsePacket_ValidUII(t *testing.T) {
-	// Simulate a UII data packet:
-	// [0x7c, 0xff, 0xff, 0x02, 0x04, 0xAB, 0xCD, 0xEF, 0x01, checksum]
-	data := []byte{0x7c, 0xff, 0xff, 0x02, 0x04, 0xAB, 0xCD, 0xEF, 0x01}
+func mustDecodeHex(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatalf("decode hex: %v", err)
+	}
+	return b
+}
 
-	// Calculate checksum: two's complement of sum
+func testChecksum(data []byte) byte {
 	sum := 0
 	for _, b := range data {
 		sum += int(b)
 	}
-	checksum := byte((^sum + 1) & 0xff)
-	data = append(data, checksum)
-
-	packet, err := ParsePacket(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if packet.CommandCode != CmdUIIRead {
-		t.Errorf("expected command 0x02, got 0x%02x", packet.CommandCode)
-	}
-
-	if packet.DataLength != 4 {
-		t.Errorf("expected data length 4, got %d", packet.DataLength)
-	}
-
-	if !packet.ChecksumOK {
-		t.Error("expected checksum to be valid")
-	}
-
-	if packet.TagUID != "abcdef01" {
-		t.Errorf("expected UII 'abcdef01', got '%s'", packet.TagUID)
-	}
+	return byte((^sum + 1) & 0xff)
 }
 
-func TestParsePacket_Heartbeat(t *testing.T) {
-	// Heartbeat: [0x7c, 0xff, 0xff, 0x10, 0x00, checksum]
-	data := []byte{0x7c, 0xff, 0xff, 0x10, 0x00}
-
-	sum := 0
-	for _, b := range data {
-		sum += int(b)
-	}
-	checksum := byte((^sum + 1) & 0xff)
-	data = append(data, checksum)
-
-	packet, err := ParsePacket(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if packet.CommandCode != CmdHeartbeat {
-		t.Errorf("expected command 0x10, got 0x%02x", packet.CommandCode)
-	}
-
-	if packet.TagUID != "" {
-		t.Errorf("heartbeat should have no UII, got '%s'", packet.TagUID)
-	}
-}
-
-func TestParsePacket_ACK(t *testing.T) {
-	// ACK: [0x7c, 0xff, 0xff, 0x20, 0x00, checksum]
-	data := []byte{0x7c, 0xff, 0xff, 0x20, 0x00}
-
-	sum := 0
-	for _, b := range data {
-		sum += int(b)
-	}
-	checksum := byte((^sum + 1) & 0xff)
-	data = append(data, checksum)
-
-	packet, err := ParsePacket(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if packet.CommandCode != CmdACK {
-		t.Errorf("expected command 0x20, got 0x%02x", packet.CommandCode)
-	}
-}
-
-func TestParsePacket_TooShort(t *testing.T) {
-	_, err := ParsePacket([]byte{0x7c, 0xff})
-	if err == nil {
-		t.Error("expected error for short packet")
-	}
-}
-
-func TestParsePacket_InvalidStart(t *testing.T) {
-	_, err := ParsePacket([]byte{0x00, 0xff, 0xff, 0x02, 0x00, 0x00})
-	if err == nil {
-		t.Error("expected error for invalid start byte")
-	}
-}
-
-func TestParsePacket_BadChecksum(t *testing.T) {
-	// Valid packet but wrong checksum
-	data := []byte{0x7c, 0xff, 0xff, 0x02, 0x02, 0xAB, 0xCD, 0xFF} // 0xFF is wrong checksum
-
-	packet, err := ParsePacket(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if packet.ChecksumOK {
-		t.Error("expected checksum to be invalid")
-	}
-}
-
-func TestParsePacket_AltStartByte(t *testing.T) {
-	// Test alternative start byte 0xCC
-	data := []byte{0xCC, 0xff, 0xff, 0x02, 0x04, 0xAB, 0xCD, 0xEF, 0x01}
-
-	sum := 0
-	for _, b := range data {
-		sum += int(b)
-	}
-	checksum := byte((^sum + 1) & 0xff)
-	data = append(data, checksum)
-
-	packet, err := ParsePacket(data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if packet.CommandCode != CmdUIIRead {
-		t.Errorf("expected command 0x02, got 0x%02x", packet.CommandCode)
-	}
-}
-
-func TestValidateChecksum_Valid(t *testing.T) {
-	// Create a valid packet
-	data := []byte{0x7c, 0xff, 0xff, 0x02, 0x04, 0xAB, 0xCD, 0xEF, 0x01}
-	sum := 0
-	for _, b := range data {
-		sum += int(b)
-	}
-	checksum := byte((^sum + 1) & 0xff)
-	data = append(data, checksum)
-
-	if !ValidateChecksum(data) {
-		t.Error("expected checksum to be valid")
-	}
-}
-
-func TestValidateChecksum_Invalid(t *testing.T) {
-	// Too short
-	if ValidateChecksum([]byte{0x7c, 0xff}) {
-		t.Error("expected checksum validation to fail for short data")
-	}
-
-	// Wrong checksum
-	data := []byte{0x7c, 0xff, 0xff, 0x02, 0x02, 0xAB, 0xCD, 0xFF}
-	if ValidateChecksum(data) {
-		t.Error("expected checksum validation to fail for wrong checksum")
-	}
-}
-
-func TestCommandName(t *testing.T) {
+func TestParsePacket_CanonicalVectors(t *testing.T) {
 	tests := []struct {
-		code     byte
-		expected string
+		name        string
+		rawHex      string
+		soi         byte
+		address     [2]byte
+		cid1        byte
+		cid2OrRTN   byte
+		length      byte
+		wantInfoLen int
+		wantTagUID  string
+		checksumOK  bool
 	}{
-		{CmdUIIRead, "UII_READ"},
-		{CmdTIDRead, "TID_READ"},
-		{CmdUserRead, "USER_READ"},
-		{CmdACK, "ACK"},
-		{CmdHeartbeat, "HEARTBEAT"},
-		{0xFF, "UNKNOWN(0xff)"},
+		{
+			name:        "read UII command vector",
+			rawHex:      "7CFFFF20000066",
+			soi:         PacketStartCommand,
+			address:     [2]byte{0xFF, 0xFF},
+			cid1:        CIDReadTypeCUII,
+			cid2OrRTN:   RTNACK,
+			length:      0x00,
+			wantInfoLen: 0,
+			wantTagUID:  "",
+			checksumOK:  true,
+		},
+		{
+			name:        "response UII vector",
+			rawHex:      "CCFFFF200210003000E2003411B802011383258566C983",
+			soi:         PacketStartResponse,
+			address:     [2]byte{0xFF, 0xFF},
+			cid1:        CIDReadTypeCUII,
+			cid2OrRTN:   RTNUIIData,
+			length:      0x10,
+			wantInfoLen: 16,
+			wantTagUID:  "E2003411B802011383258566",
+			checksumOK:  true,
+		},
+		{
+			name:        "response invalid checksum still parses fields",
+			rawHex:      "CCFFFF200210003000E2003411B802011383258566C9FF",
+			soi:         PacketStartResponse,
+			address:     [2]byte{0xFF, 0xFF},
+			cid1:        CIDReadTypeCUII,
+			cid2OrRTN:   RTNUIIData,
+			length:      0x10,
+			wantInfoLen: 16,
+			wantTagUID:  "E2003411B802011383258566",
+			checksumOK:  false,
+		},
 	}
 
 	for _, tt := range tests {
-		result := CommandName(tt.code)
-		if result != tt.expected {
-			t.Errorf("CommandName(0x%02x) = %s, want %s", tt.code, result, tt.expected)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			packet, err := ParsePacket(mustDecodeHex(t, tt.rawHex))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if packet.SOI != tt.soi {
+				t.Fatalf("expected SOI 0x%02X, got 0x%02X", tt.soi, packet.SOI)
+			}
+			if packet.Address != tt.address {
+				t.Fatalf("expected address [%02X %02X], got [%02X %02X]", tt.address[0], tt.address[1], packet.Address[0], packet.Address[1])
+			}
+			if packet.CID1 != tt.cid1 {
+				t.Fatalf("expected CID1 0x%02X, got 0x%02X", tt.cid1, packet.CID1)
+			}
+			if packet.CID2OrRTN != tt.cid2OrRTN {
+				t.Fatalf("expected CID2/RTN 0x%02X, got 0x%02X", tt.cid2OrRTN, packet.CID2OrRTN)
+			}
+			if packet.Length != tt.length {
+				t.Fatalf("expected length 0x%02X, got 0x%02X", tt.length, packet.Length)
+			}
+			if len(packet.Info) != tt.wantInfoLen {
+				t.Fatalf("expected info len %d, got %d", tt.wantInfoLen, len(packet.Info))
+			}
+			if packet.TagUID != tt.wantTagUID {
+				t.Fatalf("expected TagUID %q, got %q", tt.wantTagUID, packet.TagUID)
+			}
+			if packet.ChecksumOK != tt.checksumOK {
+				t.Fatalf("expected ChecksumOK %v, got %v", tt.checksumOK, packet.ChecksumOK)
+			}
+		})
+	}
+}
+
+func TestParsePacket_NonE280TagVector(t *testing.T) {
+	base := []byte{PacketStartResponse, PacketPad1, PacketPad2, CIDReadTypeCUII, RTNUIIData, 0x0C, 0x01, 0x20, 0x00, 0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89, 0x00}
+	raw := append(base, testChecksum(base))
+
+	packet, err := ParsePacket(raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if packet.TagUID != "ABCDEF0123456789" {
+		t.Fatalf("expected EPC ABCDEF0123456789, got %s", packet.TagUID)
+	}
+	if !packet.ChecksumOK {
+		t.Fatal("expected valid checksum")
+	}
+}
+
+func TestParsePacket_InvalidStartByteAndTruncation(t *testing.T) {
+	tests := []struct {
+		name   string
+		rawHex string
+		errMsg string
+	}{
+		{name: "invalid start byte", rawHex: "00FFFF20000066", errMsg: "invalid start byte"},
+		{name: "truncated packet by length", rawHex: "CCFFFF200210003000E2003411B802011383258566", errMsg: "packet truncated"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParsePacket(mustDecodeHex(t, tt.rawHex))
+			if err == nil {
+				t.Fatalf("expected error containing %q", tt.errMsg)
+			}
+		})
 	}
 }
 
 func TestParsedPacket_IsDataPacket(t *testing.T) {
-	// UII read is a data packet
-	packet := &ParsedPacket{CommandCode: CmdUIIRead}
-	if !packet.IsDataPacket() {
-		t.Error("UII_READ should be a data packet")
+	tests := []struct {
+		name string
+		pkt  ParsedPacket
+		want bool
+	}{
+		{name: "UII response is data", pkt: ParsedPacket{CID1: CID1ReadTypeCUII, CID2OrRTN: RTNUIIRead}, want: true},
+		{name: "ack is not data", pkt: ParsedPacket{CID1: CID1ReadTypeCUII, CID2OrRTN: RTNACK}, want: false},
+		{name: "TID response is not data", pkt: ParsedPacket{CID1: CID1ReadTypeCUII, CID2OrRTN: RTNTIDRead}, want: false},
+		{name: "user response is not data", pkt: ParsedPacket{CID1: CID1ReadTypeCUII, CID2OrRTN: RTNUserRead}, want: false},
 	}
 
-	// TID read is a data packet
-	packet = &ParsedPacket{CommandCode: CmdTIDRead}
-	if !packet.IsDataPacket() {
-		t.Error("TID_READ should be a data packet")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.pkt.IsDataPacket()
+			if got != tt.want {
+				t.Fatalf("expected IsDataPacket=%v, got %v", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestProtocolConstants_DocumentRolesAndLegacyAliases(t *testing.T) {
+	tests := []struct {
+		name string
+		got  byte
+		want byte
+	}{
+		{name: "CID read Type C UII command", got: CIDReadTypeCUII, want: 0x20},
+		{name: "CID1 read Type C UII alias", got: CID1ReadTypeCUII, want: CIDReadTypeCUII},
+		{name: "RTN ACK response", got: RTNACK, want: 0x00},
+		{name: "RTN UII data response", got: RTNUIIData, want: 0x02},
+		{name: "RTN TID data response", got: RTNTIDData, want: 0x03},
+		{name: "RTN user data response", got: RTNUserData, want: 0x04},
+		{name: "legacy CmdACK keeps historical CID value", got: CmdACK, want: CIDReadTypeCUII},
+		{name: "legacy RTN UII read alias", got: RTNUIIRead, want: RTNUIIData},
+		{name: "legacy Cmd UII read alias", got: CmdUIIRead, want: RTNUIIData},
 	}
 
-	// USER read is a data packet
-	packet = &ParsedPacket{CommandCode: CmdUserRead}
-	if !packet.IsDataPacket() {
-		t.Error("USER_READ should be a data packet")
-	}
-
-	// ACK is not a data packet
-	packet = &ParsedPacket{CommandCode: CmdACK}
-	if packet.IsDataPacket() {
-		t.Error("ACK should not be a data packet")
-	}
-
-	// Heartbeat is not a data packet
-	packet = &ParsedPacket{CommandCode: CmdHeartbeat}
-	if packet.IsDataPacket() {
-		t.Error("HEARTBEAT should not be a data packet")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got != tt.want {
+				t.Fatalf("expected 0x%02X, got 0x%02X", tt.want, tt.got)
+			}
+		})
 	}
 }

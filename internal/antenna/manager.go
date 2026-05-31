@@ -393,12 +393,12 @@ func (m *AntennaManager) ResetAutoReading() {
 	}
 }
 
-// HandlePacket processes a raw packet based on its RTN code.
-// Routes to appropriate handler based on RTN code at byte index 4.
+// HandlePacket processes a raw packet based on CID1 and RTN/CID2.
+// Routes to appropriate handler based on RTN/CID2 at byte index 4.
 func (m *AntennaManager) HandlePacket(data []byte) error {
 	// NEGATIVE: Check minimum packet size
-	if len(data) < 6 {
-		return fmt.Errorf("packet too short: %d bytes (min 6)", len(data))
+	if len(data) < 7 {
+		return fmt.Errorf("packet too short: %d bytes (min 7)", len(data))
 	}
 
 	// NEGATIVE: Validate framing
@@ -411,23 +411,33 @@ func (m *AntennaManager) HandlePacket(data []byte) error {
 		return fmt.Errorf("invalid padding bytes")
 	}
 
-	// Extract RTN code (byte 4)
-	rtnCode := data[3]
+	// Ignore corrupted packets: do not store/read-route invalid checksum frames.
+	if !protocol.ValidateChecksum(data) {
+		log.Printf("[WARN] Invalid checksum from antenna %s, skipping packet: %X", m.config.ID, data)
+		return nil
+	}
+
+	// Extract packet routing fields (CID1 at byte 3, RTN/CID2 at byte 4)
+	cid1 := data[3]
+	rtnCode := data[4]
 
 	// Update last packet time (shared by all handlers)
 	m.UpdateLastPacketTime()
 
 	// Route based on RTN code
 	switch rtnCode {
-	case 0x00:
+	case protocol.RTNACK:
 		return m.handleACK(data)
-	case 0x02:
+	case protocol.RTNUIIRead:
+		if cid1 != protocol.CID1ReadTypeCUII {
+			return m.handleUnknownRTN(data, rtnCode)
+		}
 		return m.handleUIIData(data)
-	case 0x06:
+	case protocol.RTNTagData:
 		return m.handleTagData(data)
-	case 0x07:
+	case protocol.RTNError:
 		return m.handleError(data)
-	case 0x10:
+	case protocol.RTNHeartbeat:
 		return m.handleHeartbeatResponse(data)
 	default:
 		return m.handleUnknownRTN(data, rtnCode)
@@ -444,18 +454,18 @@ func (m *AntennaManager) handleACK(data []byte) error {
 // handleUIIData processes RTN 0x02 (UII Data) packets.
 // Parses ANT/PC/EPC/RSSI and stores Reading in cache.
 func (m *AntennaManager) handleUIIData(data []byte) error {
-	// Extract data portion (starts at byte 5)
-	if len(data) < 6 {
+	// Extract info portion (starts at byte 6)
+	if len(data) < 7 {
 		return fmt.Errorf("UII data packet too short")
 	}
 
-	dataLen := int(data[4])
-	if len(data) < 5+dataLen+1 {
-		return fmt.Errorf("UII data packet truncated: expected %d bytes, have %d", 5+dataLen+1, len(data))
+	dataLen := int(data[5])
+	if len(data) < 6+dataLen+1 {
+		return fmt.Errorf("UII data packet truncated: expected %d bytes, have %d", 6+dataLen+1, len(data))
 	}
 
-	// Data portion: [ANT(1), PC(2), EPC(N), RSSI(1)]
-	dataPortion := data[5 : 5+dataLen]
+	// INFO portion: [ANT(1), PC(2), EPC(N), RSSI(1)]
+	dataPortion := data[6 : 6+dataLen]
 
 	// Parse antenna data using shared protocol package
 	parsed, err := protocol.ParseAntennaData(dataPortion)
@@ -573,10 +583,10 @@ func (m *AntennaManager) dataReader(ctx context.Context, conn net.Conn) {
 
 		// Validate checksum before processing
 		if len(packet) >= 7 {
-			if !protocol.ValidateChecksum(packet) {
-				log.Printf("[WARN] Invalid checksum from antenna %s, skipping packet: %X", m.config.ID, packet)
-				continue // Skip corrupted packets
-			}
+		if !protocol.ValidateChecksum(packet) {
+			log.Printf("[WARN] Invalid checksum from antenna %s, skipping packet: %X", m.config.ID, packet)
+			continue // Skip corrupted packets
+		}
 		}
 
 		// Handle the packet

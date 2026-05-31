@@ -62,7 +62,7 @@ func (m *mockClientWithConn) getConn() net.Conn {
 func TestDataReader_ReadsPackets(t *testing.T) {
 	// Create a mock connection with test data
 	uiiPacket := []byte{
-		0x7c, 0xff, 0xff, 0x02, 0x10,
+		0x7c, 0xff, 0xff, 0x20, 0x02, 0x10,
 		0x00, 0x30, 0x00,
 		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x66,
 		0xC9,
@@ -112,7 +112,7 @@ func TestDataReader_ReadsPackets(t *testing.T) {
 // TestDataReader_UpdatesLastPacketTime verifies last packet time is updated
 func TestDataReader_UpdatesLastPacketTime(t *testing.T) {
 	uiiPacket := []byte{
-		0x7c, 0xff, 0xff, 0x02, 0x10,
+		0x7c, 0xff, 0xff, 0x20, 0x02, 0x10,
 		0x00, 0x30, 0x00,
 		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x66,
 		0xC9,
@@ -159,7 +159,7 @@ func TestDataReader_UpdatesLastPacketTime(t *testing.T) {
 func TestDataReader_ValidatesChecksum(t *testing.T) {
 	// Packet with invalid checksum
 	invalidPacket := []byte{
-		0x7c, 0xff, 0xff, 0x02, 0x10,
+		0x7c, 0xff, 0xff, 0x20, 0x02, 0x10,
 		0x00, 0x30, 0x00,
 		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x66,
 		0xC9,
@@ -183,10 +183,11 @@ func TestDataReader_ValidatesChecksum(t *testing.T) {
 	cancelCtx()
 	manager.wg.Wait()
 
-	// Even with invalid checksum, the packet should be processed (logs warning but continues)
-	// The spec says to process even with invalid checksum for robustness
+	// Invalid checksum packets must be ignored for persistence.
 	mockCache.mu.Lock()
-	// We expect the packet to be processed despite invalid checksum
+	if len(mockCache.stored) != 0 {
+		t.Errorf("expected 0 readings for invalid checksum packet, got %d", len(mockCache.stored))
+	}
 	mockCache.mu.Unlock()
 }
 
@@ -258,7 +259,7 @@ func TestDataReader_ExitsOnContextCancel(t *testing.T) {
 // TestDataReader_MultiplePackets verifies reader handles multiple packets
 func TestDataReader_MultiplePackets(t *testing.T) {
 	uiiPacket1 := []byte{
-		0x7c, 0xff, 0xff, 0x02, 0x10,
+		0x7c, 0xff, 0xff, 0x20, 0x02, 0x10,
 		0x00, 0x30, 0x00,
 		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x66,
 		0xC9,
@@ -272,7 +273,7 @@ func TestDataReader_MultiplePackets(t *testing.T) {
 
 	// Second packet with different EPC
 	uiiPacket2 := []byte{
-		0x7c, 0xff, 0xff, 0x02, 0x10,
+		0x7c, 0xff, 0xff, 0x20, 0x02, 0x10,
 		0x00, 0x30, 0x00,
 		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x67, // Different last byte
 		0xC8, // Different RSSI
@@ -318,10 +319,12 @@ func TestDataReader_MultiplePackets(t *testing.T) {
 
 // TestDataReader_CallsHandlePacket verifies HandlePacket is called for each packet
 func TestDataReader_CallsHandlePacket(t *testing.T) {
-	ackPacket := []byte{
-		0x7c, 0xff, 0xff, 0x00, 0x00,
-		0x86, // Checksum for ACK
+	ackPacket := []byte{0x7c, 0xff, 0xff, 0x20, 0x00, 0x00}
+	sum := 0
+	for _, b := range ackPacket {
+		sum += int(b)
 	}
+	ackPacket = append(ackPacket, byte((^sum+1)&0xff))
 
 	mockConn := &mockConn{
 		readData: [][]byte{ackPacket},

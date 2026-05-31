@@ -10,44 +10,71 @@ import (
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
 )
 
-// Packet structure (AMG readers):
-// [0x7c, 0xff, 0xff, command_code, data_length, ...data, checksum]
-//
-// Response codes:
-//   0x02 = UII data
-//   0x20 = Success ACK
-//   0x10 = Heartbeat
+// Packet structure (generic RFID antenna protocol):
+// [SOI, ADR1, ADR2, CID1, CID2/RTN, LENGTH, ...INFO, CHKSUM]
 //
 // Checksum: two's complement of sum of all bytes except checksum
 //   sum += data[i] for i in 0..len-2
 //   checksum = (~sum + 1) & 0xff
 
 const (
-	// Packet framing - AMG readers can send 0x7C or 0xCC as start byte
-	PacketStart    byte = 0x7c
-	PacketStartAlt byte = 0xCC // Alternative start byte from some readers
-	PacketPad1     byte = 0xff
-	PacketPad2     byte = 0xff
+	// Packet framing - command packets start with 0x7C, responses with 0xCC.
+	PacketStartCommand  byte = 0x7C
+	PacketStartResponse byte = 0xCC
+	PacketPad1          byte = 0xff
+	PacketPad2          byte = 0xff
 
-	// Minimum valid packet: start + pad1 + pad2 + cmd + len + checksum
-	MinPacketSize = 6
+	// Minimum valid packet: SOI + ADR(2) + CID1 + CID2/RTN + LEN + CHKSUM
+	MinPacketSize = 7
 
-	// Response/command codes
-	CmdUIIRead   byte = 0x02 // UII data from reader
-	CmdTIDRead   byte = 0x03 // TID data from reader
-	CmdUserRead  byte = 0x04 // USER data from reader
-	CmdACK       byte = 0x20 // Success acknowledgement
-	CmdHeartbeat byte = 0x10 // Heartbeat keepalive
+	// CID codes.
+	CIDReadTypeCUII byte = 0x20
+
+	// CID1ReadTypeCUII is kept for compatibility with older call sites.
+	CID1ReadTypeCUII byte = CIDReadTypeCUII
+
+	// RTN/CID2 codes
+	RTNACK       byte = 0x00
+	RTNUIIData   byte = 0x02
+	RTNTIDData   byte = 0x03
+	RTNUserData  byte = 0x04
+	RTNTagData   byte = 0x06
+	RTNError     byte = 0x07
+	RTNHeartbeat byte = 0x10
+
+	// RTN aliases kept for compatibility with older call sites.
+	RTNUIIRead  byte = RTNUIIData
+	RTNTIDRead  byte = RTNTIDData
+	RTNUserRead byte = RTNUserData
+
+	// Deprecated: legacy Cmd* names are ambiguous because the protocol uses
+	// CID for command identity and RTN for response routing. Use CID*/RTN*
+	// constants for new code. CmdACK historically meant CID 0x20; keep that
+	// value so the public legacy API cannot silently drift to RTNACK (0x00).
+	CmdACK       byte = CIDReadTypeCUII
+	CmdUIIRead   byte = RTNUIIData
+	CmdTIDRead   byte = RTNTIDData
+	CmdUserRead  byte = RTNUserData
+	CmdHeartbeat byte = RTNHeartbeat
 )
 
 // ParsedPacket represents a decoded RFID packet from a reader.
 type ParsedPacket struct {
+	SOI        byte
+	Address    [2]byte // ADR1, ADR2
+	CID1       byte
+	CID2OrRTN  byte
+	Length     byte
+	Info       []byte
+	RawHex     string
+	ChecksumOK bool
+	TagUID     string // Extracted UII (hex string), empty if not a data packet
+
+	// Legacy aliases kept for compatibility with older call sites.
+	// NOTE: these are aliases of CID1/Length/Info, not RTN semantics.
 	CommandCode byte
 	DataLength  byte
 	Data        []byte
-	RawHex      string
-	ChecksumOK  bool
-	TagUID      string // Extracted UII (hex string), empty if not a data packet
 }
 
 // ParsePacket parses a raw byte slice into a ParsedPacket.
@@ -58,9 +85,9 @@ func ParsePacket(raw []byte) (*ParsedPacket, error) {
 		return nil, fmt.Errorf("packet too short: %d bytes (min %d)", len(raw), MinPacketSize)
 	}
 
-	// NEGATIVE: Validate framing - accept both 0x7C and 0xCC
-	if raw[0] != PacketStart && raw[0] != PacketStartAlt {
-		return nil, fmt.Errorf("invalid start byte: 0x%02x (expected 0x%02x or 0x%02x)", raw[0], PacketStart, PacketStartAlt)
+	// NEGATIVE: Validate framing - accept command and response SOI
+	if raw[0] != PacketStartCommand && raw[0] != PacketStartResponse {
+		return nil, fmt.Errorf("invalid start byte: 0x%02x (expected 0x%02x or 0x%02x)", raw[0], PacketStartCommand, PacketStartResponse)
 	}
 
 	// NEGATIVE: Validate padding bytes
@@ -68,26 +95,27 @@ func ParsePacket(raw []byte) (*ParsedPacket, error) {
 		return nil, fmt.Errorf("invalid padding bytes: [0x%02x, 0x%02x]", raw[1], raw[2])
 	}
 
-	cmdCode := raw[3]
-	dataLen := raw[4]
+	cid1 := raw[3]
+	cid2OrRTN := raw[4]
+	dataLen := raw[5]
 
 	// NEGATIVE: Validate total size matches declared length
-	expectedSize := 5 + int(dataLen) + 1 // header(5) + data + checksum
+	expectedSize := 6 + int(dataLen) + 1 // header(6) + info + checksum
 	if len(raw) < expectedSize {
 		return nil, fmt.Errorf("packet truncated: have %d bytes, need %d", len(raw), expectedSize)
 	}
 
-	// Extract data portion
-	var data []byte
+	// Extract info portion
+	var info []byte
 	if dataLen > 0 {
-		data = make([]byte, dataLen)
-		copy(data, raw[5:5+int(dataLen)])
+		info = make([]byte, dataLen)
+		copy(info, raw[6:6+int(dataLen)])
 	}
 
 	// Checksum: TWO'S COMPLEMENT (same as Node.js)
 	// sum += data[i] for all bytes except last
 	// checksum = (~sum + 1) & 0xff
-	checksumIdx := 5 + int(dataLen)
+	checksumIdx := 6 + int(dataLen)
 	sum := 0
 	for i := 0; i < checksumIdx; i++ {
 		sum += int(raw[i])
@@ -98,20 +126,29 @@ func ParsePacket(raw []byte) (*ParsedPacket, error) {
 
 	rawHex := hex.EncodeToString(raw[:checksumIdx+1])
 
-	// Extract UII if this is a data packet (RTN code 0x02, 0x03, 0x04)
+	// Extract UII if this is a Type C UII response.
 	tagUID := ""
-	if (cmdCode == CmdUIIRead || cmdCode == CmdTIDRead || cmdCode == CmdUserRead) && len(data) > 0 {
-		tagUID = hex.EncodeToString(data)
+	if cid1 == CIDReadTypeCUII && cid2OrRTN == RTNUIIData && len(info) > 0 {
+		if parsed, err := ParseAntennaData(info); err == nil {
+			tagUID = parsed.EPC
+		}
 	}
 
 	// HAPPY PATH: Return parsed packet
 	return &ParsedPacket{
-		CommandCode: cmdCode,
+		SOI:        raw[0],
+		Address:    [2]byte{raw[1], raw[2]},
+		CID1:       cid1,
+		CID2OrRTN:  cid2OrRTN,
+		Length:     dataLen,
+		Info:       info,
+		RawHex:     rawHex,
+		ChecksumOK: checksumOK,
+		TagUID:     tagUID,
+
+		CommandCode: cid1,
 		DataLength:  dataLen,
-		Data:        data,
-		RawHex:      rawHex,
-		ChecksumOK:  checksumOK,
-		TagUID:      tagUID,
+		Data:        info,
 	}, nil
 }
 
@@ -136,16 +173,8 @@ func ValidateChecksum(data []byte) bool {
 // CommandName returns a human-readable name for the command code.
 func CommandName(code byte) string {
 	switch code {
-	case CmdUIIRead:
-		return "UII_READ"
-	case CmdTIDRead:
-		return "TID_READ"
-	case CmdUserRead:
-		return "USER_READ"
-	case CmdACK:
-		return "ACK"
-	case CmdHeartbeat:
-		return "HEARTBEAT"
+	case CIDReadTypeCUII:
+		return "READ_TYPE_C_UII"
 	default:
 		return fmt.Sprintf("UNKNOWN(0x%02x)", code)
 	}
@@ -153,9 +182,7 @@ func CommandName(code byte) string {
 
 // IsDataPacket returns true if the packet contains tag data.
 func (p *ParsedPacket) IsDataPacket() bool {
-	return p.CommandCode == CmdUIIRead ||
-		p.CommandCode == CmdTIDRead ||
-		p.CommandCode == CmdUserRead
+	return p.CID1 == CIDReadTypeCUII && p.CID2OrRTN == RTNUIIData
 }
 
 // ParsedAntennaData represents parsed ANT, PC, EPC, RSSI from antenna data packet.

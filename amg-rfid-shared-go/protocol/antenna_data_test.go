@@ -8,7 +8,7 @@ func TestParseAntennaData_CompletePacket(t *testing.T) {
 	// Real antenna packet format: ANT=0x00, PC=0x3000, EPC=0xE2003411B802011383258566, RSSI=0xC9
 	// Data: [ANT(1), PC(2), EPC(12), RSSI(1)] = 16 bytes total
 	// ANT: 0x00
-	// PC: 0x30 0x00 (big-endian) = 0x3000 = SGTIN-96 = 12 words = 24 bytes = 12 EPC bytes
+	// PC: 0x30 0x00 (big-endian) = 0x3000 -> length bits = 6 words = 12 EPC bytes = 24 hex chars
 	// EPC: 0xE2 0x00 0x34 0x11 0xB8 0x02 0x01 0x13 0x83 0x25 0x85 0x66
 	// RSSI: 0xC9 (201 decimal)
 	data := []byte{
@@ -47,11 +47,11 @@ func TestParseAntennaData_CompletePacket(t *testing.T) {
 
 func TestParseAntennaData_With003000Prefix(t *testing.T) {
 	// Some antennas prepend 003000 to the EPC - we need to strip it
-	// PC=0x3000 means 12 EPC bytes
+	// PC=0x3000 means 12 EPC bytes (24 hex chars)
 	// If UII starts with 003000 (bytes 0x00 0x30 0x00), strip that prefix
 	data := []byte{
 		0x00,       // ANT
-		0x30, 0x00, // PC = 12 words
+		0x30, 0x00, // PC length bits encode 6 words -> 12 bytes
 		0x00, 0x30, 0x00, 0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, // EPC with 003000 prefix
 		0xAA, // RSSI
 	}
@@ -71,7 +71,7 @@ func TestParseAntennaData_ZeroRSSI(t *testing.T) {
 	// RSSI byte is 0x00 - should still be valid
 	data := []byte{
 		0x01,       // ANT (different antenna)
-		0x20, 0x00, // PC = 8 words = 16 bytes = 8 EPC bytes
+		0x20, 0x00, // PC length bits encode 4 words -> 8 EPC bytes
 		0xAB, 0xCD, 0xEF, 0x01, 0x23, 0x45, 0x67, 0x89, // EPC
 		0x00, // RSSI = 0 (valid - means no signal)
 	}
@@ -101,7 +101,7 @@ func TestParseAntennaData_TooShort(t *testing.T) {
 }
 
 func TestParseAntennaData_TruncatedEPC(t *testing.T) {
-	// PC says 12 words (24 bytes), but we only provide 6
+	// PC says 12 EPC bytes, but we only provide 6
 	data := []byte{
 		0x00,       // ANT
 		0x30, 0x00, // PC = 12 words
