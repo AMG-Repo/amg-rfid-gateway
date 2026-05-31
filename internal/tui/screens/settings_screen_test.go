@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 )
@@ -594,6 +596,113 @@ func TestSettingsScreen_AntennaField(t *testing.T) {
 	if !strings.Contains(view, "192.168.1.10") {
 		t.Error("view should contain antenna IP '192.168.1.10'")
 	}
+}
+
+func TestSettingsScreen_RendersAntennaProtocol(t *testing.T) {
+	tests := []struct {
+		name         string
+		protocol     config.AntennaProtocol
+		wantProtocol string
+	}{
+		{name: "default protocol displays as generic", protocol: "", wantProtocol: "generic"},
+		{name: "explicit protocol displays unchanged", protocol: config.ProtocolZebra, wantProtocol: "zebra"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.GatewayConfig{
+				GatewayID: "test",
+				Antennas: []config.AntennaConfig{
+					{ID: "dock", IP: "192.168.1.10", Port: 8080, Enabled: true, Zone: "entrada", Protocol: tt.protocol},
+				},
+			}
+
+			m := NewSettingsScreen(cfg)
+			view := m.View()
+
+			assert.Contains(t, view, "Antenna dock Protocol")
+			assert.Contains(t, view, tt.wantProtocol)
+		})
+	}
+}
+
+func TestSettingsScreen_EditsAntennaProtocolPerAntenna(t *testing.T) {
+	cfg := &config.GatewayConfig{
+		GatewayID:               "gateway-original",
+		CompanyID:               "company-original",
+		CloudURL:                "wss://example.com",
+		JWTSecret:               "secret",
+		ListenMode:              "auto",
+		WebAccessMode:           "local",
+		WebListenAddr:           "127.0.0.1",
+		WebAuthToken:            "keep-token",
+		LogLevel:                "info",
+		SyncInterval:            30,
+		BatchSize:               100,
+		MaxRetries:              5,
+		HealthPort:              8080,
+		DataPath:                "/keep/data",
+		MaxPendingConfirmations: intPtr(222),
+		PendingWarningThreshold: intPtr(111),
+		Antennas: []config.AntennaConfig{
+			{ID: "dock", IP: "192.168.1.10", Port: 8080, Enabled: true, Zone: "entrada", Protocol: config.ProtocolGeneric},
+			{ID: "exit", IP: "192.168.1.11", Port: 8081, Enabled: false, Zone: "salida", Protocol: config.ProtocolGeneric},
+		},
+	}
+	m := NewSettingsScreen(cfg)
+
+	protocolField := requireFieldIndex(t, m, "antenna_protocol:dock")
+	m.cursor = protocolField
+
+	var newModel tea.Model
+	newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(SettingsScreenModel)
+	m.editBuffer = "zebra"
+	newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(SettingsScreenModel)
+
+	require.True(t, m.HasChanges())
+	result := m.GetConfig()
+
+	assert.Equal(t, config.ProtocolZebra, result.Antennas[0].Protocol)
+	assert.Equal(t, config.ProtocolGeneric, result.Antennas[1].Protocol)
+	assert.Equal(t, "gateway-original", result.GatewayID)
+	assert.Equal(t, "192.168.1.10", result.Antennas[0].IP)
+	assert.Equal(t, 8080, result.Antennas[0].Port)
+	assert.True(t, result.Antennas[0].Enabled)
+	assert.Equal(t, "entrada", result.Antennas[0].Zone)
+	assert.Equal(t, "keep-token", result.WebAuthToken)
+	assert.Equal(t, "/keep/data", result.DataPath)
+}
+
+func TestSettingsScreen_RejectsUnsupportedAntennaProtocol(t *testing.T) {
+	cfg := &config.GatewayConfig{
+		GatewayID: "test",
+		Antennas: []config.AntennaConfig{
+			{ID: "dock", IP: "192.168.1.10", Port: 8080, Enabled: true, Protocol: config.ProtocolGeneric},
+		},
+	}
+	m := NewSettingsScreen(cfg)
+	m.cursor = requireFieldIndex(t, m, "antenna_protocol:dock")
+
+	newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(SettingsScreenModel)
+	m.editBuffer = "alien"
+
+	err := m.validateCurrentField()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "generic, zebra")
+}
+
+func requireFieldIndex(t *testing.T, m SettingsScreenModel, key string) int {
+	t.Helper()
+	for i, field := range m.fields {
+		if field.key == key {
+			return i
+		}
+	}
+	t.Fatalf("field %q not found", key)
+	return -1
 }
 
 // Helper function
