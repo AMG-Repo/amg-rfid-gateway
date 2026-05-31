@@ -549,6 +549,7 @@ func (m *AntennaManager) dataReader(ctx context.Context, conn net.Conn) {
 	// NOTE: Do NOT close conn here — connection lifecycle is managed by rawtcp.Client
 
 	buf := make([]byte, 4096)
+	extractor := protocol.NewStreamExtractor()
 
 	for {
 		select {
@@ -577,22 +578,12 @@ func (m *AntennaManager) dataReader(ctx context.Context, conn net.Conn) {
 			continue
 		}
 
-		// Process the packet
-		packet := make([]byte, n)
-		copy(packet, buf[:n])
-
-		// Validate checksum before processing
-		if len(packet) >= 7 {
-		if !protocol.ValidateChecksum(packet) {
-			log.Printf("[WARN] Invalid checksum from antenna %s, skipping packet: %X", m.config.ID, packet)
-			continue // Skip corrupted packets
-		}
-		}
-
-		// Handle the packet
-		if err := m.HandlePacket(packet); err != nil {
-			log.Printf("[ERROR] Failed to handle packet from antenna %s: %v", m.config.ID, err)
-			// Continue processing - don't stop on parse errors
+		frames := extractor.Append(buf[:n])
+		for _, frame := range frames {
+			if err := m.HandlePacket(frame); err != nil {
+				log.Printf("[ERROR] Failed to handle packet from antenna %s: %v", m.config.ID, err)
+				// Continue processing - don't stop on parse errors
+			}
 		}
 	}
 }
