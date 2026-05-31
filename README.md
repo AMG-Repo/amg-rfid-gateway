@@ -262,8 +262,8 @@ data_path: "/opt/amg-rfid-gateway/data"
 
 # Antenna configurations
 # Protocol field: "generic" is the supported default for current packet handling.
-# "zebra" is accepted by configuration for future Zebra-specific handlers, but
-# do not enable Zebra runtime deployments until protocol handler support is added.
+# "zebra" is accepted by configuration and fails explicitly at runtime until
+# Zebra-specific reader support is implemented.
 # Zone field: "entrada" (entry), "salida" (exit), or "" (empty for auto-detect)
 antennas:
   - id: "ANT-001"
@@ -281,7 +281,7 @@ antennas:
     protocol: "generic"
 
   # Zebra can be selected in config/TUI, but runtime parsing is intentionally
-  # unsupported until a Zebra-specific protocol handler is implemented.
+  # unsupported until a Zebra-specific reader handler is implemented.
   # - id: "ANT-003"
   #   ip: "192.168.1.102"
   #   port: 5084
@@ -371,9 +371,11 @@ Each antenna supports a `protocol` field:
 | Protocol | Status | Use when |
 |----------|--------|----------|
 | `generic` | Supported default | The antenna speaks the current generic RFID TCP packet format |
-| `zebra` | Configurable, runtime unsupported | Preparing configuration for a future Zebra-specific handler |
+| `zebra` | Configurable, explicit runtime unsupported | Preparing configuration for a future Zebra-specific handler |
 
 Existing configs without `protocol` are treated as `generic`. Unsupported protocol values fail configuration validation so the gateway does not accidentally parse another reader type as generic.
+
+You can edit antenna protocol values from the Settings TUI. At runtime, non-generic protocols are routed through the protocol handler boundary; until a Zebra handler exists, `zebra` fails explicitly instead of being parsed as generic.
 
 ## Usage
 
