@@ -51,6 +51,68 @@ func TestGatewayConfig_SaveToYAML_Basic(t *testing.T) {
 	}
 }
 
+func TestGatewayConfig_SaveToYAML_PreservesAntennaProtocol(t *testing.T) {
+	tests := []struct {
+		name             string
+		protocol         AntennaProtocol
+		expectedProtocol AntennaProtocol
+	}{
+		{
+			name:             "explicit generic persists as generic",
+			protocol:         ProtocolGeneric,
+			expectedProtocol: ProtocolGeneric,
+		},
+		{
+			name:             "explicit zebra persists as zebra",
+			protocol:         ProtocolZebra,
+			expectedProtocol: ProtocolZebra,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configPath := filepath.Join(tmpDir, "config.yaml")
+			cfg := &GatewayConfig{
+				GatewayID:     "gw-001",
+				CompanyID:     "comp-123",
+				CloudURL:      "wss://cloud.example.com/ws",
+				JWTSecret:     "test-secret",
+				ListenMode:    "auto",
+				WebAccessMode: "local",
+				WebListenAddr: "127.0.0.1",
+				Antennas: []AntennaConfig{
+					{ID: "ant-1", IP: "192.168.1.100", Port: 6000, Enabled: true, Protocol: tt.protocol},
+				},
+			}
+
+			if err := cfg.SaveToYAML(configPath); err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+
+			loaded, err := LoadFromYAML(configPath)
+			if err != nil {
+				t.Fatalf("failed to load saved config: %v", err)
+			}
+			if len(loaded.Antennas) != 1 {
+				t.Fatalf("expected 1 antenna, got %d", len(loaded.Antennas))
+			}
+			if loaded.Antennas[0].Protocol != tt.expectedProtocol {
+				t.Fatalf("expected protocol %q, got %q", tt.expectedProtocol, loaded.Antennas[0].Protocol)
+			}
+
+			data, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatalf("failed to read saved config: %v", err)
+			}
+			expectedYAML := "protocol: " + string(tt.expectedProtocol)
+			if !strings.Contains(string(data), expectedYAML) {
+				t.Fatalf("expected saved YAML to contain %q, got:\n%s", expectedYAML, string(data))
+			}
+		})
+	}
+}
+
 func TestGatewayConfig_SaveToYAML_CreatesBackup(t *testing.T) {
 	// Test that existing file is backed up
 	tmpDir := t.TempDir()
@@ -187,11 +249,11 @@ func TestGatewayConfig_SaveToYAML_ComplexConfig(t *testing.T) {
 	threshold := 1000
 
 	cfg := &GatewayConfig{
-		GatewayID:                 "complex-gw",
-		CompanyID:                 "complex-comp",
-		CloudURL:                  "wss://complex.example.com/ws",
-		JWTSecret:                 "complex-secret",
-		Antennas:                  []AntennaConfig{
+		GatewayID: "complex-gw",
+		CompanyID: "complex-comp",
+		CloudURL:  "wss://complex.example.com/ws",
+		JWTSecret: "complex-secret",
+		Antennas: []AntennaConfig{
 			{ID: "ant-1", IP: "192.168.1.100", Port: 6000, Enabled: true, Zone: "entrada"},
 			{ID: "ant-2", IP: "192.168.1.101", Port: 6000, Enabled: false, Zone: "salida"},
 		},

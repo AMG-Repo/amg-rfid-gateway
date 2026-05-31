@@ -15,6 +15,27 @@ import (
 
 const legacyLANConfigMigrationError = "legacy config detected: web_access_mode is missing while web_listen_addr=0.0.0.0; set web_access_mode: \"lan\" and web_auth_token, or change web_listen_addr to \"127.0.0.1\""
 
+// AntennaProtocol identifies the packet protocol used by an antenna.
+type AntennaProtocol string
+
+const (
+	// ProtocolGeneric is the backward-compatible protocol for existing deployments.
+	ProtocolGeneric AntennaProtocol = "generic"
+	// ProtocolZebra is a known protocol value reserved for Zebra-specific handling.
+	ProtocolZebra AntennaProtocol = "zebra"
+)
+
+var supportedAntennaProtocols = map[AntennaProtocol]struct{}{
+	ProtocolGeneric: {},
+	ProtocolZebra:   {},
+}
+
+// IsSupportedAntennaProtocol reports whether protocol is accepted by config validation.
+func IsSupportedAntennaProtocol(protocol AntennaProtocol) bool {
+	_, ok := supportedAntennaProtocols[protocol]
+	return ok
+}
+
 // GatewayConfig holds the complete configuration for the RFID gateway.
 type GatewayConfig struct {
 	GatewayID    string          `yaml:"gateway_id"`
@@ -62,11 +83,12 @@ type GatewayConfig struct {
 
 // AntennaConfig holds configuration for a single antenna.
 type AntennaConfig struct {
-	ID      string `yaml:"id"`
-	IP      string `yaml:"ip"`
-	Port    int    `yaml:"port"`
-	Enabled bool   `yaml:"enabled"`
-	Zone    string `yaml:"zone"` // "entrada", "salida", or "" (empty for auto)
+	ID       string          `yaml:"id"`
+	IP       string          `yaml:"ip"`
+	Port     int             `yaml:"port"`
+	Enabled  bool            `yaml:"enabled"`
+	Zone     string          `yaml:"zone"` // "entrada", "salida", or "" (empty for auto)
+	Protocol AntennaProtocol `yaml:"protocol,omitempty"`
 }
 
 // Validate checks the gateway configuration.
@@ -126,6 +148,12 @@ func (c *GatewayConfig) Validate() error {
 		}
 	}
 
+	for i := range c.Antennas {
+		if err := c.Antennas[i].Validate(); err != nil {
+			return fmt.Errorf("antenna %q is invalid: %w", c.Antennas[i].ID, err)
+		}
+	}
+
 	// HAPPY PATH: All validations passed
 	return nil
 }
@@ -148,8 +176,23 @@ func (a *AntennaConfig) Validate() error {
 		return errors.New("antenna port must be between 1 and 65535")
 	}
 
+	protocol := a.Protocol
+	if protocol == "" {
+		protocol = ProtocolGeneric
+	}
+	if !IsSupportedAntennaProtocol(protocol) {
+		return fmt.Errorf("unsupported antenna protocol %q", a.Protocol)
+	}
+
 	// HAPPY PATH: All validations passed
 	return nil
+}
+
+// ApplyDefaults sets default values for optional antenna fields.
+func (a *AntennaConfig) ApplyDefaults() {
+	if a.Protocol == "" {
+		a.Protocol = ProtocolGeneric
+	}
 }
 
 // Address returns the full address for the antenna (IP:Port).
@@ -523,5 +566,9 @@ func (c *GatewayConfig) ApplyDefaults() {
 	if c.PendingWarningThreshold == nil {
 		defaultThreshold := 1000
 		c.PendingWarningThreshold = &defaultThreshold
+	}
+
+	for i := range c.Antennas {
+		c.Antennas[i].ApplyDefaults()
 	}
 }

@@ -160,6 +160,112 @@ antennas:
 	}
 }
 
+func TestLoadFromYAML_AntennaProtocolDefaults(t *testing.T) {
+	tests := []struct {
+		name             string
+		antennaYAML      string
+		expectedProtocol AntennaProtocol
+	}{
+		{
+			name: "missing protocol defaults to generic",
+			antennaYAML: `  - id: "ant-1"
+    ip: "192.168.1.100"
+    port: 6000
+    enabled: true`,
+			expectedProtocol: ProtocolGeneric,
+		},
+		{
+			name: "empty protocol defaults to generic",
+			antennaYAML: `  - id: "ant-1"
+    ip: "192.168.1.100"
+    port: 6000
+    enabled: true
+    protocol: ""`,
+			expectedProtocol: ProtocolGeneric,
+		},
+		{
+			name: "explicit zebra remains zebra",
+			antennaYAML: `  - id: "ant-1"
+    ip: "192.168.1.100"
+    port: 6000
+    enabled: true
+    protocol: "zebra"`,
+			expectedProtocol: ProtocolZebra,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := `
+gateway_id: "gw-001"
+company_id: "comp-123"
+cloud_url: "wss://cloud.example.com/ws"
+jwt_secret: "test-secret-key"
+antennas:
+` + tt.antennaYAML + "\n"
+			tmpDir := t.TempDir()
+			configPath := filepath.Join(tmpDir, "config.yaml")
+			if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+				t.Fatalf("failed to write test config: %v", err)
+			}
+
+			cfg, err := LoadFromYAML(configPath)
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+			if len(cfg.Antennas) != 1 {
+				t.Fatalf("expected 1 antenna, got %d", len(cfg.Antennas))
+			}
+			if cfg.Antennas[0].Protocol != tt.expectedProtocol {
+				t.Fatalf("expected protocol %q, got %q", tt.expectedProtocol, cfg.Antennas[0].Protocol)
+			}
+		})
+	}
+}
+
+func TestGatewayConfig_Validate_AntennaProtocol(t *testing.T) {
+	tests := []struct {
+		name        string
+		protocol    AntennaProtocol
+		expectError bool
+	}{
+		{name: "generic protocol is supported", protocol: ProtocolGeneric},
+		{name: "zebra protocol is supported", protocol: ProtocolZebra},
+		{name: "unsupported protocol fails validation", protocol: AntennaProtocol("alien"), expectError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &GatewayConfig{
+				GatewayID:     "gw-001",
+				CompanyID:     "comp-123",
+				CloudURL:      "wss://cloud.example.com/ws",
+				JWTSecret:     "secret-key",
+				ListenMode:    "auto",
+				WebAccessMode: "local",
+				WebListenAddr: "127.0.0.1",
+				Antennas: []AntennaConfig{
+					{ID: "ant-1", IP: "192.168.1.100", Port: 6000, Enabled: true, Protocol: tt.protocol},
+				},
+			}
+
+			err := cfg.Validate()
+			if tt.expectError {
+				if err == nil {
+					t.Fatal("expected validation error, got nil")
+				}
+				if !strings.Contains(err.Error(), "unsupported antenna protocol") {
+					t.Fatalf("expected unsupported protocol error, got %q", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no validation error, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadFromYAML_FileNotFound(t *testing.T) {
 	_, err := LoadFromYAML("/nonexistent/path/config.yaml")
 	if err == nil {

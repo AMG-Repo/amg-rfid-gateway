@@ -23,6 +23,9 @@ data_path: "/opt/amg-rfid-gateway/data"
 
 # Antenna configurations
 # Add one entry for each RFID antenna connected to this gateway
+# Protocol field: "generic" is the supported default for current packet handling.
+# "zebra" is accepted by configuration for future Zebra-specific handlers, but
+# do not enable Zebra runtime deployments until protocol handler support is added.
 # Zone field: "entrada" (entry), "salida" (exit), or "" (empty for auto-detect)
 antennas:
   # Example: Entrance antenna (raw TCP)
@@ -31,6 +34,7 @@ antennas:
     port: 49153
     enabled: false  # Set to true to enable
     zone: "entrada"  # Fixed zone: entrada, salida, or "" for auto
+    protocol: "generic"
 
   # Example: Exit antenna
   - id: "ANT-002"
@@ -38,13 +42,15 @@ antennas:
     port: 49153
     enabled: false
     zone: "salida"  # Fixed zone: entrada, salida, or "" for auto
+    protocol: "generic"
 
-  # Example: Zebra antenna (LLRP) with auto zone detection
+  # Example: Zebra antenna (configuration accepted; runtime handler not implemented yet)
   # - id: "ANT-003"
   #   ip: "192.168.1.102"
   #   port: 5084
   #   enabled: false
   #   zone: ""  # Empty string = auto-detect based on location/verifier rules
+  #   protocol: "zebra"
 
 # Web UI Configuration (Local Verification Frontend)
 # Enable the built-in web interface for manual tag confirmation
