@@ -90,7 +90,7 @@ func NewSettingsScreenStyles() *SettingsScreenStyles {
 			Bold(true).
 			Foreground(lipgloss.Color("#B8B8B8")).
 			MarginLeft(4).
-			Width(20),
+			Width(28),
 		FieldValue: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFFFFF")).
 			Width(40),
@@ -152,7 +152,20 @@ func NewSettingsScreen(cfg *config.GatewayConfig) SettingsScreenModel {
 		webAccessMode = "local"
 	}
 
-	// Define fields
+	fields, values := settingsFieldsAndValues(cfg, queueCap, warningThreshold, webAccessMode)
+
+	return SettingsScreenModel{
+		config:   cfg,
+		original: original,
+		fields:   fields,
+		values:   values,
+		cursor:   0,
+		editing:  false,
+		styles:   NewSettingsScreenStyles(),
+	}
+}
+
+func settingsFieldsAndValues(cfg *config.GatewayConfig, queueCap, warningThreshold, webAccessMode string) ([]settingsField, []string) {
 	fields := []settingsField{
 		{label: "Gateway ID", key: "gateway_id", required: true, validator: validateNotEmpty},
 		{label: "Company ID", key: "company_id", required: false, validator: nil},
@@ -164,7 +177,6 @@ func NewSettingsScreen(cfg *config.GatewayConfig) SettingsScreenModel {
 		{label: "Warning Threshold", key: "warning_threshold", required: false, validator: validateQueueCap},
 	}
 
-	// Initialize values from config
 	values := []string{
 		cfg.GatewayID,
 		cfg.CompanyID,
@@ -176,15 +188,17 @@ func NewSettingsScreen(cfg *config.GatewayConfig) SettingsScreenModel {
 		warningThreshold,
 	}
 
-	return SettingsScreenModel{
-		config:   cfg,
-		original: original,
-		fields:   fields,
-		values:   values,
-		cursor:   0,
-		editing:  false,
-		styles:   NewSettingsScreenStyles(),
+	for _, ant := range cfg.Antennas {
+		fields = append(fields, settingsField{
+			label:     fmt.Sprintf("Antenna %s Protocol", ant.ID),
+			key:       antennaProtocolFieldKey(ant.ID),
+			required:  true,
+			validator: validateAntennaProtocol,
+		})
+		values = append(values, string(effectiveAntennaProtocol(ant.Protocol)))
 	}
+
+	return fields, values
 }
 
 // copyConfig creates a deep copy of the config, preserving ALL fields.
@@ -417,7 +431,7 @@ func (m SettingsScreenModel) View() string {
 				status = "enabled"
 			}
 			antennaSection += m.styles.FieldLabel.Render(fmt.Sprintf("  %s:", ant.ID))
-			antennaSection += fmt.Sprintf(" %s:%d (%s) Zone: %s\n", ant.IP, ant.Port, status, ant.Zone)
+			antennaSection += fmt.Sprintf(" %s:%d (%s) Zone: %s Protocol: %s\n", ant.IP, ant.Port, status, ant.Zone, effectiveAntennaProtocol(ant.Protocol))
 		}
 	}
 
@@ -471,29 +485,42 @@ func (m SettingsScreenModel) getOriginalValue(idx int) string {
 		return ""
 	}
 
-	switch idx {
-	case 0:
+	if idx < 0 || idx >= len(m.fields) {
+		return ""
+	}
+
+	field := m.fields[idx]
+	switch field.key {
+	case "gateway_id":
 		return m.original.GatewayID
-	case 1:
+	case "company_id":
 		return m.original.CompanyID
-	case 2:
+	case "cloud_url":
 		return m.original.CloudURL
-	case 3:
+	case "web_access_mode":
 		return m.original.WebAccessMode
-	case 4:
+	case "web_auth_token":
 		return m.original.WebAuthToken
-	case 5:
+	case "log_level":
 		return m.original.LogLevel
-	case 6:
+	case "queue_cap":
 		if m.original.MaxPendingConfirmations != nil {
 			return strconv.Itoa(*m.original.MaxPendingConfirmations)
 		}
 		return "10000"
-	case 7:
+	case "warning_threshold":
 		if m.original.PendingWarningThreshold != nil {
 			return strconv.Itoa(*m.original.PendingWarningThreshold)
 		}
 		return "1000"
+	default:
+		if antennaID, ok := strings.CutPrefix(field.key, "antenna_protocol:"); ok {
+			for _, ant := range m.original.Antennas {
+				if ant.ID == antennaID {
+					return string(effectiveAntennaProtocol(ant.Protocol))
+				}
+			}
+		}
 	}
 	return ""
 }
@@ -530,6 +557,19 @@ func (m SettingsScreenModel) GetConfig() *config.GatewayConfig {
 		cfg.PendingWarningThreshold = val
 	}
 
+	for i, field := range m.fields {
+		antennaID, ok := strings.CutPrefix(field.key, "antenna_protocol:")
+		if !ok {
+			continue
+		}
+		for antennaIdx := range cfg.Antennas {
+			if cfg.Antennas[antennaIdx].ID == antennaID {
+				cfg.Antennas[antennaIdx].Protocol = config.AntennaProtocol(strings.ToLower(strings.TrimSpace(m.values[i])))
+				break
+			}
+		}
+	}
+
 	return cfg
 }
 
@@ -547,33 +587,31 @@ func (m *SettingsScreenModel) SetConfig(cfg *config.GatewayConfig) {
 	m.config = cfg
 	m.original = copyConfig(cfg)
 
-	// Update values
-	m.values[0] = cfg.GatewayID
-	m.values[1] = cfg.CompanyID
-	m.values[2] = cfg.CloudURL
-	m.values[3] = cfg.WebAccessMode
-	m.values[4] = cfg.WebAuthToken
-	m.values[5] = cfg.LogLevel
-
-	// Update queue caps
+	queueCap := "10000"
 	if cfg.MaxPendingConfirmations != nil {
 		if *cfg.MaxPendingConfirmations == 0 {
-			m.values[6] = "0 (unlimited)"
+			queueCap = "0 (unlimited)"
 		} else {
-			m.values[6] = strconv.Itoa(*cfg.MaxPendingConfirmations)
+			queueCap = strconv.Itoa(*cfg.MaxPendingConfirmations)
 		}
-	} else {
-		m.values[6] = "10000"
 	}
 
+	warningThreshold := "1000"
 	if cfg.PendingWarningThreshold != nil {
 		if *cfg.PendingWarningThreshold == 0 {
-			m.values[7] = "0 (never)"
+			warningThreshold = "0 (never)"
 		} else {
-			m.values[7] = strconv.Itoa(*cfg.PendingWarningThreshold)
+			warningThreshold = strconv.Itoa(*cfg.PendingWarningThreshold)
 		}
-	} else {
-		m.values[7] = "1000"
+	}
+
+	webAccessMode := cfg.WebAccessMode
+	if webAccessMode == "" {
+		webAccessMode = "local"
+	}
+	m.fields, m.values = settingsFieldsAndValues(cfg, queueCap, warningThreshold, webAccessMode)
+	if m.cursor >= len(m.fields) {
+		m.cursor = len(m.fields) - 1
 	}
 
 	m.hasChanges = false
@@ -636,6 +674,25 @@ func validateQueueCap(value string) error {
 		return errors.New("must be a number")
 	}
 	return nil
+}
+
+func validateAntennaProtocol(value string) error {
+	protocol := config.AntennaProtocol(strings.ToLower(strings.TrimSpace(value)))
+	if config.IsSupportedAntennaProtocol(protocol) {
+		return nil
+	}
+	return errors.New("must be: generic, zebra")
+}
+
+func antennaProtocolFieldKey(antennaID string) string {
+	return "antenna_protocol:" + antennaID
+}
+
+func effectiveAntennaProtocol(protocol config.AntennaProtocol) config.AntennaProtocol {
+	if protocol == "" {
+		return config.ProtocolGeneric
+	}
+	return protocol
 }
 
 // parseQueueCap parses a queue cap value string.

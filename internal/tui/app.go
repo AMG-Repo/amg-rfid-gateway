@@ -283,6 +283,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.antennas.SetSize(msg.Width, msg.Height)
 		a.network.SetSize(msg.Width, msg.Height)
 		a.status.SetSize(msg.Width, msg.Height)
+		a.settings.SetSize(msg.Width, msg.Height)
 		return a, nil
 	}
 
