@@ -12,6 +12,7 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 - **Local Caching**: SQLite-based buffering for offline operation
 - **Automatic Sync**: Batches readings to the cloud via secure WebSocket/HTTP
 - **Multi-Antenna Support**: Connect multiple antennas simultaneously
+- **Per-Antenna Protocol Config**: Configure each antenna protocol independently (`generic` by default)
 - **Web UI**: Built-in web interface for manual tag confirmation
 - **OTA Updates**: Automatic over-the-air updates from GitHub releases
 - **Health Monitoring**: Built-in health checks and Prometheus metrics
@@ -68,6 +69,7 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 | **Auto-Retry** | Exponential backoff (max 5 retries) for failed syncs |
 | **Reconnect Logic** | Automatic antenna reconnection with configurable backoff |
 | **Multi-Antenna** | Supports multiple antennas via goroutines |
+| **Protocol Config** | Per-antenna protocol selection with backward-compatible `generic` default |
 | **Web UI** | Built-in verification interface on port 9090 |
 | **Settings TUI** | Full configuration editing without leaving the TUI |
 
@@ -103,7 +105,7 @@ Interactive terminal interface using Bubbletea with splash screen and multiple s
 - **Settings**: Full TUI-based configuration editor with field validation
   - Gateway ID, Company ID, Cloud URL, Log Level
   - Queue Cap, Warning Threshold
-  - View antenna configurations
+  - View antenna configurations and edit each antenna protocol
   - Save changes without restarting
 
 **Navigation:**
@@ -259,6 +261,9 @@ health_port: 8080
 data_path: "/opt/amg-rfid-gateway/data"
 
 # Antenna configurations
+# Protocol field: "generic" is the supported default for current packet handling.
+# "zebra" is accepted by configuration for future Zebra-specific handlers, but
+# do not enable Zebra runtime deployments until protocol handler support is added.
 # Zone field: "entrada" (entry), "salida" (exit), or "" (empty for auto-detect)
 antennas:
   - id: "ANT-001"
@@ -266,12 +271,23 @@ antennas:
     port: 49153
     enabled: true
     zone: "entrada"
+    protocol: "generic"
 
   - id: "ANT-002"
     ip: "192.168.1.101"
     port: 49153
     enabled: true
     zone: "salida"
+    protocol: "generic"
+
+  # Zebra can be selected in config/TUI, but runtime parsing is intentionally
+  # unsupported until a Zebra-specific protocol handler is implemented.
+  # - id: "ANT-003"
+  #   ip: "192.168.1.102"
+  #   port: 5084
+  #   enabled: false
+  #   zone: ""
+  #   protocol: "zebra"
 
 # Permanent Listening Mode (REQ-A006)
 # Controls how the gateway handles continuous antenna connections
@@ -347,6 +363,17 @@ updates:
 | `max_pending_confirmations` | int | 10000 | Queue size limit (0=unlimited) |
 | `pending_warning_threshold` | int | 1000 | Warning threshold (0=never) |
 | `log_level` | string | info | Logging verbosity |
+
+### Antenna Protocols
+
+Each antenna supports a `protocol` field:
+
+| Protocol | Status | Use when |
+|----------|--------|----------|
+| `generic` | Supported default | The antenna speaks the current generic RFID TCP packet format |
+| `zebra` | Configurable, runtime unsupported | Preparing configuration for a future Zebra-specific handler |
+
+Existing configs without `protocol` are treated as `generic`. Unsupported protocol values fail configuration validation so the gateway does not accidentally parse another reader type as generic.
 
 ## Usage
 
