@@ -11,10 +11,10 @@ import (
 func TestHandlePacket_ACK(t *testing.T) {
 	manager, mockClient, mockCache, _ := newTestAntennaManager()
 
-	// RTN 0x00 packet: [start, pad1, pad2, rtn=0x00, len, data..., checksum]
-	// Simple ACK: [0x7c, 0xff, 0xff, 0x00, 0x00, checksum]
-	// Checksum: 0x7c + 0xff + 0xff + 0x00 + 0x00 = 0x27a, checksum = 0x86
-	packet := []byte{0x7c, 0xff, 0xff, 0x00, 0x00, 0x86}
+	// Generic format: [SOI, ADR1, ADR2, CID1, RTN/CID2, LEN, INFO..., CHKSUM]
+	// ACK response: [0x7c, 0xff, 0xff, 0x20, 0x00, 0x00, checksum]
+	packet := []byte{0x7c, 0xff, 0xff, 0x20, 0x00, 0x00}
+	packet = append(packet, calculateTestChecksum(packet))
 
 	err := manager.HandlePacket(packet)
 	if err != nil {
@@ -49,13 +49,13 @@ func TestHandlePacket_UIIData(t *testing.T) {
 	manager, mockClient, mockCache, _ := newTestAntennaManager()
 
 	// RTN 0x02 packet with UII data
-	// Format: [0x7c, 0xff, 0xff, 0x02, len, ANT, PC(2), EPC(N), RSSI, checksum]
+	// Format: [0x7c, 0xff, 0xff, 0x20, 0x02, len, ANT, PC(2), EPC(N), RSSI, checksum]
 	// Example: ANT=0x00, PC=0x3000 (12 words), EPC=E2003411B802011383258566, RSSI=0xC9
 	// EPC bytes: 0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x66
 	// Total data: 1 + 2 + 12 + 1 = 16 bytes
-	// Packet: [0x7c, 0xff, 0xff, 0x02, 0x10, 0x00, 0x30, 0x00, 0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x66, 0xC9, checksum]
+	// Packet: [0x7c, 0xff, 0xff, 0x20, 0x02, 0x10, 0x00, 0x30, 0x00, 0xE2, ... , 0xC9, checksum]
 	packet := []byte{
-		0x7c, 0xff, 0xff, 0x02, 0x10, // Header + RTN 0x02 + len=16
+		0x7c, 0xff, 0xff, 0x20, 0x02, 0x10, // Header + CID1 + RTN 0x02 + len=16
 		0x00,       // ANT
 		0x30, 0x00, // PC = 0x3000
 		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x66, // EPC
@@ -125,7 +125,7 @@ func TestHandlePacket_UIIData_With003000Prefix(t *testing.T) {
 	// Total EPC = 10 bytes = 5 words
 	// PC = 5 << 11 = 0x2800
 	packet := []byte{
-		0x7c, 0xff, 0xff, 0x02, 0x0E, // Header + RTN 0x02 + len=14 (1 ANT + 2 PC + 10 EPC + 1 RSSI)
+		0x7c, 0xff, 0xff, 0x20, 0x02, 0x0E, // Header + CID1 + RTN 0x02 + len=14
 		0x00,       // ANT
 		0x28, 0x00, // PC = 0x2800 (5 words = 10 bytes)
 		// EPC with 003000 prefix: 00 30 00 E2 00 34 11 B8 02 01
@@ -159,7 +159,7 @@ func TestHandlePacket_TagData(t *testing.T) {
 
 	// RTN 0x06 packet with tag data
 	packet := []byte{
-		0x7c, 0xff, 0xff, 0x06, 0x04, // Header + RTN 0x06 + len=4
+		0x7c, 0xff, 0xff, 0x20, 0x06, 0x04, // Header + CID1 + RTN 0x06 + len=4
 		0x00, 0x01, 0x02, 0x03, // Some tag data
 	}
 	checksum := calculateTestChecksum(packet[:len(packet)])
@@ -187,7 +187,7 @@ func TestHandlePacket_Error(t *testing.T) {
 
 	// RTN 0x07 error packet
 	packet := []byte{
-		0x7c, 0xff, 0xff, 0x07, 0x02, // Header + RTN 0x07 + len=2
+		0x7c, 0xff, 0xff, 0x20, 0x07, 0x02, // Header + CID1 + RTN 0x07 + len=2
 		0x01, 0x02, // Error data
 	}
 	checksum := calculateTestChecksum(packet[:len(packet)])
@@ -226,7 +226,7 @@ func TestHandlePacket_HeartbeatResponse(t *testing.T) {
 
 	// RTN 0x10 heartbeat response packet
 	packet := []byte{
-		0x7c, 0xff, 0xff, 0x10, 0x00, // Header + RTN 0x10 + len=0
+		0x7c, 0xff, 0xff, 0x20, 0x10, 0x00, // Header + CID1 + RTN 0x10 + len=0
 	}
 	checksum := calculateTestChecksum(packet[:len(packet)])
 	packet = append(packet, checksum)
@@ -257,7 +257,7 @@ func TestHandlePacket_UnknownRTN(t *testing.T) {
 
 	// Unknown RTN code 0x99
 	packet := []byte{
-		0x7c, 0xff, 0xff, 0x99, 0x02, // Header + RTN 0x99 + len=2
+		0x7c, 0xff, 0xff, 0x20, 0x99, 0x02, // Header + CID1 + RTN 0x99 + len=2
 		0xAB, 0xCD, // Some data
 	}
 	checksum := calculateTestChecksum(packet[:len(packet)])
@@ -278,31 +278,55 @@ func TestHandlePacket_UnknownRTN(t *testing.T) {
 	}
 }
 
-// TestHandlePacket_InvalidChecksum verifies handling of invalid checksum
+// TestHandlePacket_InvalidChecksum verifies invalid checksum is rejected for storage
 func TestHandlePacket_InvalidChecksum(t *testing.T) {
 	manager, _, mockCache, _ := newTestAntennaManager()
 
 	// Packet with invalid checksum
 	packet := []byte{
-		0x7c, 0xff, 0xff, 0x02, 0x10,
+		0x7c, 0xff, 0xff, 0x20, 0x02, 0x10,
 		0x00, 0x30, 0x00,
 		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x66,
 		0xC9,
 		0xFF, // Invalid checksum
 	}
 
-	// Should still process (checksum validation is optional per spec)
+	// Should not hard-fail the loop, but must not store invalid data.
 	err := manager.HandlePacket(packet)
 	if err != nil {
 		t.Fatalf("HandlePacket should not error for invalid checksum: %v", err)
 	}
 
-	// Should still create reading even with invalid checksum
+	// Invalid checksum packets must not be persisted.
 	mockCache.mu.Lock()
 	readingCount := len(mockCache.stored)
 	mockCache.mu.Unlock()
-	if readingCount != 1 {
-		t.Errorf("expected 1 reading even with invalid checksum, got %d", readingCount)
+	if readingCount != 0 {
+		t.Errorf("expected 0 readings for invalid checksum, got %d", readingCount)
+	}
+}
+
+func TestHandlePacket_UIIReadRTNWithNonUIICID1_DoesNotStore(t *testing.T) {
+	manager, _, mockCache, _ := newTestAntennaManager()
+
+	packet := []byte{
+		0x7c, 0xff, 0xff, 0x01, 0x02, 0x10,
+		0x00, 0x30, 0x00,
+		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x66,
+		0xC9,
+	}
+	packet = append(packet, calculateTestChecksum(packet))
+
+	err := manager.HandlePacket(packet)
+	if err != nil {
+		t.Fatalf("HandlePacket should not error for non-UII CID1 with RTN=0x02: %v", err)
+	}
+
+	mockCache.mu.Lock()
+	readingCount := len(mockCache.stored)
+	mockCache.mu.Unlock()
+	if readingCount != 0 {
+		t.Errorf("expected 0 readings when CID1 is not 0x20, got %d", readingCount)
 	}
 }
 
@@ -310,7 +334,7 @@ func TestHandlePacket_InvalidChecksum(t *testing.T) {
 func TestHandlePacket_TooShort(t *testing.T) {
 	manager, _, mockCache, _ := newTestAntennaManager()
 
-	// Packet too short (< 6 bytes minimum)
+	// Packet too short (< 7 bytes minimum)
 	packet := []byte{0x7c, 0xff, 0xff}
 
 	err := manager.HandlePacket(packet)
@@ -332,7 +356,7 @@ func TestHandlePacket_InvalidStartByte(t *testing.T) {
 	manager, _, mockCache, _ := newTestAntennaManager()
 
 	// Packet with invalid start byte
-	packet := []byte{0x00, 0xff, 0xff, 0x02, 0x00, 0x00}
+	packet := []byte{0x00, 0xff, 0xff, 0x20, 0x02, 0x00, 0x00}
 
 	err := manager.HandlePacket(packet)
 	if err == nil {
@@ -369,7 +393,7 @@ func TestHandlePacket_DetectsAutoReading(t *testing.T) {
 
 	// UII data packet
 	packet := []byte{
-		0x7c, 0xff, 0xff, 0x02, 0x10,
+		0x7c, 0xff, 0xff, 0x20, 0x02, 0x10,
 		0x00, 0x30, 0x00,
 		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x66,
 		0xC9,
@@ -396,7 +420,7 @@ func TestHandlePacket_UsesParseAntennaData(t *testing.T) {
 
 	// UII packet with known RSSI value
 	packet := []byte{
-		0x7c, 0xff, 0xff, 0x02, 0x10,
+		0x7c, 0xff, 0xff, 0x20, 0x02, 0x10,
 		0x00, 0x30, 0x00,
 		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x66,
 		0xC9, // RSSI = 201

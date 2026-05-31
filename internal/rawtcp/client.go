@@ -233,6 +233,11 @@ func RunAntenna(ctx context.Context, client *Client, cache Cache, antenna Antenn
 			continue
 		}
 
+		// Reject packets with invalid checksum.
+		if !packet.ChecksumOK {
+			continue
+		}
+
 		// Only process data packets
 		if !packet.IsDataPacket() {
 			continue

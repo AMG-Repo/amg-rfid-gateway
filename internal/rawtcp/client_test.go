@@ -102,17 +102,17 @@ func TestClient_Connect_InvalidAddress(t *testing.T) {
 }
 
 func TestParsePacket_ValidDataPacket(t *testing.T) {
-	// Valid packet with UII data (0x02 command)
-	// [0x7c, 0xff, 0xff, 0x02, 0x04, data(4 bytes), checksum]
-	data := []byte{0x7c, 0xff, 0xff, 0x02, 0x04, 0xE2, 0x00, 0x34, 0x15, 0x00}
+	// Valid response packet with UII data
+	// [0xCC, 0xFF, 0xFF, CID1=0x20, RTN=0x02, LEN=0x04, INFO(4), CHKSUM]
+	data := []byte{0xCC, 0xff, 0xff, 0x20, 0x02, 0x04, 0xE2, 0x00, 0x34, 0x15, 0x00}
 
 	packet, err := ParsePacket(data)
 	if err != nil {
 		t.Fatalf("failed to parse packet: %v", err)
 	}
 
-	if packet.CommandCode != protocol.CmdUIIRead {
-		t.Errorf("expected command 0x02, got 0x%02x", packet.CommandCode)
+	if packet.CID1 != protocol.CID1ReadTypeCUII || packet.CID2OrRTN != protocol.RTNUIIRead {
+		t.Errorf("expected CID1/RTN 0x20/0x02, got 0x%02x/0x%02x", packet.CID1, packet.CID2OrRTN)
 	}
 
 	if !packet.IsDataPacket() {
@@ -122,7 +122,7 @@ func TestParsePacket_ValidDataPacket(t *testing.T) {
 
 func TestParsePacket_InvalidStartByte(t *testing.T) {
 	// Invalid start byte
-	data := []byte{0x00, 0xff, 0xff, 0x02, 0x00, 0x00}
+	data := []byte{0x00, 0xff, 0xff, 0x20, 0x00, 0x00, 0x00}
 
 	_, err := ParsePacket(data)
 	if err == nil {
@@ -151,10 +151,10 @@ func TestAntennaClient_Run(t *testing.T) {
 	addr := listener.Addr().(*net.TCPAddr)
 	cache := &mockCache{}
 
-	// Valid UII packet: [0x7c, 0xff, 0xff, 0x02, 0x04, data, checksum]
+	// Valid UII packet: [SOI, ADR1, ADR2, CID1=0x20, RTN=0x02, LEN, INFO..., CHKSUM]
 	// Checksum calculation: sum of all bytes except checksum, then two's complement
 	// For simplicity, let's send a packet and let the server calculate
-	packet := []byte{0x7c, 0xff, 0xff, 0x02, 0x04, 0xE2, 0x00, 0x34, 0x15, 0x4A}
+	packet := []byte{0xCC, 0xff, 0xff, 0x20, 0x02, 0x04, 0xE2, 0x00, 0x34, 0x15, 0x4A}
 
 	// Start mock server
 	go func() {
@@ -194,6 +194,46 @@ func TestAntennaClient_Run(t *testing.T) {
 
 	// Give time for processing
 	time.Sleep(100 * time.Millisecond)
+}
+
+func TestRunAntenna_InvalidChecksumDataPacket_DoesNotStoreReading(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	defer listener.Close()
+
+	addr := listener.Addr().(*net.TCPAddr)
+	cache := &mockCache{}
+
+	// Canonical frame with invalid checksum byte (should parse but be rejected for storage).
+	invalidChecksumPacket := []byte{0xCC, 0xFF, 0xFF, 0x20, 0x02, 0x04, 0xE2, 0x00, 0x34, 0x15, 0x00}
+
+	go func() {
+		conn, _ := listener.Accept()
+		if conn != nil {
+			defer conn.Close()
+			_, _ = conn.Write(invalidChecksumPacket)
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
+
+	client := NewClient("127.0.0.1", addr.Port)
+	antenna := AntennaConfig{ID: "ant-1", Enabled: true}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	err = RunAntenna(ctx, client, cache, antenna)
+	if err == nil {
+		t.Fatal("expected RunAntenna to stop with connection closed or context deadline")
+	}
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if len(cache.stored) != 0 {
+		t.Fatalf("expected no readings stored for invalid checksum packet, got %d", len(cache.stored))
+	}
 }
 
 func TestAntennaConfig_Validate(t *testing.T) {
