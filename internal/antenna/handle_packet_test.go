@@ -1,8 +1,13 @@
 package antenna
 
 import (
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // === Task 3.3: RTN Code Routing Tests ===
@@ -372,6 +377,46 @@ func TestHandlePacket_InvalidStartByte(t *testing.T) {
 	}
 }
 
+func TestHandlePacket_ZebraNonGenericBytesReturnsUnsupportedProtocol(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{
+			name: "non generic start byte with enough bytes",
+			data: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07},
+		},
+		{
+			name: "short non generic frame",
+			data: []byte{0x01, 0x02, 0x03},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager, mockClient, mockCache, _ := newTestAntennaManager()
+			manager.config.Protocol = config.ProtocolZebra
+
+			err := manager.HandlePacket(tt.data)
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrUnsupportedProtocol)
+			assert.NotContains(t, err.Error(), "invalid start byte")
+			assert.NotContains(t, err.Error(), "packet too short")
+
+			mockCache.mu.Lock()
+			stored := len(mockCache.stored)
+			mockCache.mu.Unlock()
+			assert.Equal(t, 0, stored)
+
+			mockClient.mu.Lock()
+			activityUpdated := !mockClient.lastActivity.IsZero()
+			mockClient.mu.Unlock()
+			assert.True(t, activityUpdated)
+		})
+	}
+}
+
 // calculateTestChecksum calculates checksum for test packets
 func calculateTestChecksum(data []byte) byte {
 	sum := 0
@@ -443,5 +488,110 @@ func TestHandlePacket_UsesParseAntennaData(t *testing.T) {
 
 	if reading.RSSI != 201 {
 		t.Errorf("expected RSSI 201 (from ParseAntennaData), got %d", reading.RSSI)
+	}
+}
+
+func TestHandlePacket_ProtocolDispatch(t *testing.T) {
+	tests := []struct {
+		name         string
+		protocol     config.AntennaProtocol
+		wantErr      error
+		wantStored   int
+		wantLastEPC  string
+		wantRSSI     int
+		wantActivity bool
+	}{
+		{
+			name:         "generic frame uses generic behavior",
+			protocol:     config.ProtocolGeneric,
+			wantStored:   1,
+			wantLastEPC:  "E2003411B802011383258566",
+			wantRSSI:     201,
+			wantActivity: true,
+		},
+		{
+			name:         "zebra does not parse as generic",
+			protocol:     config.ProtocolZebra,
+			wantErr:      ErrUnsupportedProtocol,
+			wantStored:   0,
+			wantActivity: true,
+		},
+		{
+			name:         "unknown protocol fails without generic fallback",
+			protocol:     config.AntennaProtocol("future-protocol"),
+			wantErr:      ErrUnsupportedProtocol,
+			wantStored:   0,
+			wantActivity: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager, mockClient, mockCache, _ := newTestAntennaManager()
+			manager.config.Protocol = tt.protocol
+
+			err := manager.HandlePacket(validUIITestPacket())
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("expected error %v, got %v", tt.wantErr, err)
+				}
+			} else if err != nil {
+				t.Fatalf("HandlePacket failed: %v", err)
+			}
+
+			mockCache.mu.Lock()
+			stored := len(mockCache.stored)
+			mockCache.mu.Unlock()
+			if stored != tt.wantStored {
+				t.Fatalf("expected %d readings stored, got %d", tt.wantStored, stored)
+			}
+
+			manager.mu.RLock()
+			lastEPC := manager.lastTagEPC
+			lastRSSI := manager.lastTagRSSI
+			manager.mu.RUnlock()
+			if lastEPC != tt.wantLastEPC {
+				t.Fatalf("expected last EPC %q, got %q", tt.wantLastEPC, lastEPC)
+			}
+			if lastRSSI != tt.wantRSSI {
+				t.Fatalf("expected last RSSI %d, got %d", tt.wantRSSI, lastRSSI)
+			}
+
+			mockClient.mu.Lock()
+			activityUpdated := !mockClient.lastActivity.IsZero()
+			mockClient.mu.Unlock()
+			if activityUpdated != tt.wantActivity {
+				t.Fatalf("expected activity updated=%v, got %v", tt.wantActivity, activityUpdated)
+			}
+		})
+	}
+}
+
+func TestHandlePacket_MixedProtocolFailureIsolation(t *testing.T) {
+	genericManager, _, genericCache, _ := newTestAntennaManager()
+	unsupportedManager, _, unsupportedCache, _ := newTestAntennaManager()
+	unsupportedManager.config.ID = "ant-zebra"
+	unsupportedManager.config.Protocol = config.ProtocolZebra
+
+	if err := unsupportedManager.HandlePacket(validUIITestPacket()); !errors.Is(err, ErrUnsupportedProtocol) {
+		t.Fatalf("expected unsupported protocol error, got %v", err)
+	}
+
+	if err := genericManager.HandlePacket(validUIITestPacket()); err != nil {
+		t.Fatalf("generic manager should continue after unrelated unsupported antenna failure: %v", err)
+	}
+
+	unsupportedCache.mu.Lock()
+	unsupportedStored := len(unsupportedCache.stored)
+	unsupportedCache.mu.Unlock()
+	if unsupportedStored != 0 {
+		t.Fatalf("expected unsupported antenna to store 0 readings, got %d", unsupportedStored)
+	}
+
+	genericCache.mu.Lock()
+	genericStored := len(genericCache.stored)
+	genericCache.mu.Unlock()
+	if genericStored != 1 {
+		t.Fatalf("expected generic antenna to store 1 reading, got %d", genericStored)
 	}
 }
