@@ -8,8 +8,12 @@ import (
 	"testing"
 	"time"
 
+	antennapkg "github.com/amg-rfid/amg-rfid-gateway/internal/antenna"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
 	"github.com/amg-rfid/amg-rfid-shared-go/protocol"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockCache is a mock implementation for testing
@@ -151,10 +155,7 @@ func TestAntennaClient_Run(t *testing.T) {
 	addr := listener.Addr().(*net.TCPAddr)
 	cache := &mockCache{}
 
-	// Valid UII packet: [SOI, ADR1, ADR2, CID1=0x20, RTN=0x02, LEN, INFO..., CHKSUM]
-	// Checksum calculation: sum of all bytes except checksum, then two's complement
-	// For simplicity, let's send a packet and let the server calculate
-	packet := []byte{0xCC, 0xff, 0xff, 0x20, 0x02, 0x04, 0xE2, 0x00, 0x34, 0x15, 0x4A}
+	packet := mustBuildGenericUIIFrame(t)
 
 	// Start mock server
 	go func() {
@@ -185,8 +186,8 @@ func TestAntennaClient_Run(t *testing.T) {
 	// Wait for completion or timeout
 	select {
 	case err := <-done:
-		if err != nil && !errors.Is(err, errors.New("connection closed")) {
-			t.Logf("RunAntenna returned: %v", err)
+		if err != nil && err.Error() != "connection closed" {
+			t.Fatalf("expected connection closed or nil, got: %v", err)
 		}
 	case <-time.After(500 * time.Millisecond):
 		// Expected - the connection will be closed by server
@@ -237,8 +238,8 @@ func TestRunAntenna_InvalidChecksumDataPacket_DoesNotStoreReading(t *testing.T) 
 }
 
 func TestRunAntenna_StreamReassemblyScenarios(t *testing.T) {
-	validPacketA := mustBuildRawTCPDataPacket(t, 0x15)
-	validPacketB := mustBuildRawTCPDataPacket(t, 0x16)
+	validPacketA := mustBuildGenericUIIFrameWithEPCLastByte(t, 0x66)
+	validPacketB := mustBuildGenericUIIFrameWithEPCLastByte(t, 0x67)
 	invalidPacket := append([]byte(nil), validPacketA...)
 	invalidPacket[len(invalidPacket)-1] ^= 0xFF
 
@@ -307,7 +308,10 @@ func TestRunAntenna_StreamReassemblyScenarios(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 
-			_ = RunAntenna(ctx, client, cache, antenna)
+			err = RunAntenna(ctx, client, cache, antenna)
+			if err != nil && err.Error() != "connection closed" {
+				t.Fatalf("expected connection closed or nil, got: %v", err)
+			}
 
 			cache.mu.Lock()
 			stored := len(cache.stored)
@@ -317,6 +321,184 @@ func TestRunAntenna_StreamReassemblyScenarios(t *testing.T) {
 				t.Fatalf("expected %d readings stored, got %d", tc.expectedStore, stored)
 			}
 		})
+	}
+}
+
+func TestRunAntenna_ProtocolAwareDispatch(t *testing.T) {
+	tests := []struct {
+		name          string
+		protocol      config.AntennaProtocol
+		expectedStore int
+		expectedEPC   string
+	}{
+		{
+			name:          "generic dispatch stores generic reading",
+			protocol:      config.ProtocolGeneric,
+			expectedStore: 1,
+			expectedEPC:   "E2003411B802011383258566",
+		},
+		{
+			name:          "unsupported protocol emits no tag storage",
+			protocol:      config.ProtocolZebra,
+			expectedStore: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("failed to create listener: %v", err)
+			}
+			defer listener.Close()
+
+			addr := listener.Addr().(*net.TCPAddr)
+			cache := &mockCache{}
+
+			go func() {
+				conn, _ := listener.Accept()
+				if conn == nil {
+					return
+				}
+				defer conn.Close()
+				_, _ = conn.Write(mustBuildGenericUIIFrame(t))
+				time.Sleep(100 * time.Millisecond)
+			}()
+
+			client := NewClient("127.0.0.1", addr.Port)
+			antenna := AntennaConfig{ID: "ant-1", Enabled: true, Protocol: tt.protocol}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+
+			err = RunAntenna(ctx, client, cache, antenna)
+			if tt.protocol == config.ProtocolZebra {
+				if !errors.Is(err, antennapkg.ErrUnsupportedProtocol) {
+					t.Fatalf("expected unsupported protocol error, got: %v", err)
+				}
+			} else if err != nil && err.Error() != "connection closed" {
+				t.Fatalf("expected connection closed or nil, got: %v", err)
+			}
+
+			cache.mu.Lock()
+			stored := append([]models.Reading(nil), cache.stored...)
+			cache.mu.Unlock()
+
+			if len(stored) != tt.expectedStore {
+				t.Fatalf("expected %d readings stored, got %d", tt.expectedStore, len(stored))
+			}
+			if tt.expectedStore > 0 && stored[0].EPC != tt.expectedEPC {
+				t.Fatalf("expected EPC %q, got %q", tt.expectedEPC, stored[0].EPC)
+			}
+		})
+	}
+}
+
+func TestRunAntenna_ZebraReturnsUnsupportedProtocol(t *testing.T) {
+	client, _, closeServer := newPacketServerClient(t, [][]byte{{0x01, 0x02, 0x03, 0x04}})
+	defer closeServer()
+	cache := &mockCache{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err := RunAntenna(ctx, client, cache, AntennaConfig{
+		ID:       "ant-zebra",
+		Enabled:  true,
+		Protocol: config.ProtocolZebra,
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, antennapkg.ErrUnsupportedProtocol)
+	assert.Contains(t, err.Error(), "ant-zebra")
+
+	cache.mu.Lock()
+	stored := len(cache.stored)
+	cache.mu.Unlock()
+	assert.Equal(t, 0, stored)
+}
+
+func TestRunAntenna_MixedProtocolFailureIsolation(t *testing.T) {
+	genericCache := &mockCache{}
+	unsupportedCache := &mockCache{}
+
+	genericClient, genericPort, closeGeneric := newPacketServerClient(t, [][]byte{mustBuildGenericUIIFrame(t)})
+	defer closeGeneric()
+	unsupportedClient, unsupportedPort, closeUnsupported := newPacketServerClient(t, [][]byte{mustBuildGenericUIIFrame(t)})
+	defer closeUnsupported()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+	defer cancel()
+
+	genericDone := make(chan error, 1)
+	unsupportedDone := make(chan error, 1)
+	go func() {
+		genericDone <- RunAntenna(ctx, genericClient, genericCache, AntennaConfig{
+			ID:       "ant-generic",
+			Enabled:  true,
+			Protocol: config.ProtocolGeneric,
+		})
+	}()
+	go func() {
+		unsupportedDone <- RunAntenna(ctx, unsupportedClient, unsupportedCache, AntennaConfig{
+			ID:       "ant-zebra",
+			Enabled:  true,
+			Protocol: config.ProtocolZebra,
+		})
+	}()
+
+	waitForRunAntennaResult(t, genericDone, genericPort)
+	waitForRunAntennaResult(t, unsupportedDone, unsupportedPort)
+
+	genericCache.mu.Lock()
+	genericStored := len(genericCache.stored)
+	genericCache.mu.Unlock()
+	if genericStored != 1 {
+		t.Fatalf("expected generic antenna to store 1 reading, got %d", genericStored)
+	}
+
+	unsupportedCache.mu.Lock()
+	unsupportedStored := len(unsupportedCache.stored)
+	unsupportedCache.mu.Unlock()
+	if unsupportedStored != 0 {
+		t.Fatalf("expected unsupported antenna to store 0 readings, got %d", unsupportedStored)
+	}
+}
+
+func newPacketServerClient(t *testing.T, chunks [][]byte) (*Client, int, func()) {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+
+	go func() {
+		conn, _ := listener.Accept()
+		if conn == nil {
+			return
+		}
+		defer conn.Close()
+		for _, chunk := range chunks {
+			_, _ = conn.Write(chunk)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	return NewClient("127.0.0.1", port), port, func() { _ = listener.Close() }
+}
+
+func waitForRunAntennaResult(t *testing.T, done <-chan error, port int) {
+	t.Helper()
+
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, antennapkg.ErrUnsupportedProtocol) && err.Error() != "connection closed" {
+			t.Fatalf("RunAntenna on port %d returned unexpected error: %v", port, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("RunAntenna on port %d did not finish in time", port)
 	}
 }
 
@@ -331,22 +513,80 @@ func mustBuildRawTCPDataPacket(t *testing.T, epcLastByte byte) []byte {
 	return packet
 }
 
-func TestAntennaConfig_Validate(t *testing.T) {
-	// Valid config
-	ant := AntennaConfig{
-		ID:      "ant-1",
-		Enabled: true,
+func mustBuildGenericUIIFrame(t *testing.T) []byte {
+	t.Helper()
+	return mustBuildGenericUIIFrameWithEPCLastByte(t, 0x66)
+}
+
+func mustBuildGenericUIIFrameWithEPCLastByte(t *testing.T, epcLastByte byte) []byte {
+	t.Helper()
+	packet := []byte{
+		0x7c, 0xff, 0xff, 0x20, 0x02, 0x10,
+		0x00,
+		0x30, 0x00,
+		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, epcLastByte,
+		0xC9,
 	}
-	if err := ant.Validate(); err != nil {
-		t.Errorf("expected valid config, got: %v", err)
+	sum := 0
+	for _, b := range packet {
+		sum += int(b)
+	}
+	return append(packet, byte((^sum+1)&0xff))
+}
+
+func TestAntennaConfig_Validate(t *testing.T) {
+	tests := []struct {
+		name        string
+		antenna     AntennaConfig
+		expectError bool
+	}{
+		{
+			name: "valid default protocol",
+			antenna: AntennaConfig{
+				ID:      "ant-1",
+				Enabled: true,
+			},
+		},
+		{
+			name: "valid zebra protocol",
+			antenna: AntennaConfig{
+				ID:       "ant-1",
+				Enabled:  true,
+				Protocol: config.ProtocolZebra,
+			},
+		},
+		{
+			name: "invalid empty id",
+			antenna: AntennaConfig{
+				ID:      "",
+				Enabled: true,
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid unsupported protocol",
+			antenna: AntennaConfig{
+				ID:       "ant-1",
+				Enabled:  true,
+				Protocol: config.AntennaProtocol("alien"),
+			},
+			expectError: true,
+		},
 	}
 
-	// Invalid - empty ID
-	ant2 := AntennaConfig{
-		ID:      "",
-		Enabled: true,
-	}
-	if err := ant2.Validate(); err == nil {
-		t.Error("expected error for empty ID")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.antenna.Validate()
+			if tt.expectError {
+				if err == nil {
+					t.Fatal("expected validation error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("expected valid config, got: %v", err)
+			}
+		})
 	}
 }
