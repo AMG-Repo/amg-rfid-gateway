@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	antennapkg "github.com/amg-rfid/amg-rfid-gateway/internal/antenna"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
 	"github.com/amg-rfid/amg-rfid-shared-go/protocol"
 )
@@ -21,14 +23,22 @@ type Cache interface {
 
 // AntennaConfig holds configuration for antenna operations
 type AntennaConfig struct {
-	ID      string
-	Enabled bool
+	ID       string
+	Enabled  bool
+	Protocol config.AntennaProtocol
 }
 
 // Validate checks the antenna configuration
 func (a AntennaConfig) Validate() error {
 	if a.ID == "" {
 		return errors.New("antenna id cannot be empty")
+	}
+	protocol := a.Protocol
+	if protocol == "" {
+		protocol = config.ProtocolGeneric
+	}
+	if !config.IsSupportedAntennaProtocol(protocol) {
+		return fmt.Errorf("unsupported antenna protocol %q", a.Protocol)
 	}
 	return nil
 }
@@ -205,6 +215,15 @@ func RunAntenna(ctx context.Context, client *Client, cache Cache, antenna Antenn
 	}
 	defer client.Disconnect()
 
+	selectedProtocol := antenna.Protocol
+	if selectedProtocol == "" {
+		selectedProtocol = config.ProtocolGeneric
+	}
+	handler := antennapkg.ProtocolHandlerFor(selectedProtocol)
+	if handler.Protocol() != config.ProtocolGeneric {
+		return fmt.Errorf("antenna %s cannot run configured protocol: %w: %s", antenna.ID, antennapkg.ErrUnsupportedProtocol, selectedProtocol)
+	}
+
 	// Read loop
 	buf := make([]byte, 4096)
 	extractor := protocol.NewStreamExtractor()
@@ -228,27 +247,10 @@ func RunAntenna(ctx context.Context, client *Client, cache Cache, antenna Antenn
 		}
 
 		for _, frame := range extractor.Append(buf[:n]) {
-			packet, err := ParsePacket(frame)
-			if err != nil {
-				continue
-			}
-
-			if !packet.ChecksumOK {
-				continue
-			}
-
-			if !packet.IsDataPacket() {
-				continue
-			}
-
-			reading := models.Reading{
+			if err := handler.HandleFrame(antennapkg.PacketContext{
 				AntennaID: antenna.ID,
-				EPC:       packet.TagUID,
-				RSSI:      -50,
-				Timestamp: time.Now(),
-			}
-
-			if err := cache.Store(reading); err != nil {
+				Cache:     cache,
+			}, frame); err != nil {
 				continue
 			}
 		}
