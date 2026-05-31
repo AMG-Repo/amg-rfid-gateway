@@ -355,3 +355,104 @@ func TestDataReader_CallsHandlePacket(t *testing.T) {
 	}
 	mockClient.mu.Unlock()
 }
+
+func TestDataReader_StreamReassemblyScenarios(t *testing.T) {
+	validPacketA := mustBuildValidUIIPacket(t, 0x66)
+	validPacketB := mustBuildValidUIIPacket(t, 0x67)
+	invalidPacket := append([]byte(nil), validPacketA...)
+	invalidPacket[len(invalidPacket)-1] ^= 0xFF
+
+	tests := []struct {
+		name          string
+		chunks        [][]byte
+		expectedStore int
+	}{
+		{
+			name: "split frame across reads stores once after completion",
+			chunks: [][]byte{
+				append([]byte(nil), validPacketA[:10]...),
+				append([]byte(nil), validPacketA[10:]...),
+			},
+			expectedStore: 1,
+		},
+		{
+			name: "coalesced frames in one read stores both",
+			chunks: [][]byte{
+				append(append([]byte(nil), validPacketA...), validPacketB...),
+			},
+			expectedStore: 2,
+		},
+		{
+			name: "noise before SOI is ignored and valid frame is stored",
+			chunks: [][]byte{
+				append([]byte{0x01, 0x02, 0x03, 0x04}, validPacketA...),
+			},
+			expectedStore: 1,
+		},
+		{
+			name: "invalid checksum then valid frame stores only valid",
+			chunks: [][]byte{
+				append(append([]byte(nil), invalidPacket...), validPacketB...),
+			},
+			expectedStore: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockConn := &mockConn{readData: tc.chunks}
+			manager, _, mockCache, cancel := newTestAntennaManager()
+			defer cancel()
+
+			ctx, cancelCtx := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancelCtx()
+
+			manager.wg.Add(1)
+			go manager.dataReader(ctx, mockConn)
+
+			waitForDataReaderExit(t, manager)
+
+			mockCache.mu.Lock()
+			stored := len(mockCache.stored)
+			mockCache.mu.Unlock()
+
+			if stored != tc.expectedStore {
+				t.Fatalf("expected %d readings stored, got %d", tc.expectedStore, stored)
+			}
+		})
+	}
+}
+
+func mustBuildValidUIIPacket(t *testing.T, lastEPCByte byte) []byte {
+	t.Helper()
+	packet := []byte{
+		0x7c, 0xff, 0xff, 0x20, 0x02, 0x10,
+		0x00, 0x30, 0x00,
+		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, lastEPCByte,
+		0xC9,
+		0x00,
+	}
+
+	sum := 0
+	for _, b := range packet[:len(packet)-1] {
+		sum += int(b)
+	}
+	packet[len(packet)-1] = byte((^sum + 1) & 0xff)
+
+	return packet
+}
+
+func waitForDataReaderExit(t *testing.T, manager *AntennaManager) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		manager.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("dataReader did not exit in time")
+	}
+}

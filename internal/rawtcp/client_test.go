@@ -236,6 +236,101 @@ func TestRunAntenna_InvalidChecksumDataPacket_DoesNotStoreReading(t *testing.T) 
 	}
 }
 
+func TestRunAntenna_StreamReassemblyScenarios(t *testing.T) {
+	validPacketA := mustBuildRawTCPDataPacket(t, 0x15)
+	validPacketB := mustBuildRawTCPDataPacket(t, 0x16)
+	invalidPacket := append([]byte(nil), validPacketA...)
+	invalidPacket[len(invalidPacket)-1] ^= 0xFF
+
+	tests := []struct {
+		name          string
+		chunks        [][]byte
+		expectedStore int
+	}{
+		{
+			name: "split frame across reads stores exactly one reading",
+			chunks: [][]byte{
+				append([]byte(nil), validPacketA[:5]...),
+				append([]byte(nil), validPacketA[5:]...),
+			},
+			expectedStore: 1,
+		},
+		{
+			name: "coalesced frames in single read store all in order",
+			chunks: [][]byte{
+				append(append([]byte(nil), validPacketA...), validPacketB...),
+			},
+			expectedStore: 2,
+		},
+		{
+			name: "noise before SOI is ignored and frame is stored",
+			chunks: [][]byte{
+				append([]byte{0x01, 0x02, 0x03, 0x04}, validPacketA...),
+			},
+			expectedStore: 1,
+		},
+		{
+			name: "invalid checksum followed by valid frame stores only valid",
+			chunks: [][]byte{
+				append(append([]byte(nil), invalidPacket...), validPacketB...),
+			},
+			expectedStore: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("failed to create listener: %v", err)
+			}
+			defer listener.Close()
+
+			addr := listener.Addr().(*net.TCPAddr)
+			cache := &mockCache{}
+
+			go func() {
+				conn, _ := listener.Accept()
+				if conn == nil {
+					return
+				}
+				defer conn.Close()
+				for _, chunk := range tc.chunks {
+					_, _ = conn.Write(chunk)
+				}
+				time.Sleep(100 * time.Millisecond)
+			}()
+
+			client := NewClient("127.0.0.1", addr.Port)
+			antenna := AntennaConfig{ID: "ant-1", Enabled: true}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+
+			_ = RunAntenna(ctx, client, cache, antenna)
+
+			cache.mu.Lock()
+			stored := len(cache.stored)
+			cache.mu.Unlock()
+
+			if stored != tc.expectedStore {
+				t.Fatalf("expected %d readings stored, got %d", tc.expectedStore, stored)
+			}
+		})
+	}
+}
+
+func mustBuildRawTCPDataPacket(t *testing.T, epcLastByte byte) []byte {
+	t.Helper()
+	packet := []byte{0xCC, 0xFF, 0xFF, 0x20, 0x02, 0x04, 0xE2, 0x00, 0x34, epcLastByte, 0x00}
+	sum := 0
+	for _, b := range packet[:len(packet)-1] {
+		sum += int(b)
+	}
+	packet[len(packet)-1] = byte((^sum + 1) & 0xFF)
+	return packet
+}
+
 func TestAntennaConfig_Validate(t *testing.T) {
 	// Valid config
 	ant := AntennaConfig{

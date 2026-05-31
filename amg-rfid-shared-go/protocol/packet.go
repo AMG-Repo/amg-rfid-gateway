@@ -27,6 +27,10 @@ const (
 	// Minimum valid packet: SOI + ADR(2) + CID1 + CID2/RTN + LEN + CHKSUM
 	MinPacketSize = 7
 
+	// DefaultStreamExtractorMaxBuffer bounds retained stream bytes during TCP
+	// reassembly so garbage or never-complete streams cannot grow unbounded.
+	DefaultStreamExtractorMaxBuffer = 64 * 1024
+
 	// CID codes.
 	CIDReadTypeCUII byte = 0x20
 
@@ -57,6 +61,106 @@ const (
 	CmdUserRead  byte = RTNUserData
 	CmdHeartbeat byte = RTNHeartbeat
 )
+
+// StreamExtractor reassembles complete RFID frames from arbitrary TCP chunks.
+type StreamExtractor struct {
+	buffer    []byte
+	maxBuffer int
+}
+
+// NewStreamExtractor creates a stream extractor using the default buffer cap.
+func NewStreamExtractor() *StreamExtractor {
+	return NewStreamExtractorWithMaxBuffer(DefaultStreamExtractorMaxBuffer)
+}
+
+// NewStreamExtractorWithMaxBuffer creates a stream extractor with a custom cap.
+func NewStreamExtractorWithMaxBuffer(max int) *StreamExtractor {
+	if max <= 0 {
+		max = DefaultStreamExtractorMaxBuffer
+	}
+	return &StreamExtractor{maxBuffer: max}
+}
+
+// Append adds a TCP chunk and returns all complete frames available in order.
+func (e *StreamExtractor) Append(chunk []byte) [][]byte {
+	if len(chunk) > 0 {
+		e.buffer = append(e.buffer, chunk...)
+		e.enforceMaxBuffer()
+	}
+
+	var frames [][]byte
+	for {
+		soi := firstSOIIndex(e.buffer)
+		if soi < 0 {
+			e.buffer = nil
+			return frames
+		}
+		if soi > 0 {
+			e.buffer = e.buffer[soi:]
+		}
+
+		if len(e.buffer) < MinPacketSize {
+			return frames
+		}
+
+		expectedSize := 6 + int(e.buffer[5]) + 1
+		if len(e.buffer) < expectedSize {
+			e.enforceMaxBuffer()
+			return frames
+		}
+
+		frame := make([]byte, expectedSize)
+		copy(frame, e.buffer[:expectedSize])
+		frames = append(frames, frame)
+		e.buffer = e.buffer[expectedSize:]
+	}
+}
+
+// BufferedLen returns the number of bytes retained for future extraction.
+func (e *StreamExtractor) BufferedLen() int {
+	return len(e.buffer)
+}
+
+// Reset clears any retained partial stream bytes.
+func (e *StreamExtractor) Reset() {
+	e.buffer = nil
+}
+
+func (e *StreamExtractor) enforceMaxBuffer() {
+	if len(e.buffer) <= e.maxBuffer {
+		return
+	}
+
+	soi := lastSOIIndex(e.buffer)
+	if soi >= 0 && len(e.buffer[soi:]) <= e.maxBuffer {
+		e.buffer = e.buffer[soi:]
+		return
+	}
+
+	e.buffer = nil
+}
+
+func firstSOIIndex(data []byte) int {
+	for i, b := range data {
+		if isPacketStart(b) {
+			return i
+		}
+	}
+	return -1
+}
+
+func lastSOIIndex(data []byte) int {
+	for i := len(data) - 1; i >= 0; i-- {
+		if isPacketStart(data[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
+func isPacketStart(b byte) bool {
+	return b == PacketStartCommand || b == PacketStartResponse
+}
 
 // ParsedPacket represents a decoded RFID packet from a reader.
 type ParsedPacket struct {

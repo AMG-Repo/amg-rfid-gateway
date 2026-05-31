@@ -6,6 +6,24 @@ Define normative framing and UII decoding behavior for Generic RFID Reader Contr
 
 ## Requirements
 
+### Requirement: Delegate TCP chunk reassembly to shared extractor
+
+TCP-facing consumers SHALL use the shared protocol stream extractor before packet parsing/handling so parser and decode logic receive complete frame buffers only. This requirement applies equally to `internal/antenna/dataReader` and `internal/rawtcp/RunAntenna`.
+
+#### Scenario: Fragmented stream handled via extractor
+
+- GIVEN a protocol frame split across multiple TCP reads
+- WHEN the consumer processes reads through the shared extractor before parser calls
+- THEN only complete frames are passed to parser/handler
+- AND fragmented/coalesced chunk boundaries do not change decode semantics
+
+#### Scenario: Both TCP consumers apply the same extraction gate
+
+- GIVEN `internal/antenna/dataReader` and `internal/rawtcp/RunAntenna` receive arbitrary chunks
+- WHEN each path invokes shared extraction before `HandlePacket` or `ParsePacket`
+- THEN both paths follow identical frame-boundary behavior
+- AND parser/storage behavior stays consistent across both consumers
+
 ### Requirement: Parse canonical protocol frame layout
 
 The parser MUST decode frames as `SOI ADR(2) CID1 CID2/RTN LENGTH INFO CHKSUM`, where `ADR` is two bytes, `LENGTH` is one byte count of `INFO`, and `CHKSUM` is the trailing checksum byte.
@@ -61,7 +79,7 @@ For response frames, the antenna pipeline MUST read `RTN` at byte index 4, `LENG
 
 ### Requirement: Preserve valid EPCs and enforce invalid-checksum policy
 
-The decoder MUST preserve any valid EPC value without marker-prefix dependence (including non-`E200`/`E280` values). Parser checksum failure MUST remain explicit (`ChecksumOK=false`), and downstream data reader/manager MUST NOT store readings from invalid-checksum frames.
+The decoder MUST preserve any valid EPC value without marker-prefix dependence (including non-`E200`/`E280` values). Parser checksum failure MUST remain explicit (`ChecksumOK=false`), and downstream data reader/manager MUST NOT store readings from invalid-checksum frames even when the frame was structurally complete and emitted by stream extraction. After any invalid/corrupt sequence, consumers MUST continue processing subsequent valid extracted frames in the same stream.
 
 #### Scenario: Keep non-marker EPC values
 
@@ -74,14 +92,3 @@ The decoder MUST preserve any valid EPC value without marker-prefix dependence (
 - GIVEN a parsed frame with `ChecksumOK=false`
 - WHEN antenna manager/data reader handles the frame
 - THEN no tag reading is stored or emitted as valid inventory data
-
-### Requirement: Exclude TCP stream reassembly from this capability
-
-This capability SHALL NOT include TCP stream reassembly or chunk coalescing behavior.
-
-#### Scenario: Fragmented stream remains out of scope
-
-- GIVEN a frame split across multiple TCP reads
-- WHEN evaluating this capability
-- THEN correctness requirements apply only to complete frame buffers
-- AND stream reassembly is handled by separate future capability work

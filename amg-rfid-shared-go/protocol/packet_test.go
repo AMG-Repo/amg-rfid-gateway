@@ -22,6 +22,24 @@ func testChecksum(data []byte) byte {
 	return byte((^sum + 1) & 0xff)
 }
 
+func testFrame(info ...byte) []byte {
+	frame := []byte{PacketStartResponse, PacketPad1, PacketPad2, CIDReadTypeCUII, RTNUIIData, byte(len(info))}
+	frame = append(frame, info...)
+	return append(frame, testChecksum(frame))
+}
+
+func requireFramesEqual(t *testing.T, got [][]byte, want ...[]byte) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("expected %d frames, got %d", len(want), len(got))
+	}
+	for i := range want {
+		if hex.EncodeToString(got[i]) != hex.EncodeToString(want[i]) {
+			t.Fatalf("frame %d mismatch: expected %x, got %x", i, want[i], got[i])
+		}
+	}
+}
+
 func TestParsePacket_CanonicalVectors(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -190,4 +208,219 @@ func TestProtocolConstants_DocumentRolesAndLegacyAliases(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStreamExtractor_FragmentedFrames(t *testing.T) {
+	tests := []struct {
+		name   string
+		chunks [][]byte
+		frame  []byte
+	}{
+		{
+			name:  "split across two reads",
+			frame: testFrame(0x01, 0x20, 0x00, 0xAA, 0xBB, 0xC9),
+		},
+		{
+			name:  "byte by byte emits only after final byte",
+			frame: testFrame(0x02, 0x20, 0x00, 0xCC, 0xDD, 0xC8),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			extractor := NewStreamExtractor()
+			chunks := tt.chunks
+			if chunks == nil {
+				if tt.name == "byte by byte emits only after final byte" {
+					for _, b := range tt.frame {
+						chunks = append(chunks, []byte{b})
+					}
+				} else {
+					chunks = [][]byte{tt.frame[:4], tt.frame[4:]}
+				}
+			}
+
+			for i, chunk := range chunks[:len(chunks)-1] {
+				got := extractor.Append(chunk)
+				requireFramesEqual(t, got)
+				if extractor.BufferedLen() == 0 {
+					t.Fatalf("expected partial bytes retained after chunk %d", i)
+				}
+			}
+
+			got := extractor.Append(chunks[len(chunks)-1])
+			requireFramesEqual(t, got, tt.frame)
+			if extractor.BufferedLen() != 0 {
+				t.Fatalf("expected empty buffer after emitting frame, got %d", extractor.BufferedLen())
+			}
+		})
+	}
+}
+
+func TestStreamExtractor_CoalescedAndNoise(t *testing.T) {
+	first := testFrame(0x01, 0x20, 0x00, 0x10, 0xC9)
+	second := testFrame(0x02, 0x20, 0x00, 0x20, 0xC8)
+
+	tests := []struct {
+		name  string
+		chunk []byte
+		want  [][]byte
+	}{
+		{
+			name:  "coalesced frames emit in order",
+			chunk: append(append([]byte{}, first...), second...),
+			want:  [][]byte{first, second},
+		},
+		{
+			name:  "leading noise discarded before SOI",
+			chunk: append([]byte{0x00, 0x11, 0x22}, first...),
+			want:  [][]byte{first},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			extractor := NewStreamExtractor()
+			got := extractor.Append(tt.chunk)
+			requireFramesEqual(t, got, tt.want...)
+			if extractor.BufferedLen() != 0 {
+				t.Fatalf("expected empty buffer after extraction, got %d", extractor.BufferedLen())
+			}
+		})
+	}
+}
+
+func TestStreamExtractor_InvalidChecksumAndBufferGuard(t *testing.T) {
+	valid := testFrame(0x01, 0x20, 0x00, 0xAA, 0xC9)
+	invalid := append([]byte{}, valid...)
+	invalid[len(invalid)-1] ^= 0xFF
+
+	t.Run("invalid checksum frame still emitted before valid frame", func(t *testing.T) {
+		extractor := NewStreamExtractor()
+		got := extractor.Append(append(invalid, valid...))
+		requireFramesEqual(t, got, invalid, valid)
+		if ValidateChecksum(got[0]) {
+			t.Fatal("expected first emitted frame to keep invalid checksum")
+		}
+		if !ValidateChecksum(got[1]) {
+			t.Fatal("expected second emitted frame to keep valid checksum")
+		}
+	})
+
+	t.Run("overflow guard drops garbage and retains plausible SOI tail", func(t *testing.T) {
+		extractor := NewStreamExtractorWithMaxBuffer(12)
+		noise := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, PacketStartResponse, PacketPad1, PacketPad2, CIDReadTypeCUII, RTNUIIData, 0x02, 0x99}
+		got := extractor.Append(noise)
+		requireFramesEqual(t, got)
+		if extractor.BufferedLen() != 7 {
+			t.Fatalf("expected guard to retain 7-byte plausible SOI tail, got %d", extractor.BufferedLen())
+		}
+
+		completedTail := []byte{0x88}
+		wantFrame := append(noise[6:], completedTail...)
+		wantFrame = append(wantFrame, testChecksum(wantFrame))
+		got = extractor.Append(wantFrame[7:])
+		requireFramesEqual(t, got, wantFrame)
+	})
+}
+
+func TestStreamExtractor_LengthBoundariesAndResync(t *testing.T) {
+	t.Run("LENGTH boundary vectors and partial retention", func(t *testing.T) {
+		tests := []struct {
+			name           string
+			length         byte
+			info           []byte
+			partialCut     int
+			wantTotalBytes int
+		}{
+			{
+				name:           "LENGTH zero emits minimum 7-byte frame",
+				length:         0,
+				info:           nil,
+				partialCut:     6,
+				wantTotalBytes: 7,
+			},
+			{
+				name:           "LENGTH two emits 9-byte frame",
+				length:         2,
+				info:           []byte{0xAA, 0xBB},
+				partialCut:     8,
+				wantTotalBytes: 9,
+			},
+			{
+				name:           "LENGTH five emits 12-byte frame",
+				length:         5,
+				info:           []byte{0x01, 0x02, 0x03, 0x04, 0x05},
+				partialCut:     11,
+				wantTotalBytes: 12,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				extractor := NewStreamExtractor()
+				frame := testFrame(tt.info...)
+				if int(frame[5]) != int(tt.length) {
+					t.Fatalf("test setup mismatch: length byte=%d want=%d", frame[5], tt.length)
+				}
+				if len(frame) != tt.wantTotalBytes {
+					t.Fatalf("test setup mismatch: total bytes=%d want=%d", len(frame), tt.wantTotalBytes)
+				}
+
+				got := extractor.Append(frame[:tt.partialCut])
+				requireFramesEqual(t, got)
+				if extractor.BufferedLen() != tt.partialCut {
+					t.Fatalf("expected partial retention of %d bytes, got %d", tt.partialCut, extractor.BufferedLen())
+				}
+
+				got = extractor.Append(frame[tt.partialCut:])
+				requireFramesEqual(t, got, frame)
+				if extractor.BufferedLen() != 0 {
+					t.Fatalf("expected empty buffer after full frame, got %d", extractor.BufferedLen())
+				}
+			})
+		}
+	})
+
+	t.Run("declared length larger than currently buffered keeps partial and emits only when complete", func(t *testing.T) {
+		extractor := NewStreamExtractor()
+		frame := testFrame(0xAA, 0xBB, 0xCC, 0xDD)
+		if frame[5] != 0x04 {
+			t.Fatalf("test setup mismatch: expected length 4, got %d", frame[5])
+		}
+
+		got := extractor.Append(frame[:7])
+		requireFramesEqual(t, got)
+		if extractor.BufferedLen() != 7 {
+			t.Fatalf("expected 7 retained bytes, got %d", extractor.BufferedLen())
+		}
+
+		got = extractor.Append(frame[7:10])
+		requireFramesEqual(t, got)
+		if extractor.BufferedLen() != 10 {
+			t.Fatalf("expected 10 retained bytes before completion, got %d", extractor.BufferedLen())
+		}
+
+		got = extractor.Append(frame[10:])
+		requireFramesEqual(t, got, frame)
+		if extractor.BufferedLen() != 0 {
+			t.Fatalf("expected empty buffer after completion, got %d", extractor.BufferedLen())
+		}
+	})
+
+	t.Run("corrupt declared length sequence resyncs to later valid SOI/frame", func(t *testing.T) {
+		extractor := NewStreamExtractorWithMaxBuffer(16)
+
+		corruptHeader := []byte{PacketStartResponse, PacketPad1, PacketPad2, CIDReadTypeCUII, RTNUIIData, 0x08, 0x99, 0x88}
+		got := extractor.Append(corruptHeader)
+		requireFramesEqual(t, got)
+
+		valid := testFrame(0x01, 0x20, 0x00, 0xAB, 0xC9)
+		trailer := []byte{0x44, 0x55, 0x66}
+		got = extractor.Append(append(append([]byte{}, valid...), trailer...))
+		requireFramesEqual(t, got, valid)
+		if extractor.BufferedLen() != 0 {
+			t.Fatalf("expected trailing non-SOI noise discarded after extraction, got %d buffered bytes", extractor.BufferedLen())
+		}
+	})
 }

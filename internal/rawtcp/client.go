@@ -207,6 +207,7 @@ func RunAntenna(ctx context.Context, client *Client, cache Cache, antenna Antenn
 
 	// Read loop
 	buf := make([]byte, 4096)
+	extractor := protocol.NewStreamExtractor()
 	for {
 		select {
 		case <-ctx.Done():
@@ -226,35 +227,30 @@ func RunAntenna(ctx context.Context, client *Client, cache Cache, antenna Antenn
 			continue
 		}
 
-		// Parse packet
-		packet, err := ParsePacket(buf[:n])
-		if err != nil {
-			// Invalid packet, log and continue
-			continue
-		}
+		for _, frame := range extractor.Append(buf[:n]) {
+			packet, err := ParsePacket(frame)
+			if err != nil {
+				continue
+			}
 
-		// Reject packets with invalid checksum.
-		if !packet.ChecksumOK {
-			continue
-		}
+			if !packet.ChecksumOK {
+				continue
+			}
 
-		// Only process data packets
-		if !packet.IsDataPacket() {
-			continue
-		}
+			if !packet.IsDataPacket() {
+				continue
+			}
 
-		// Create reading
-		reading := models.Reading{
-			AntennaID: antenna.ID,
-			EPC:       packet.TagUID,
-			RSSI:      -50, // Default RSSI since packet doesn't have it
-			Timestamp: time.Now(),
-		}
+			reading := models.Reading{
+				AntennaID: antenna.ID,
+				EPC:       packet.TagUID,
+				RSSI:      -50,
+				Timestamp: time.Now(),
+			}
 
-		// Store in cache
-		if err := cache.Store(reading); err != nil {
-			// Log error but continue - don't stop the antenna
-			continue
+			if err := cache.Store(reading); err != nil {
+				continue
+			}
 		}
 	}
 }
