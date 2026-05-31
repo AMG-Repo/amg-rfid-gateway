@@ -396,149 +396,53 @@ func (m *AntennaManager) ResetAutoReading() {
 // HandlePacket processes a raw packet based on CID1 and RTN/CID2.
 // Routes to appropriate handler based on RTN/CID2 at byte index 4.
 func (m *AntennaManager) HandlePacket(data []byte) error {
-	// NEGATIVE: Check minimum packet size
+	handler := ProtocolHandlerFor(m.config.Protocol)
+	ctx := PacketContext{
+		AntennaID: m.config.ID,
+		GatewayID: m.gatewayConfig.GatewayID,
+		Cache:     m.cache,
+		EventBus:  m.eventBus,
+		Stats:     m,
+	}
+
+	// Unsupported/non-generic protocols must not be rejected by Generic RFID
+	// framing assumptions before reaching their protocol handler.
+	if handler.Protocol() != config.ProtocolGeneric {
+		m.UpdateLastPacketTime()
+		return handler.HandleFrame(ctx, data)
+	}
+
+	// Generic RFID preserves the legacy frame sanity checks before activity updates.
 	if len(data) < 7 {
 		return fmt.Errorf("packet too short: %d bytes (min 7)", len(data))
 	}
 
-	// NEGATIVE: Validate framing
 	if data[0] != 0x7c && data[0] != 0xcc {
 		return fmt.Errorf("invalid start byte: 0x%02x", data[0])
 	}
 
-	// NEGATIVE: Validate padding
 	if data[1] != 0xff || data[2] != 0xff {
 		return fmt.Errorf("invalid padding bytes")
 	}
 
-	// Ignore corrupted packets: do not store/read-route invalid checksum frames.
-	if !protocol.ValidateChecksum(data) {
-		log.Printf("[WARN] Invalid checksum from antenna %s, skipping packet: %X", m.config.ID, data)
-		return nil
-	}
-
-	// Extract packet routing fields (CID1 at byte 3, RTN/CID2 at byte 4)
-	cid1 := data[3]
-	rtnCode := data[4]
-
 	// Update last packet time (shared by all handlers)
 	m.UpdateLastPacketTime()
 
-	// Route based on RTN code
-	switch rtnCode {
-	case protocol.RTNACK:
-		return m.handleACK(data)
-	case protocol.RTNUIIRead:
-		if cid1 != protocol.CID1ReadTypeCUII {
-			return m.handleUnknownRTN(data, rtnCode)
-		}
-		return m.handleUIIData(data)
-	case protocol.RTNTagData:
-		return m.handleTagData(data)
-	case protocol.RTNError:
-		return m.handleError(data)
-	case protocol.RTNHeartbeat:
-		return m.handleHeartbeatResponse(data)
-	default:
-		return m.handleUnknownRTN(data, rtnCode)
-	}
+	return handler.HandleFrame(ctx, data)
 }
 
-// handleACK processes RTN 0x00 (ACK) packets.
-func (m *AntennaManager) handleACK(data []byte) error {
-	// ACK confirms command received, just log at debug level
-	log.Printf("[DEBUG] ACK received from antenna %s", m.config.ID)
-	return nil
-}
-
-// handleUIIData processes RTN 0x02 (UII Data) packets.
-// Parses ANT/PC/EPC/RSSI and stores Reading in cache.
-func (m *AntennaManager) handleUIIData(data []byte) error {
-	// Extract info portion (starts at byte 6)
-	if len(data) < 7 {
-		return fmt.Errorf("UII data packet too short")
-	}
-
-	dataLen := int(data[5])
-	if len(data) < 6+dataLen+1 {
-		return fmt.Errorf("UII data packet truncated: expected %d bytes, have %d", 6+dataLen+1, len(data))
-	}
-
-	// INFO portion: [ANT(1), PC(2), EPC(N), RSSI(1)]
-	dataPortion := data[6 : 6+dataLen]
-
-	// Parse antenna data using shared protocol package
-	parsed, err := protocol.ParseAntennaData(dataPortion)
-	if err != nil {
-		return fmt.Errorf("failed to parse UII data: %w", err)
-	}
-
-	// Create Reading using ToReading method
-	reading := parsed.ToReading(m.config.ID, m.gatewayConfig.GatewayID)
-
-	// Store in cache
-	if err := m.cache.Store(reading); err != nil {
-		return fmt.Errorf("failed to store reading: %w", err)
-	}
-
-	// Publish event for real-time UI (SSE)
-	if m.eventBus != nil {
-		m.eventBus.Publish(events.TagDetected{
-			EPC:       reading.EPC,
-			RSSI:      reading.RSSI,
-			AntennaID: m.config.ID,
-			Timestamp: reading.Timestamp,
-		})
-	}
-
-	// Update manager stats
+func (m *AntennaManager) RecordReading(epc string, rssi int) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.readingCount++
-	m.lastTagEPC = reading.EPC
-	m.lastTagRSSI = reading.RSSI
-	m.mu.Unlock()
-
-	log.Printf("[INFO] UII detected from antenna %s: EPC=%s RSSI=%d",
-		m.config.ID, reading.EPC, reading.RSSI)
-
-	return nil
+	m.lastTagEPC = epc
+	m.lastTagRSSI = rssi
 }
 
-// handleTagData processes RTN 0x06 (Tag Data) packets.
-// Logs and forwards but does NOT create a Reading.
-func (m *AntennaManager) handleTagData(data []byte) error {
-	// Tag Data is logged but not stored as a Reading
-	log.Printf("[INFO] Tag Data received from antenna %s (not a UII scan)", m.config.ID)
-	return nil
-}
-
-// handleError processes RTN 0x07 (Error) packets.
-// Logs error and increments error counter.
-func (m *AntennaManager) handleError(data []byte) error {
-	// Log error with hex payload
-	log.Printf("[ERROR] Antenna %s error: %X", m.config.ID, data)
-
-	// Increment error counter
+func (m *AntennaManager) RecordError() {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.errorCount++
-	m.mu.Unlock()
-
-	return nil
-}
-
-// handleHeartbeatResponse processes RTN 0x10 (Heartbeat Response) packets.
-func (m *AntennaManager) handleHeartbeatResponse(data []byte) error {
-	// Heartbeat response confirms connection is alive
-	log.Printf("[DEBUG] Heartbeat response received from antenna %s", m.config.ID)
-	return nil
-}
-
-// handleUnknownRTN handles unknown/unsupported RTN codes.
-func (m *AntennaManager) handleUnknownRTN(data []byte, rtnCode byte) error {
-	// Log warning with RTN code and hex payload
-	log.Printf("[WARN] Unknown RTN code 0x%02x from antenna %s: %X",
-		rtnCode, m.config.ID, data)
-	return nil
 }
 
 // dataReader continuously reads packets from the TCP connection.

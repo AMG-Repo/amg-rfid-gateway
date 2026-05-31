@@ -6,6 +6,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 )
 
 // mockConn is a mock net.Conn for testing
@@ -418,6 +420,49 @@ func TestDataReader_StreamReassemblyScenarios(t *testing.T) {
 
 			if stored != tc.expectedStore {
 				t.Fatalf("expected %d readings stored, got %d", tc.expectedStore, stored)
+			}
+		})
+	}
+}
+
+func TestDataReader_ProtocolDispatchContract(t *testing.T) {
+	tests := []struct {
+		name          string
+		protocol      config.AntennaProtocol
+		expectedStore int
+	}{
+		{
+			name:          "generic stream stores decoded reading",
+			protocol:      config.ProtocolGeneric,
+			expectedStore: 1,
+		},
+		{
+			name:          "unsupported stream does not store generic reading",
+			protocol:      config.ProtocolZebra,
+			expectedStore: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockConn := &mockConn{readData: [][]byte{mustBuildValidUIIPacket(t, 0x66)}}
+			manager, _, mockCache, cancel := newTestAntennaManager()
+			defer cancel()
+			manager.config.Protocol = tt.protocol
+
+			ctx, cancelCtx := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancelCtx()
+
+			manager.wg.Add(1)
+			go manager.dataReader(ctx, mockConn)
+
+			waitForDataReaderExit(t, manager)
+
+			mockCache.mu.Lock()
+			stored := len(mockCache.stored)
+			mockCache.mu.Unlock()
+			if stored != tt.expectedStore {
+				t.Fatalf("expected %d readings stored, got %d", tt.expectedStore, stored)
 			}
 		})
 	}
