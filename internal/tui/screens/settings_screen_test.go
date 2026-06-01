@@ -741,10 +741,10 @@ func TestSettingsScreen_ProtocolSelectorHelpMatchesControls(t *testing.T) {
 
 	view := m.View()
 
-	assert.Contains(t, view, "←/→ cycle")
-	assert.Contains(t, view, "space cycle")
-	assert.Contains(t, view, "↑/k antenna up")
-	assert.Contains(t, view, "↓/j antenna down")
+	assert.Contains(t, view, "↑/k up")
+	assert.Contains(t, view, "↓/j down")
+	assert.Contains(t, view, "a add antenna")
+	assert.Contains(t, view, "e/enter edit")
 }
 
 func TestSettingsScreen_RejectsUnsupportedAntennaProtocol(t *testing.T) {

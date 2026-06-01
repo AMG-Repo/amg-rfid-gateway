@@ -187,6 +187,7 @@ func TestSettingsScreen_SetConfigResetsAntennaDrafts(t *testing.T) {
 
 func TestSettingsScreen_AntennaEditorViewAndHelp(t *testing.T) {
 	m := NewSettingsScreen(&config.GatewayConfig{GatewayID: "gateway", Antennas: testEditorAntennas()})
+	m.cursor = requireFieldIndex(t, m, "antenna_protocol:dock")
 
 	view := m.View()
 
@@ -195,6 +196,101 @@ func TestSettingsScreen_AntennaEditorViewAndHelp(t *testing.T) {
 	assert.Contains(t, view, "a add")
 	assert.Contains(t, view, "e/enter edit")
 	assert.Contains(t, view, "d delete")
+}
+
+func TestSettingsScreen_AntennaEditorFormViewShowsActiveFieldAndMode(t *testing.T) {
+	tests := []struct {
+		name          string
+		setup         func(*SettingsScreenModel)
+		activeField   string
+		inactiveField string
+		wantStatus    string
+	}{
+		{
+			name: "new antenna highlights active id field",
+			setup: func(m *SettingsScreenModel) {
+				m.antennaEditor.startAdd()
+				m.antennaEditor.formCursor = antennaFormFieldID
+			},
+			activeField:   "> ID:",
+			inactiveField: "  IP:",
+			wantStatus:    "Editing new antenna",
+		},
+		{
+			name: "existing antenna names edited id and highlights active ip field",
+			setup: func(m *SettingsScreenModel) {
+				m.antennaEditor.cursor = 1
+				m.antennaEditor.startEdit()
+				m.antennaEditor.formCursor = antennaFormFieldIP
+			},
+			activeField:   "> IP:",
+			inactiveField: "  ID:",
+			wantStatus:    "Editing antenna exit",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewSettingsScreen(&config.GatewayConfig{GatewayID: "gateway", Antennas: testEditorAntennas()})
+			tt.setup(&m)
+
+			view := m.View()
+
+			assert.Contains(t, view, tt.wantStatus)
+			assert.Contains(t, view, tt.activeField)
+			assert.Contains(t, view, tt.inactiveField)
+		})
+	}
+}
+
+func TestSettingsScreen_AntennaEditorContextualHelp(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *config.GatewayConfig
+		setup    func(*SettingsScreenModel)
+		wantHelp string
+	}{
+		{
+			name:     "empty list shows minimal add help",
+			config:   &config.GatewayConfig{GatewayID: "gateway"},
+			wantHelp: "a add antenna • Esc back",
+		},
+		{
+			name:     "list shows only antenna list actions",
+			config:   &config.GatewayConfig{GatewayID: "gateway", Antennas: testEditorAntennas()},
+			wantHelp: "↑/k up • ↓/j down • a add antenna • e/enter edit • d delete • Esc back",
+		},
+		{
+			name:   "delete confirmation shows only confirmation actions",
+			config: &config.GatewayConfig{GatewayID: "gateway", Antennas: testEditorAntennas()},
+			setup: func(m *SettingsScreenModel) {
+				m.antennaEditor.mode = antennaEditorModeDeleteConfirm
+			},
+			wantHelp: "y confirm • n/esc cancel",
+		},
+		{
+			name:   "form shows focused edit actions",
+			config: &config.GatewayConfig{GatewayID: "gateway", Antennas: testEditorAntennas()},
+			setup: func(m *SettingsScreenModel) {
+				m.antennaEditor.startAdd()
+			},
+			wantHelp: "↑/k previous • ↓/j next • type edit • space toggle/cycle • enter save • esc cancel",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewSettingsScreen(tt.config)
+			if len(tt.config.Antennas) > 0 {
+				m.cursor = requireFieldIndex(t, m, "antenna_protocol:dock")
+			}
+			if tt.setup != nil {
+				tt.setup(&m)
+			}
+
+			assert.Equal(t, tt.wantHelp, m.renderHelp())
+		})
+	}
 }
 
 func TestSettingsScreen_RoutesAntennaEditorListKeys(t *testing.T) {
