@@ -17,7 +17,53 @@ import (
 type settingsBackMsg struct{}
 
 // settingsSaveMsg is sent when user confirms saving config.
-type settingsSaveMsg struct{}
+type settingsSaveMsg struct {
+	leaveAfterSave bool
+}
+
+// settingsDiscardChangesMsg is sent when user discards unsaved changes while leaving.
+type settingsDiscardChangesMsg struct{}
+
+// settingsStayMsg is sent when user stays on settings after an unsaved-exit prompt.
+type settingsStayMsg struct{}
+
+type settingsPromptMode int
+
+const (
+	settingsPromptNone settingsPromptMode = iota
+	settingsPromptSaveConfirm
+	settingsPromptUnsavedExit
+)
+
+// IsSettingsSaveMsg reports whether msg is a settings save confirmation.
+func IsSettingsSaveMsg(msg tea.Msg) bool {
+	_, ok := msg.(settingsSaveMsg)
+	return ok
+}
+
+// SettingsSaveLeavesAfterSave reports whether a save confirmation should navigate away after persisting.
+func SettingsSaveLeavesAfterSave(msg tea.Msg) bool {
+	saveMsg, ok := msg.(settingsSaveMsg)
+	return ok && saveMsg.leaveAfterSave
+}
+
+// IsSettingsBackMsg reports whether msg requests leaving settings without unsaved changes.
+func IsSettingsBackMsg(msg tea.Msg) bool {
+	_, ok := msg.(settingsBackMsg)
+	return ok
+}
+
+// IsSettingsDiscardChangesMsg reports whether msg requests discarding unsaved settings changes.
+func IsSettingsDiscardChangesMsg(msg tea.Msg) bool {
+	_, ok := msg.(settingsDiscardChangesMsg)
+	return ok
+}
+
+// IsSettingsStayMsg reports whether msg cancels leaving settings.
+func IsSettingsStayMsg(msg tea.Msg) bool {
+	_, ok := msg.(settingsStayMsg)
+	return ok
+}
 
 // settingsField represents a single editable field.
 type settingsField struct {
@@ -50,8 +96,8 @@ type SettingsScreenModel struct {
 	editBuffer string
 	editError  string
 
-	// Save confirmation
-	showConfirm bool
+	// Operator prompt state
+	promptMode settingsPromptMode
 
 	// Change tracking
 	hasChanges bool
@@ -267,19 +313,40 @@ func (m SettingsScreenModel) Init() tea.Cmd {
 // Update handles messages.
 func (m SettingsScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle save confirmation dialog
-	if m.showConfirm {
+	if m.promptMode == settingsPromptSaveConfirm {
 		switch msg := msg.(type) {
 		case tea.KeyMsg:
 			switch {
 			case msg.Type == tea.KeyRunes && (string(msg.Runes) == "y" || string(msg.Runes) == "Y"):
-				m.showConfirm = false
+				m.promptMode = settingsPromptNone
 				return m, func() tea.Msg { return settingsSaveMsg{} }
 			case msg.Type == tea.KeyRunes && (string(msg.Runes) == "n" || string(msg.Runes) == "N"):
-				m.showConfirm = false
+				m.promptMode = settingsPromptNone
 				return m, nil
 			case msg.Type == tea.KeyEsc:
-				m.showConfirm = false
+				m.promptMode = settingsPromptNone
 				return m, nil
+			}
+		}
+		return m, nil
+	}
+
+	if m.promptMode == settingsPromptUnsavedExit {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch {
+			case msg.Type == tea.KeyRunes && (string(msg.Runes) == "y" || string(msg.Runes) == "Y"):
+				m.promptMode = settingsPromptNone
+				return m, func() tea.Msg { return settingsSaveMsg{leaveAfterSave: true} }
+			case msg.Type == tea.KeyRunes && (string(msg.Runes) == "d" || string(msg.Runes) == "D"):
+				m.promptMode = settingsPromptNone
+				return m, func() tea.Msg { return settingsDiscardChangesMsg{} }
+			case msg.Type == tea.KeyRunes && (string(msg.Runes) == "n" || string(msg.Runes) == "N"):
+				m.promptMode = settingsPromptNone
+				return m, func() tea.Msg { return settingsStayMsg{} }
+			case msg.Type == tea.KeyEsc:
+				m.promptMode = settingsPromptNone
+				return m, func() tea.Msg { return settingsStayMsg{} }
 			}
 		}
 		return m, nil
@@ -363,6 +430,10 @@ func (m SettingsScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.editBuffer = m.values[m.cursor]
 			m.editError = ""
 		case tea.KeyEsc:
+			if m.hasChanges {
+				m.promptMode = settingsPromptUnsavedExit
+				return m, nil
+			}
 			// Go back to main menu
 			return m, func() tea.Msg { return settingsBackMsg{} }
 		default:
@@ -370,7 +441,7 @@ func (m SettingsScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Type == tea.KeyRunes && string(msg.Runes) == "s" {
 				// Show save confirmation if there are changes
 				if m.hasChanges {
-					m.showConfirm = true
+					m.promptMode = settingsPromptSaveConfirm
 				}
 			}
 		}
@@ -381,8 +452,11 @@ func (m SettingsScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the screen.
 func (m SettingsScreenModel) View() string {
-	if m.showConfirm {
+	if m.promptMode == settingsPromptSaveConfirm {
 		return m.renderConfirmDialog()
+	}
+	if m.promptMode == settingsPromptUnsavedExit {
+		return m.renderUnsavedExitDialog()
 	}
 
 	// Build title
@@ -453,6 +527,13 @@ func (m SettingsScreenModel) renderHelp() string {
 // renderConfirmDialog renders the save confirmation dialog.
 func (m SettingsScreenModel) renderConfirmDialog() string {
 	content := m.styles.Confirm.Render("Save changes? (y/n)")
+	return lipgloss.Place(m.width, m.height,
+		lipgloss.Center, lipgloss.Center,
+		content)
+}
+
+func (m SettingsScreenModel) renderUnsavedExitDialog() string {
+	content := m.styles.Confirm.Render("Unsaved changes. Save and leave? (y save / d discard / n stay)")
 	return lipgloss.Place(m.width, m.height,
 		lipgloss.Center, lipgloss.Center,
 		content)
@@ -615,6 +696,10 @@ func (m *SettingsScreenModel) SetConfig(cfg *config.GatewayConfig) {
 	}
 
 	m.hasChanges = false
+	m.editing = false
+	m.editBuffer = ""
+	m.editError = ""
+	m.promptMode = settingsPromptNone
 }
 
 // SetSize updates the screen dimensions.

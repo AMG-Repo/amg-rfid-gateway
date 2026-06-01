@@ -267,9 +267,27 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 		}
 
-		// Global ESC to go back to main menu
-		if msg.Type == tea.KeyEsc && a.currentScreen != ScreenMainMenu {
+		// Global ESC to go back to main menu. Settings owns Esc so it can protect unsaved edits.
+		if msg.Type == tea.KeyEsc && a.currentScreen != ScreenMainMenu && a.currentScreen != ScreenSettings {
 			a.currentScreen = ScreenMainMenu
+			return a, nil
+		}
+	}
+
+	if a.currentScreen == ScreenSettings {
+		if screens.IsSettingsSaveMsg(msg) {
+			return a.handleSettingsSave(msg)
+		}
+		if screens.IsSettingsBackMsg(msg) {
+			a.currentScreen = ScreenMainMenu
+			return a, nil
+		}
+		if screens.IsSettingsDiscardChangesMsg(msg) {
+			a.settings.SetConfig(a.cfg)
+			a.currentScreen = ScreenMainMenu
+			return a, nil
+		}
+		if screens.IsSettingsStayMsg(msg) {
 			return a, nil
 		}
 	}
@@ -352,32 +370,32 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ScreenSettings:
 		newModel, cmd := a.settings.Update(msg)
 		a.settings = newModel.(screens.SettingsScreenModel)
-
-		// Check for save action - save config if there are changes
-		if a.settings.HasChanges() {
-			newCfg := a.settings.GetConfig()
-			// Validate before saving
-			if err := newCfg.Validate(); err != nil {
-				log.Printf("[TUI] Config validation failed: %v", err)
-				// Don't keep invalid config in memory — restore valid config in UI
-				a.settings.SetConfig(a.cfg)
-			} else {
-				a.cfg = newCfg
-				// Save to file
-				if err := a.cfg.SaveToYAML(a.configPath); err != nil {
-					log.Printf("[TUI] Failed to save config: %v", err)
-				} else {
-					log.Printf("[TUI] Config saved to %s", a.configPath)
-					a.settings.SetConfig(newCfg)
-				}
-			}
-		}
-
 		return a, cmd
 
 	default:
 		return a, nil
 	}
+}
+
+func (a *App) handleSettingsSave(msg tea.Msg) (tea.Model, tea.Cmd) {
+	newCfg := a.settings.GetConfig()
+	if err := newCfg.Validate(); err != nil {
+		log.Printf("[TUI] Config validation failed: %v", err)
+		return a, nil
+	}
+
+	if err := newCfg.SaveToYAML(a.configPath); err != nil {
+		log.Printf("[TUI] Failed to save config: %v", err)
+		return a, nil
+	}
+
+	log.Printf("[TUI] Config saved to %s", a.configPath)
+	a.cfg = newCfg
+	a.settings.SetConfig(newCfg)
+	if screens.SettingsSaveLeavesAfterSave(msg) {
+		a.currentScreen = ScreenMainMenu
+	}
+	return a, nil
 }
 
 // View renders the current screen.
