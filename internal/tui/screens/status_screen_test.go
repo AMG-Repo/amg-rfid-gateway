@@ -119,23 +119,34 @@ func TestFormatDuration(t *testing.T) {
 	}
 }
 
-func TestStatusScreen_UptimeIncreases(t *testing.T) {
-	m := NewStatusScreen()
-
-	// Record start time
-	startTime := m.startTime
-
-	// Wait a tiny bit
-	time.Sleep(10 * time.Millisecond)
-
-	// Calculate uptime - should be > 0
-	uptime := time.Since(startTime)
-	if uptime < 5*time.Millisecond {
-		t.Error("uptime should be greater than 5ms")
+func TestStatusScreen_ViewUsesBackendUptime(t *testing.T) {
+	tests := []struct {
+		name        string
+		uptime      time.Duration
+		wantDisplay string
+	}{
+		{
+			name:        "renders backend hour minute uptime",
+			uptime:      time.Hour + 23*time.Minute,
+			wantDisplay: "1h 23m",
+		},
+		{
+			name:        "renders backend minute second uptime",
+			uptime:      5*time.Minute + 30*time.Second,
+			wantDisplay: "5m 30s",
+		},
 	}
 
-	// Just verify the model tracks time correctly
-	if m.startTime.IsZero() {
-		t.Error("startTime should not be zero")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewStatusScreen()
+			m.SetStatus(SystemStatus{Uptime: tt.uptime})
+
+			view := m.View()
+
+			if !contains(view, tt.wantDisplay) {
+				t.Fatalf("view should contain backend uptime %q, got:\n%s", tt.wantDisplay, view)
+			}
+		})
 	}
 }

@@ -3,6 +3,7 @@ package tui
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/stretchr/testify/assert"
@@ -237,6 +238,26 @@ func TestApp_SettingsEscWithoutUnsavedChangesGoesBack(t *testing.T) {
 	}
 
 	assert.Equal(t, ScreenMainMenu, app.currentScreen)
+}
+
+func TestApp_PollDataStatusUptimeUpdatesStatusScreen(t *testing.T) {
+	app := &App{
+		currentScreen: ScreenMainMenu,
+		status:        screens.NewStatusScreen(),
+	}
+
+	newModel, cmd := app.Update(pollDataMsg{
+		status: screens.SystemStatus{
+			GatewayID: "gateway-polled",
+			Uptime:    time.Hour + 23*time.Minute,
+		},
+	})
+	app = newModel.(*App)
+
+	require.Nil(t, cmd)
+	assert.Equal(t, time.Hour+23*time.Minute, app.lastStatus.Uptime)
+	assert.Equal(t, time.Hour+23*time.Minute, app.status.GetStatus().Uptime)
+	assert.Contains(t, app.status.View(), "1h 23m")
 }
 
 func validTUITestConfig() *config.GatewayConfig {

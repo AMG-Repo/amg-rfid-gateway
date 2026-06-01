@@ -20,6 +20,6 @@
   <text x="24" y="408.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">    ANT-001: 192.168.1.100:49153 (enabled) Zone: entrada Protocol: generic</text>
   <text x="24" y="432.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">    ANT-002: 192.168.1.101:49153 (enabled) Zone: salida Protocol: zebra</text>
   <text x="24" y="456.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve"></text>
-  <text x="24" y="480.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">  ↑/k up · ↓/j down · tab/shift+tab · enter edit · s save · esc back</text>
+  <text x="24" y="480.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">  ↑/k up · ↓/j down · ←/→ cycle protocol · space/enter cycle protocol · s save · esc back</text>
   <text x="24" y="504.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve"></text>
 </svg>
