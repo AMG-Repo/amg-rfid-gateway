@@ -103,13 +103,9 @@ func (m AntennasScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// NEGATIVE: Handle navigation
 	switch keyMsg.String() {
 	case "up", "k":
-		if m.cursor > 0 {
-			m.cursor--
-		}
+		m.cursor = moveCursor(m.cursor, len(m.antennas), -1)
 	case "down", "j":
-		if m.cursor < len(m.antennas)-1 {
-			m.cursor++
-		}
+		m.cursor = moveCursor(m.cursor, len(m.antennas), 1)
 	}
 
 	return m, nil

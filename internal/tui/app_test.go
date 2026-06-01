@@ -42,14 +42,6 @@ func TestApp_SettingsProtocolEditRoundTripsAfterSave(t *testing.T) {
 
 	newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	app = newModel.(*App)
-	for range len("generic") {
-		newModel, _ = app.Update(tea.KeyMsg{Type: tea.KeyBackspace})
-		app = newModel.(*App)
-	}
-	newModel, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("zebra")})
-	app = newModel.(*App)
-	newModel, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	app = newModel.(*App)
 	app = saveSettingsChanges(t, app, true)
 
 	loaded, err := config.LoadFromYAML(configPath)

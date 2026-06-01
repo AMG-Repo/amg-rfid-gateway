@@ -18,8 +18,10 @@ func TestMainScreen_Navigation(t *testing.T) {
 		{"down with j", 0, "j", 1, 5},
 		{"up from 1", 1, "up", 0, 5},
 		{"up with k", 1, "k", 0, 5},
-		{"down at bottom", 4, "down", 4, 5}, // stays at bottom
-		{"up at top", 0, "up", 0, 5},        // stays at top
+		{"down at bottom wraps", 4, "down", 0, 5},
+		{"down with j at bottom wraps", 4, "j", 0, 5},
+		{"up at top wraps", 0, "up", 4, 5},
+		{"up with k at top wraps", 0, "k", 4, 5},
 	}
 
 	for _, tt := range tests {
@@ -37,6 +39,18 @@ func TestMainScreen_Navigation(t *testing.T) {
 				t.Errorf("cursor = %d, want %d", m.cursor, tt.expectPos)
 			}
 		})
+	}
+}
+
+func TestMainScreen_HelpMatchesNavigationControls(t *testing.T) {
+	m := NewMainScreen()
+	view := m.View()
+
+	if !contains(view, "↑/k up") {
+		t.Fatalf("view should document up/k navigation, got %q", view)
+	}
+	if !contains(view, "↓/j down") {
+		t.Fatalf("view should document down/j navigation, got %q", view)
 	}
 }
 

@@ -401,30 +401,26 @@ func (m SettingsScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyUp:
-			if m.cursor > 0 {
-				m.cursor--
-			} else {
-				m.cursor = len(m.fields) - 1
-			}
+			m.cursor = moveCursor(m.cursor, len(m.fields), -1)
 		case tea.KeyDown:
-			if m.cursor < len(m.fields)-1 {
-				m.cursor++
-			} else {
-				m.cursor = 0
-			}
+			m.cursor = moveCursor(m.cursor, len(m.fields), 1)
 		case tea.KeyTab:
-			if m.cursor < len(m.fields)-1 {
-				m.cursor++
-			} else {
-				m.cursor = 0
-			}
+			m.cursor = moveCursor(m.cursor, len(m.fields), 1)
 		case tea.KeyShiftTab:
-			if m.cursor > 0 {
-				m.cursor--
-			} else {
-				m.cursor = len(m.fields) - 1
+			m.cursor = moveCursor(m.cursor, len(m.fields), -1)
+		case tea.KeyLeft:
+			if m.isAntennaProtocolField() {
+				m.cycleCurrentAntennaProtocol(-1)
+			}
+		case tea.KeyRight, tea.KeySpace:
+			if m.isAntennaProtocolField() {
+				m.cycleCurrentAntennaProtocol(1)
 			}
 		case tea.KeyEnter:
+			if m.isAntennaProtocolField() {
+				m.cycleCurrentAntennaProtocol(1)
+				return m, nil
+			}
 			// Start editing the current field
 			m.editing = true
 			m.editBuffer = m.values[m.cursor]
@@ -438,7 +434,11 @@ func (m SettingsScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg { return settingsBackMsg{} }
 		default:
 			// Handle rune keys (like 's' for save)
-			if msg.Type == tea.KeyRunes && string(msg.Runes) == "s" {
+			if msg.Type == tea.KeyRunes && string(msg.Runes) == "j" {
+				m.cursor = moveCursor(m.cursor, len(m.fields), 1)
+			} else if msg.Type == tea.KeyRunes && string(msg.Runes) == "k" {
+				m.cursor = moveCursor(m.cursor, len(m.fields), -1)
+			} else if msg.Type == tea.KeyRunes && string(msg.Runes) == "s" {
 				// Show save confirmation if there are changes
 				if m.hasChanges {
 					m.promptMode = settingsPromptSaveConfirm
@@ -521,7 +521,39 @@ func (m SettingsScreenModel) renderHelp() string {
 	if m.editing {
 		return "enter save • esc cancel • type to edit"
 	}
+	if m.isAntennaProtocolField() {
+		return "↑/k up • ↓/j down • ←/→ cycle protocol • space/enter cycle protocol • s save • esc back"
+	}
 	return "↑/k up • ↓/j down • tab/shift+tab navigate • enter edit • s save • esc back"
+}
+
+func (m SettingsScreenModel) isAntennaProtocolField() bool {
+	if m.cursor < 0 || m.cursor >= len(m.fields) {
+		return false
+	}
+	return strings.HasPrefix(m.fields[m.cursor].key, "antenna_protocol:")
+}
+
+func (m *SettingsScreenModel) cycleCurrentAntennaProtocol(delta int) {
+	if !m.isAntennaProtocolField() {
+		return
+	}
+
+	protocols := []string{string(config.ProtocolGeneric), string(config.ProtocolZebra)}
+	current := strings.ToLower(strings.TrimSpace(m.values[m.cursor]))
+	currentIndex := 0
+	for i, protocol := range protocols {
+		if current == protocol {
+			currentIndex = i
+			break
+		}
+	}
+
+	next := moveCursor(currentIndex, len(protocols), delta)
+	if m.values[m.cursor] != protocols[next] {
+		m.values[m.cursor] = protocols[next]
+		m.hasChanges = true
+	}
 }
 
 // renderConfirmDialog renders the save confirmation dialog.

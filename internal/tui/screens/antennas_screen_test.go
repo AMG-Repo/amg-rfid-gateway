@@ -25,8 +25,10 @@ func TestAntennasScreen_Navigation(t *testing.T) {
 		{"down with j", 0, "j", 1, 3},
 		{"up from 1", 1, "up", 0, 3},
 		{"up with k", 1, "k", 0, 3},
-		{"down at bottom", 2, "down", 2, 3}, // stays at bottom
-		{"up at top", 0, "up", 0, 3},        // stays at top
+		{"down at bottom wraps", 2, "down", 0, 3},
+		{"down with j at bottom wraps", 2, "j", 0, 3},
+		{"up at top wraps", 0, "up", 2, 3},
+		{"up with k at top wraps", 0, "k", 2, 3},
 	}
 
 	for _, tt := range tests {
@@ -46,6 +48,43 @@ func TestAntennasScreen_Navigation(t *testing.T) {
 				t.Errorf("cursor = %d, want %d", m.cursor, tt.expectPos)
 			}
 		})
+	}
+}
+
+func TestAntennasScreen_NavigationEmptyListNoops(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "down", key: "down"},
+		{name: "j", key: "j"},
+		{name: "up", key: "up"},
+		{name: "k", key: "k"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewAntennasScreen()
+			newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.key)})
+			m = newModel.(AntennasScreenModel)
+
+			if m.cursor != 0 {
+				t.Fatalf("cursor = %d, want 0", m.cursor)
+			}
+		})
+	}
+}
+
+func TestAntennasScreen_HelpMatchesNavigationControls(t *testing.T) {
+	m := NewAntennasScreen()
+	m.SetAntennas([]AntennaInfo{{ID: "ant-01", Connected: true}})
+	view := m.View()
+
+	if !contains(view, "↑/k up") {
+		t.Fatalf("view should document up/k navigation, got %q", view)
+	}
+	if !contains(view, "↓/j down") {
+		t.Fatalf("view should document down/j navigation, got %q", view)
 	}
 }
 
