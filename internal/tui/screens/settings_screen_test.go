@@ -33,8 +33,8 @@ func TestSettingsScreen_New(t *testing.T) {
 	if m.editing {
 		t.Error("editing should be false initially")
 	}
-	if m.showConfirm {
-		t.Error("showConfirm should be false initially")
+	if m.promptMode != settingsPromptNone {
+		t.Error("prompt mode should be none initially")
 	}
 	if m.hasChanges {
 		t.Error("hasChanges should be false initially")
@@ -400,7 +400,7 @@ func TestSettingsScreen_SaveShowsConfirmation(t *testing.T) {
 	m.values[0] = "modified"
 	m.hasChanges = true
 
-	if m.showConfirm {
+	if m.promptMode != settingsPromptNone {
 		t.Error("should not show confirm initially")
 	}
 
@@ -408,7 +408,7 @@ func TestSettingsScreen_SaveShowsConfirmation(t *testing.T) {
 	newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	m = newModel.(SettingsScreenModel)
 
-	if !m.showConfirm {
+	if m.promptMode != settingsPromptSaveConfirm {
 		t.Error("should show confirm after pressing 's'")
 	}
 }
@@ -425,13 +425,13 @@ func TestSettingsScreen_ConfirmSave(t *testing.T) {
 	m.cursor = 0
 	m.values[0] = "modified"
 	m.hasChanges = true
-	m.showConfirm = true
+	m.promptMode = settingsPromptSaveConfirm
 
 	// Press 'y' to confirm
 	newModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	m = newModel.(SettingsScreenModel)
 
-	if m.showConfirm {
+	if m.promptMode != settingsPromptNone {
 		t.Error("confirm dialog should close after 'y'")
 	}
 
@@ -455,13 +455,13 @@ func TestSettingsScreen_CancelSave(t *testing.T) {
 	}
 
 	m := NewSettingsScreen(cfg)
-	m.showConfirm = true
+	m.promptMode = settingsPromptSaveConfirm
 
 	// Press 'n' to cancel
 	newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = newModel.(SettingsScreenModel)
 
-	if m.showConfirm {
+	if m.promptMode != settingsPromptNone {
 		t.Error("confirm dialog should close after 'n'")
 	}
 }
@@ -674,7 +674,6 @@ func TestSettingsScreen_EditsAntennaProtocolPerAntenna(t *testing.T) {
 	assert.Equal(t, "keep-token", result.WebAuthToken)
 	assert.Equal(t, "/keep/data", result.DataPath)
 }
-
 func TestSettingsScreen_RejectsUnsupportedAntennaProtocol(t *testing.T) {
 	cfg := &config.GatewayConfig{
 		GatewayID: "test",
