@@ -669,7 +669,7 @@ func TestSettingsScreen_EditsAntennaProtocolPerAntenna(t *testing.T) {
 	m.cursor = protocolField
 
 	var newModel tea.Model
-	newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
 	m = newModel.(SettingsScreenModel)
 
 	require.True(t, m.HasChanges())
@@ -693,7 +693,6 @@ func TestSettingsScreen_ProtocolSelectorCyclesSupportedValues(t *testing.T) {
 		key       tea.KeyMsg
 		wantValue string
 	}{
-		{name: "enter cycles generic forward to zebra", start: config.ProtocolGeneric, key: tea.KeyMsg{Type: tea.KeyEnter}, wantValue: "zebra"},
 		{name: "space cycles generic forward to zebra", start: config.ProtocolGeneric, key: tea.KeyMsg{Type: tea.KeySpace}, wantValue: "zebra"},
 		{name: "right cycles generic forward to zebra", start: config.ProtocolGeneric, key: tea.KeyMsg{Type: tea.KeyRight}, wantValue: "zebra"},
 		{name: "left cycles generic backward to zebra", start: config.ProtocolGeneric, key: tea.KeyMsg{Type: tea.KeyLeft}, wantValue: "zebra"},
@@ -723,7 +722,7 @@ func TestSettingsScreen_ProtocolSelectorPreventsFreeTextInput(t *testing.T) {
 	protocolField := requireFieldIndex(t, m, "antenna_protocol:dock")
 	m.cursor = protocolField
 
-	newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
 	m = newModel.(SettingsScreenModel)
 	require.False(t, m.editing)
 	require.Equal(t, "zebra", m.values[protocolField])
@@ -751,9 +750,9 @@ func TestSettingsScreen_ProtocolSelectorHelpMatchesControls(t *testing.T) {
 	view := m.View()
 
 	assert.Contains(t, view, "←/→ cycle")
-	assert.Contains(t, view, "space/enter cycle")
-	assert.Contains(t, view, "↑/k up")
-	assert.Contains(t, view, "↓/j down")
+	assert.Contains(t, view, "space cycle")
+	assert.Contains(t, view, "↑/k antenna up")
+	assert.Contains(t, view, "↓/j antenna down")
 }
 
 func TestSettingsScreen_RejectsUnsupportedAntennaProtocol(t *testing.T) {
