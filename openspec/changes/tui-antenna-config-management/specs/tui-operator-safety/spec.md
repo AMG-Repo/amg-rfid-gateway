@@ -51,6 +51,7 @@ When leaving Settings with unsaved edits, the system MUST present an explicit de
 - WHEN the operator chooses stay
 - THEN navigation away is canceled
 - AND the current editable state remains visible in Settings
+- AND any save/validation error shown during the failed save attempt remains visible for corrective action
 
 #### Scenario: Discard drops unsaved antenna CRUD changes
 

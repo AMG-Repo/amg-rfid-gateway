@@ -184,6 +184,10 @@ type pollDataMsg struct {
 	err      error
 }
 
+type settingsSaveErrorMsg struct {
+	err error
+}
+
 // pollData fetches data from the bridge server.
 func (a *App) pollData() tea.Cmd {
 	return func() tea.Msg {
@@ -275,6 +279,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if a.currentScreen == ScreenSettings {
+		if saveErr, ok := msg.(settingsSaveErrorMsg); ok {
+			a.settings.SetSaveError(saveErr.err)
+			return a, nil
+		}
 		if screens.IsSettingsSaveMsg(msg) {
 			return a.handleSettingsSave(msg)
 		}
@@ -284,6 +292,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if screens.IsSettingsDiscardChangesMsg(msg) {
 			a.settings.SetConfig(a.cfg)
+			a.settings.SetSaveError(nil)
 			a.currentScreen = ScreenMainMenu
 			return a, nil
 		}
@@ -381,17 +390,20 @@ func (a *App) handleSettingsSave(msg tea.Msg) (tea.Model, tea.Cmd) {
 	newCfg := a.settings.GetConfig()
 	if err := newCfg.Validate(); err != nil {
 		log.Printf("[TUI] Config validation failed: %v", err)
-		return a, nil
+		a.settings.SetSaveError(err)
+		return a, func() tea.Msg { return settingsSaveErrorMsg{err: err} }
 	}
 
 	if err := newCfg.SaveToYAML(a.configPath); err != nil {
 		log.Printf("[TUI] Failed to save config: %v", err)
-		return a, nil
+		a.settings.SetSaveError(err)
+		return a, func() tea.Msg { return settingsSaveErrorMsg{err: err} }
 	}
 
 	log.Printf("[TUI] Config saved to %s", a.configPath)
 	a.cfg = newCfg
 	a.settings.SetConfig(newCfg)
+	a.settings.SetSaveError(nil)
 	if screens.SettingsSaveLeavesAfterSave(msg) {
 		a.currentScreen = ScreenMainMenu
 	}

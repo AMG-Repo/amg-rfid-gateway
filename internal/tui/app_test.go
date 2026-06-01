@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -56,6 +57,75 @@ func TestApp_SettingsProtocolEditRoundTripsAfterSave(t *testing.T) {
 
 	app.settings.SetSize(100, 25)
 	assert.Contains(t, app.settings.View(), "zebra")
+}
+
+func TestApp_SettingsProtocolSelectorRegression(t *testing.T) {
+	tests := []struct {
+		name               string
+		loadConfig         func(t *testing.T, path string) *config.GatewayConfig
+		edit               func(t *testing.T, app *App) *App
+		save               bool
+		wantProtocols      []config.AntennaProtocol
+		wantViewContains   string
+		wantViewNotContain string
+	}{
+		{
+			name: "selector only cycles generic and zebra",
+			loadConfig: func(t *testing.T, _ string) *config.GatewayConfig {
+				return validTUITestConfig()
+			},
+			edit: func(t *testing.T, app *App) *App {
+				app = moveCursorToAntennaFields(t, app)
+				newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyRight})
+				return newModel.(*App)
+			},
+			save:               true,
+			wantProtocols:      []config.AntennaProtocol{config.ProtocolZebra, config.ProtocolGeneric},
+			wantViewContains:   "zebra",
+			wantViewNotContain: "foo",
+		},
+		{
+			name: "legacy missing protocol displays generic by default",
+			loadConfig: func(t *testing.T, path string) *config.GatewayConfig {
+				legacyYAML := "gateway_id: gateway-original\ncompany_id: company-original\ncloud_url: wss://example.com\njwt_secret: secret\nlog_level: info\nantennas:\n  - id: dock\n    ip: 192.168.1.10\n    port: 8080\n    enabled: true\n    zone: entrada\n"
+				require.NoError(t, os.WriteFile(path, []byte(legacyYAML), 0o644))
+				cfg, err := config.LoadFromYAML(path)
+				require.NoError(t, err)
+				return cfg
+			},
+			edit:             func(t *testing.T, app *App) *App { return app },
+			save:             false,
+			wantProtocols:    []config.AntennaProtocol{config.ProtocolGeneric},
+			wantViewContains: "generic",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "config.yaml")
+			cfg := tt.loadConfig(t, configPath)
+			require.NoError(t, cfg.SaveToYAML(configPath))
+
+			app := &App{currentScreen: ScreenSettings, settings: screens.NewSettingsScreen(cfg), cfg: cfg, configPath: configPath}
+			app.settings.SetSize(100, 25)
+			app = tt.edit(t, app)
+			if tt.save {
+				app = saveSettingsChanges(t, app, true)
+			}
+
+			loaded, err := config.LoadFromYAML(configPath)
+			require.NoError(t, err)
+			require.Len(t, loaded.Antennas, len(tt.wantProtocols))
+			for i, wantProtocol := range tt.wantProtocols {
+				assert.Equal(t, wantProtocol, loaded.Antennas[i].Protocol)
+			}
+			view := app.settings.View()
+			assert.Contains(t, view, tt.wantViewContains)
+			if tt.wantViewNotContain != "" {
+				assert.NotContains(t, view, tt.wantViewNotContain)
+			}
+		})
+	}
 }
 
 func TestApp_SettingsExplicitSaveControlsPersistence(t *testing.T) {
@@ -222,6 +292,97 @@ func TestApp_SettingsUnsavedExitSaveValidationFailurePreservesEdits(t *testing.T
 	assert.Empty(t, app.settings.GetConfig().CompanyID)
 }
 
+func TestApp_SettingsSaveIntentWithAntennaCRUDDrafts(t *testing.T) {
+	tests := []struct {
+		name              string
+		edit              func(t *testing.T, app *App) *App
+		save              bool
+		wantSavedIDs      []string
+		wantCurrentScreen Screen
+		wantErrorContains string
+	}{
+		{
+			name: "invalid antenna edit stays in settings and does not persist",
+			edit: func(t *testing.T, app *App) *App {
+				app = addAntenna(t, app, "yard", "192.168.1.20", "9090", true, "yard", config.ProtocolGeneric)
+				return editSettingsField(t, app, 1, "")
+			},
+			save:              true,
+			wantSavedIDs:      []string{"dock", "exit"},
+			wantCurrentScreen: ScreenSettings,
+			wantErrorContains: "company_id cannot be empty",
+		},
+		{
+			name: "valid antenna create persists after save",
+			edit: func(t *testing.T, app *App) *App {
+				return addAntenna(t, app, "yard", "192.168.1.20", "9090", true, "yard", config.ProtocolZebra)
+			},
+			save:              true,
+			wantSavedIDs:      []string{"dock", "exit", "yard"},
+			wantCurrentScreen: ScreenSettings,
+		},
+		{
+			name: "valid antenna edit persists after save",
+			edit: func(t *testing.T, app *App) *App {
+				return editAntennaByIndex(t, app, 1, "exit", "192.168.1.44", "8081", false, "salida", config.ProtocolGeneric)
+			},
+			save:              true,
+			wantSavedIDs:      []string{"dock", "exit"},
+			wantCurrentScreen: ScreenSettings,
+		},
+		{
+			name: "valid antenna delete persists after save",
+			edit: func(t *testing.T, app *App) *App {
+				return deleteAntennaByIndex(t, app, 1)
+			},
+			save:              true,
+			wantSavedIDs:      []string{"dock"},
+			wantCurrentScreen: ScreenSettings,
+		},
+		{
+			name: "discard while antennas dirty keeps persisted config unchanged",
+			edit: func(t *testing.T, app *App) *App {
+				return addAntenna(t, app, "temp", "192.168.1.30", "9091", true, "temp", config.ProtocolGeneric)
+			},
+			save:              false,
+			wantSavedIDs:      []string{"dock", "exit"},
+			wantCurrentScreen: ScreenMainMenu,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validTUITestConfig()
+			configPath := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, cfg.SaveToYAML(configPath))
+
+			app := &App{currentScreen: ScreenSettings, settings: screens.NewSettingsScreen(cfg), cfg: cfg, configPath: configPath}
+			app.settings.SetSize(100, 30)
+			app = tt.edit(t, app)
+
+			if tt.save {
+				app = saveSettingsChanges(t, app, true)
+			} else {
+				newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				app = newModel.(*App)
+				newModel, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+				app = newModel.(*App)
+				require.NotNil(t, cmd)
+				newModel, _ = app.Update(cmd())
+				app = newModel.(*App)
+			}
+
+			loaded, err := config.LoadFromYAML(configPath)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantSavedIDs, antennaIDs(loaded.Antennas))
+			assert.Equal(t, tt.wantCurrentScreen, app.currentScreen)
+			if tt.wantErrorContains != "" {
+				assert.Contains(t, app.settings.View(), tt.wantErrorContains)
+			}
+		})
+	}
+}
+
 func TestApp_SettingsEscWithoutUnsavedChangesGoesBack(t *testing.T) {
 	cfg := validTUITestConfig()
 	app := &App{
@@ -351,5 +512,89 @@ func saveSettingsChanges(t *testing.T, app *App, wantSaveCommand bool) *App {
 	require.NotNil(t, cmd)
 	newModel, _ = app.Update(cmd())
 	app = newModel.(*App)
+	return app
+}
+
+func addAntenna(t *testing.T, app *App, id, ip, port string, enabled bool, zone string, protocol config.AntennaProtocol) *App {
+	t.Helper()
+	newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	app = newModel.(*App)
+	return fillAntennaForm(t, app, id, ip, port, enabled, zone, protocol)
+}
+
+func editAntennaByIndex(t *testing.T, app *App, idx int, id, ip, port string, enabled bool, zone string, protocol config.AntennaProtocol) *App {
+	t.Helper()
+	app = moveCursorToAntennaFields(t, app)
+	for range idx {
+		newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyDown})
+		app = newModel.(*App)
+	}
+	newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	app = newModel.(*App)
+	return fillAntennaForm(t, app, id, ip, port, enabled, zone, protocol)
+}
+
+func deleteAntennaByIndex(t *testing.T, app *App, idx int) *App {
+	t.Helper()
+	app = moveCursorToAntennaFields(t, app)
+	for range idx {
+		newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyDown})
+		app = newModel.(*App)
+	}
+	newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	app = newModel.(*App)
+	newModel, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	return newModel.(*App)
+}
+
+func fillAntennaForm(t *testing.T, app *App, id, ip, port string, enabled bool, zone string, protocol config.AntennaProtocol) *App {
+	t.Helper()
+	setField := func(value string) {
+		for range 40 {
+			newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+			app = newModel.(*App)
+		}
+		if value != "" {
+			newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)})
+			app = newModel.(*App)
+		}
+		newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyDown})
+		app = newModel.(*App)
+	}
+
+	setField(id)
+	setField(ip)
+	setField(port)
+	if !enabled {
+		newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyRight})
+		app = newModel.(*App)
+	}
+	newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = newModel.(*App)
+	setField(zone)
+	if protocol == config.ProtocolZebra {
+		newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyRight})
+		app = newModel.(*App)
+	}
+	newModel, _ = app.Update(tea.KeyMsg{Type: tea.KeyUp})
+	app = newModel.(*App)
+	newModel, _ = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	return newModel.(*App)
+}
+
+func antennaIDs(antennas []config.AntennaConfig) []string {
+	ids := make([]string, 0, len(antennas))
+	for _, ant := range antennas {
+		ids = append(ids, ant.ID)
+	}
+	return ids
+}
+
+func moveCursorToAntennaFields(t *testing.T, app *App) *App {
+	t.Helper()
+	for range 8 {
+		newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyDown})
+		app = newModel.(*App)
+	}
 	return app
 }

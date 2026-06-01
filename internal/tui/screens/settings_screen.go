@@ -377,6 +377,9 @@ type SettingsScreenModel struct {
 	// Staged antenna CRUD editor
 	antennaEditor antennaEditorModel
 
+	// Last save/validation error shown to operator
+	saveError string
+
 	// Styles
 	styles *SettingsScreenStyles
 }
@@ -628,6 +631,11 @@ func (m SettingsScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if saveErr, ok := msg.(error); ok {
+		m.saveError = saveErr.Error()
+		return m, nil
+	}
+
 	// Handle editing mode
 	if m.editing {
 		switch msg := msg.(type) {
@@ -715,6 +723,7 @@ func (m SettingsScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.promptMode = settingsPromptUnsavedExit
 				return m, nil
 			}
+			m.saveError = ""
 			// Go back to main menu
 			return m, func() tea.Msg { return settingsBackMsg{} }
 		default:
@@ -800,11 +809,16 @@ func (m SettingsScreenModel) View() string {
 
 	antennaSection := m.renderAntennaEditor()
 
+	saveError := ""
+	if m.saveError != "" {
+		saveError = "\n" + m.styles.FieldError.Render("Save failed: "+m.saveError) + "\n"
+	}
+
 	// Build help
 	help := m.styles.Help.Render(m.renderHelp())
 
 	// Combine all
-	return title + "\n" + subtitle + "\n" + fields + antennaSection + "\n" + help
+	return title + "\n" + subtitle + "\n" + fields + antennaSection + saveError + "\n" + help
 }
 
 func (m SettingsScreenModel) renderAntennaEditor() string {
@@ -1064,6 +1078,16 @@ func (m *SettingsScreenModel) SetConfig(cfg *config.GatewayConfig) {
 	m.editBuffer = ""
 	m.editError = ""
 	m.promptMode = settingsPromptNone
+	m.saveError = ""
+}
+
+// SetSaveError sets the operator-visible save error message.
+func (m *SettingsScreenModel) SetSaveError(err error) {
+	if err == nil {
+		m.saveError = ""
+		return
+	}
+	m.saveError = err.Error()
 }
 
 // SetSize updates the screen dimensions.
