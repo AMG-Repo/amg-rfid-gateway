@@ -35,6 +35,278 @@ const (
 	settingsPromptUnsavedExit
 )
 
+type antennaEditorMode int
+
+const (
+	antennaEditorModeList antennaEditorMode = iota
+	antennaEditorModeForm
+	antennaEditorModeDeleteConfirm
+)
+
+type antennaFormField int
+
+const (
+	antennaFormFieldID antennaFormField = iota
+	antennaFormFieldIP
+	antennaFormFieldPort
+	antennaFormFieldEnabled
+	antennaFormFieldZone
+	antennaFormFieldProtocol
+	antennaFormFieldCount
+)
+
+type antennaForm struct {
+	id       string
+	ip       string
+	port     string
+	enabled  bool
+	zone     string
+	protocol config.AntennaProtocol
+}
+
+type antennaEditorModel struct {
+	mode       antennaEditorMode
+	cursor     int
+	formCursor antennaFormField
+	draft      []config.AntennaConfig
+	form       antennaForm
+	editingIdx int
+	err        string
+	hasChanges bool
+}
+
+func newAntennaEditorModel(antennas []config.AntennaConfig) antennaEditorModel {
+	draft := copyAntennas(antennas)
+	return antennaEditorModel{mode: antennaEditorModeList, draft: draft, editingIdx: -1}
+}
+
+func copyAntennas(antennas []config.AntennaConfig) []config.AntennaConfig {
+	if antennas == nil {
+		return nil
+	}
+	draft := make([]config.AntennaConfig, len(antennas))
+	copy(draft, antennas)
+	for i := range draft {
+		draft[i].Protocol = effectiveAntennaProtocol(draft[i].Protocol)
+	}
+	return draft
+}
+
+func (m antennaEditorModel) Update(msg tea.KeyMsg) antennaEditorModel {
+	switch m.mode {
+	case antennaEditorModeForm:
+		return m.updateForm(msg)
+	case antennaEditorModeDeleteConfirm:
+		return m.updateDeleteConfirm(msg)
+	default:
+		return m.updateList(msg)
+	}
+}
+
+func (m antennaEditorModel) updateList(msg tea.KeyMsg) antennaEditorModel {
+	switch msg.Type {
+	case tea.KeyUp:
+		m.cursor = moveCursor(m.cursor, len(m.draft), -1)
+	case tea.KeyDown:
+		m.cursor = moveCursor(m.cursor, len(m.draft), 1)
+	case tea.KeyEnter:
+		m.startEdit()
+	case tea.KeyRunes:
+		switch string(msg.Runes) {
+		case "j":
+			m.cursor = moveCursor(m.cursor, len(m.draft), 1)
+		case "k":
+			m.cursor = moveCursor(m.cursor, len(m.draft), -1)
+		case "a":
+			m.startAdd()
+		case "e":
+			m.startEdit()
+		case "d":
+			if len(m.draft) > 0 {
+				m.mode = antennaEditorModeDeleteConfirm
+				m.err = ""
+			}
+		}
+	}
+	return m
+}
+
+func (m antennaEditorModel) updateDeleteConfirm(msg tea.KeyMsg) antennaEditorModel {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.mode = antennaEditorModeList
+	case tea.KeyRunes:
+		switch strings.ToLower(string(msg.Runes)) {
+		case "y":
+			if m.cursor >= 0 && m.cursor < len(m.draft) {
+				m.draft = append(m.draft[:m.cursor], m.draft[m.cursor+1:]...)
+				if m.cursor >= len(m.draft) {
+					m.cursor = len(m.draft) - 1
+				}
+				if m.cursor < 0 {
+					m.cursor = 0
+				}
+				m.hasChanges = true
+			}
+			m.mode = antennaEditorModeList
+		case "n":
+			m.mode = antennaEditorModeList
+		}
+	}
+	return m
+}
+
+func (m antennaEditorModel) updateForm(msg tea.KeyMsg) antennaEditorModel {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.mode = antennaEditorModeList
+		m.err = ""
+	case tea.KeyUp:
+		m.formCursor = antennaFormField(moveCursor(int(m.formCursor), int(antennaFormFieldCount), -1))
+	case tea.KeyDown, tea.KeyTab:
+		m.formCursor = antennaFormField(moveCursor(int(m.formCursor), int(antennaFormFieldCount), 1))
+	case tea.KeyLeft:
+		if m.formCursor == antennaFormFieldProtocol {
+			m.form.protocol = cycleAntennaProtocol(m.form.protocol, -1)
+		}
+	case tea.KeyRight, tea.KeySpace:
+		if m.formCursor == antennaFormFieldEnabled {
+			m.form.enabled = !m.form.enabled
+		} else if m.formCursor == antennaFormFieldProtocol {
+			m.form.protocol = cycleAntennaProtocol(m.form.protocol, 1)
+		}
+	case tea.KeyEnter:
+		if m.formCursor == antennaFormFieldEnabled {
+			m.form.enabled = !m.form.enabled
+			return m
+		}
+		if m.formCursor == antennaFormFieldProtocol {
+			m.form.protocol = cycleAntennaProtocol(m.form.protocol, 1)
+			return m
+		}
+		return m.commitForm()
+	case tea.KeyBackspace:
+		m.trimCurrentFormField()
+	case tea.KeyRunes:
+		switch string(msg.Runes) {
+		case "j":
+			m.formCursor = antennaFormField(moveCursor(int(m.formCursor), int(antennaFormFieldCount), 1))
+		case "k":
+			m.formCursor = antennaFormField(moveCursor(int(m.formCursor), int(antennaFormFieldCount), -1))
+		default:
+			m.appendCurrentFormField(string(msg.Runes))
+		}
+	}
+	return m
+}
+
+func (m *antennaEditorModel) startAdd() {
+	m.mode = antennaEditorModeForm
+	m.formCursor = antennaFormFieldID
+	m.editingIdx = -1
+	m.err = ""
+	m.form = antennaForm{port: "8080", enabled: true, protocol: config.ProtocolGeneric}
+}
+
+func (m *antennaEditorModel) startEdit() {
+	if len(m.draft) == 0 || m.cursor < 0 || m.cursor >= len(m.draft) {
+		return
+	}
+	ant := m.draft[m.cursor]
+	m.mode = antennaEditorModeForm
+	m.formCursor = antennaFormFieldID
+	m.editingIdx = m.cursor
+	m.err = ""
+	m.form = antennaForm{id: ant.ID, ip: ant.IP, port: strconv.Itoa(ant.Port), enabled: ant.Enabled, zone: ant.Zone, protocol: effectiveAntennaProtocol(ant.Protocol)}
+}
+
+func (m antennaEditorModel) commitForm() antennaEditorModel {
+	ant, err := m.form.toAntennaConfig()
+	if err != nil {
+		m.err = err.Error()
+		return m
+	}
+	for i, existing := range m.draft {
+		if i != m.editingIdx && existing.ID == ant.ID {
+			m.err = fmt.Sprintf("duplicate antenna id %q", ant.ID)
+			return m
+		}
+	}
+	if m.editingIdx >= 0 && m.editingIdx < len(m.draft) {
+		m.draft[m.editingIdx] = ant
+		m.cursor = m.editingIdx
+	} else {
+		m.draft = append(m.draft, ant)
+		m.cursor = len(m.draft) - 1
+	}
+	m.mode = antennaEditorModeList
+	m.err = ""
+	m.hasChanges = true
+	return m
+}
+
+func (f antennaForm) toAntennaConfig() (config.AntennaConfig, error) {
+	id := strings.TrimSpace(f.id)
+	ip := strings.TrimSpace(f.ip)
+	zone := strings.TrimSpace(f.zone)
+	port, err := strconv.Atoi(strings.TrimSpace(f.port))
+	if err != nil {
+		return config.AntennaConfig{}, errors.New("antenna port must be a number")
+	}
+	ant := config.AntennaConfig{ID: id, IP: ip, Port: port, Enabled: f.enabled, Zone: zone, Protocol: effectiveAntennaProtocol(f.protocol)}
+	if !config.IsSupportedAntennaProtocol(ant.Protocol) {
+		return config.AntennaConfig{}, errors.New("antenna protocol must be: generic, zebra")
+	}
+	if err := ant.Validate(); err != nil {
+		return config.AntennaConfig{}, err
+	}
+	return ant, nil
+}
+
+func (m *antennaEditorModel) appendCurrentFormField(value string) {
+	switch m.formCursor {
+	case antennaFormFieldID:
+		m.form.id += value
+	case antennaFormFieldIP:
+		m.form.ip += value
+	case antennaFormFieldPort:
+		m.form.port += value
+	case antennaFormFieldZone:
+		m.form.zone += value
+	}
+}
+
+func (m *antennaEditorModel) trimCurrentFormField() {
+	trim := func(value string) string {
+		if len(value) == 0 {
+			return value
+		}
+		return value[:len(value)-1]
+	}
+	switch m.formCursor {
+	case antennaFormFieldID:
+		m.form.id = trim(m.form.id)
+	case antennaFormFieldIP:
+		m.form.ip = trim(m.form.ip)
+	case antennaFormFieldPort:
+		m.form.port = trim(m.form.port)
+	case antennaFormFieldZone:
+		m.form.zone = trim(m.form.zone)
+	}
+}
+
+func cycleAntennaProtocol(current config.AntennaProtocol, delta int) config.AntennaProtocol {
+	protocols := []config.AntennaProtocol{config.ProtocolGeneric, config.ProtocolZebra}
+	idx := 0
+	for i, protocol := range protocols {
+		if effectiveAntennaProtocol(current) == protocol {
+			idx = i
+			break
+		}
+	}
+	return protocols[moveCursor(idx, len(protocols), delta)]
+}
+
 // IsSettingsSaveMsg reports whether msg is a settings save confirmation.
 func IsSettingsSaveMsg(msg tea.Msg) bool {
 	_, ok := msg.(settingsSaveMsg)
@@ -101,6 +373,9 @@ type SettingsScreenModel struct {
 
 	// Change tracking
 	hasChanges bool
+
+	// Staged antenna CRUD editor
+	antennaEditor antennaEditorModel
 
 	// Styles
 	styles *SettingsScreenStyles
@@ -201,13 +476,14 @@ func NewSettingsScreen(cfg *config.GatewayConfig) SettingsScreenModel {
 	fields, values := settingsFieldsAndValues(cfg, queueCap, warningThreshold, webAccessMode)
 
 	return SettingsScreenModel{
-		config:   cfg,
-		original: original,
-		fields:   fields,
-		values:   values,
-		cursor:   0,
-		editing:  false,
-		styles:   NewSettingsScreenStyles(),
+		config:        cfg,
+		original:      original,
+		fields:        fields,
+		values:        values,
+		cursor:        0,
+		editing:       false,
+		antennaEditor: newAntennaEditorModel(cfg.Antennas),
+		styles:        NewSettingsScreenStyles(),
 	}
 }
 
@@ -399,6 +675,15 @@ func (m SettingsScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle normal navigation
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.shouldRouteToAntennaEditor(msg) {
+			before := m.antennaEditor.hasChanges
+			m.antennaEditor = m.antennaEditor.Update(msg)
+			if !before && m.antennaEditor.hasChanges {
+				m.hasChanges = true
+			}
+			return m, nil
+		}
+
 		switch msg.Type {
 		case tea.KeyUp:
 			m.cursor = moveCursor(m.cursor, len(m.fields), -1)
@@ -450,6 +735,24 @@ func (m SettingsScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m SettingsScreenModel) shouldRouteToAntennaEditor(msg tea.KeyMsg) bool {
+	if m.antennaEditor.mode != antennaEditorModeList {
+		return true
+	}
+	switch msg.Type {
+	case tea.KeyUp, tea.KeyDown, tea.KeyEnter:
+		return m.isAntennaProtocolField() && len(m.antennaEditor.draft) > 0
+	case tea.KeyRunes:
+		switch string(msg.Runes) {
+		case "a":
+			return true
+		case "e", "d", "j", "k":
+			return m.isAntennaProtocolField() && len(m.antennaEditor.draft) > 0
+		}
+	}
+	return false
+}
+
 // View renders the screen.
 func (m SettingsScreenModel) View() string {
 	if m.promptMode == settingsPromptSaveConfirm {
@@ -495,19 +798,7 @@ func (m SettingsScreenModel) View() string {
 		}
 	}
 
-	// Build antenna section if antennas exist
-	var antennaSection string
-	if len(m.config.Antennas) > 0 {
-		antennaSection = "\n" + m.styles.Subtitle.Render("Antennas") + "\n"
-		for _, ant := range m.config.Antennas {
-			status := "disabled"
-			if ant.Enabled {
-				status = "enabled"
-			}
-			antennaSection += m.styles.FieldLabel.Render(fmt.Sprintf("  %s:", ant.ID))
-			antennaSection += fmt.Sprintf(" %s:%d (%s) Zone: %s Protocol: %s\n", ant.IP, ant.Port, status, ant.Zone, effectiveAntennaProtocol(ant.Protocol))
-		}
-	}
+	antennaSection := m.renderAntennaEditor()
 
 	// Build help
 	help := m.styles.Help.Render(m.renderHelp())
@@ -516,15 +807,53 @@ func (m SettingsScreenModel) View() string {
 	return title + "\n" + subtitle + "\n" + fields + antennaSection + "\n" + help
 }
 
+func (m SettingsScreenModel) renderAntennaEditor() string {
+	section := "\n" + m.styles.Subtitle.Render("Antenna Editor") + "\n"
+	switch m.antennaEditor.mode {
+	case antennaEditorModeForm:
+		form := m.antennaEditor.form
+		section += fmt.Sprintf("  ID: %s\n  IP: %s\n  Port: %s\n  Enabled: %t\n  Zone: %s\n  Protocol: %s\n", form.id, form.ip, form.port, form.enabled, form.zone, effectiveAntennaProtocol(form.protocol))
+		if m.antennaEditor.err != "" {
+			section += m.styles.FieldError.Render("  "+m.antennaEditor.err) + "\n"
+		}
+	case antennaEditorModeDeleteConfirm:
+		if len(m.antennaEditor.draft) > 0 {
+			section += m.styles.Confirm.Render(fmt.Sprintf("Delete antenna %s? (y/n)", m.antennaEditor.draft[m.antennaEditor.cursor].ID)) + "\n"
+		}
+	default:
+		if len(m.antennaEditor.draft) == 0 {
+			section += "  No antennas configured\n"
+		}
+		for i, ant := range m.antennaEditor.draft {
+			status := "disabled"
+			if ant.Enabled {
+				status = "enabled"
+			}
+			cursor := "  "
+			if i == m.antennaEditor.cursor {
+				cursor = "▸ "
+			}
+			section += cursor + fmt.Sprintf("%s %s:%d (%s) Zone: %s Protocol: %s\n", ant.ID, ant.IP, ant.Port, status, ant.Zone, effectiveAntennaProtocol(ant.Protocol))
+		}
+	}
+	return section
+}
+
 // renderHelp returns the help text based on current state.
 func (m SettingsScreenModel) renderHelp() string {
+	if m.antennaEditor.mode == antennaEditorModeForm {
+		return "↑/k previous field • ↓/j next field • type edit • ←/→ cycle protocol • space toggle/cycle • enter commit • esc cancel"
+	}
+	if m.antennaEditor.mode == antennaEditorModeDeleteConfirm {
+		return "y delete • n/esc cancel"
+	}
 	if m.editing {
 		return "enter save • esc cancel • type to edit"
 	}
 	if m.isAntennaProtocolField() {
-		return "↑/k up • ↓/j down • ←/→ cycle protocol • space/enter cycle protocol • s save • esc back"
+		return "↑/k antenna up • ↓/j antenna down • ←/→ cycle protocol • space cycle protocol • a add • e/enter edit • d delete • s save • esc back"
 	}
-	return "↑/k up • ↓/j down • tab/shift+tab navigate • enter edit • s save • esc back"
+	return "↑/k up • ↓/j down • tab/shift+tab navigate • enter edit • a add • e/enter edit • d delete • s save • esc back"
 }
 
 func (m SettingsScreenModel) isAntennaProtocolField() bool {
@@ -640,7 +969,7 @@ func (m SettingsScreenModel) getOriginalValue(idx int) string {
 
 // HasChanges returns true if any field has been modified.
 func (m SettingsScreenModel) HasChanges() bool {
-	return m.hasChanges
+	return m.hasChanges || m.antennaEditor.hasChanges
 }
 
 // GetConfig returns the modified configuration.
@@ -669,6 +998,8 @@ func (m SettingsScreenModel) GetConfig() *config.GatewayConfig {
 	if val, err := parseQueueCap(m.values[7]); err == nil {
 		cfg.PendingWarningThreshold = val
 	}
+
+	cfg.Antennas = copyAntennas(m.antennaEditor.draft)
 
 	for i, field := range m.fields {
 		antennaID, ok := strings.CutPrefix(field.key, "antenna_protocol:")
@@ -723,6 +1054,7 @@ func (m *SettingsScreenModel) SetConfig(cfg *config.GatewayConfig) {
 		webAccessMode = "local"
 	}
 	m.fields, m.values = settingsFieldsAndValues(cfg, queueCap, warningThreshold, webAccessMode)
+	m.antennaEditor = newAntennaEditorModel(cfg.Antennas)
 	if m.cursor >= len(m.fields) {
 		m.cursor = len(m.fields) - 1
 	}

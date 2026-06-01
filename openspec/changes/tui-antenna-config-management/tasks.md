@@ -33,11 +33,11 @@ Chain strategy: pending
 
 ## Phase 2: Core Settings Implementation
 
-- [ ] 2.1 RED: add table-driven unit tests in `internal/tui/screens/settings_antenna_editor_test.go` for `antennaEditorModel` modes (`list`, `form`, `deleteConfirm`) and state transitions.
-- [ ] 2.2 GREEN: implement `antennaEditorModel` in `internal/tui/screens/settings_screen.go` with staged `draft []config.AntennaConfig`, cursor/form state, and mode transitions for add/edit/delete keys.
-- [ ] 2.3 GREEN: keep `SettingsScreenModel` as save boundary in `internal/tui/screens/settings_screen.go`, wiring `GetConfig()`/`SetConfig()` to use editor drafts instead of mutating `m.config.Antennas` inline.
-- [ ] 2.4 GREEN: add per-antenna form validation in `internal/tui/screens/settings_screen.go` (`id`, `ip`, `port`, `zone`, `enabled`, `protocol`) with in-UI validation messages while editing form rows.
-- [ ] 2.5 GREEN: add protocol and ID uniqueness enforcement on form commit in `internal/tui/screens/settings_screen.go` so duplicate IDs never become staged in-memory.
+- [x] 2.1 RED: add table-driven unit tests in `internal/tui/screens/settings_antenna_editor_test.go` for `antennaEditorModel` modes (`list`, `form`, `deleteConfirm`) and state transitions.
+- [x] 2.2 GREEN: implement `antennaEditorModel` in `internal/tui/screens/settings_screen.go` with staged `draft []config.AntennaConfig`, cursor/form state, and mode transitions for add/edit/delete keys.
+- [x] 2.3 GREEN: keep `SettingsScreenModel` as save boundary in `internal/tui/screens/settings_screen.go`, wiring `GetConfig()`/`SetConfig()` to use editor drafts instead of mutating `m.config.Antennas` inline.
+- [x] 2.4 GREEN: add per-antenna form validation in `internal/tui/screens/settings_screen.go` (`id`, `ip`, `port`, `zone`, `enabled`, `protocol`) with in-UI validation messages while editing form rows.
+- [x] 2.5 GREEN: add protocol and ID uniqueness enforcement on form commit in `internal/tui/screens/settings_screen.go` so duplicate IDs never become staged in-memory.
 
 ## Phase 3: App Wiring, Error Surfacing, and Operator UX
 

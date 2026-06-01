@@ -41,7 +41,7 @@ func TestApp_SettingsProtocolEditRoundTripsAfterSave(t *testing.T) {
 		app = newModel.(*App)
 	}
 
-	newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	newModel, _ := app.Update(tea.KeyMsg{Type: tea.KeyRight})
 	app = newModel.(*App)
 	app = saveSettingsChanges(t, app, true)
 
