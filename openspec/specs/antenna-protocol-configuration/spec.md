@@ -53,7 +53,7 @@ The system MUST treat `zebra` as a recognized configuration value but MUST route
 
 ### Requirement: TUI protocol visibility and edit round-trip
 
-The settings TUI MUST display each antenna protocol and MUST allow editing it per antenna. Save/apply flows SHALL persist only intended protocol changes while preserving unrelated fields.
+The settings TUI MUST display each antenna protocol and MUST allow editing it per antenna through a constrained selector that only cycles supported values (`generic`, `zebra`). Operators MUST NOT enter arbitrary free-text protocol values through normal selector flow. Save/apply flows SHALL persist only intended protocol changes while preserving unrelated fields.
 
 #### Scenario: Edit protocol from TUI and persist
 
@@ -67,3 +67,10 @@ The settings TUI MUST display each antenna protocol and MUST allow editing it pe
 - GIVEN a legacy antenna config without protocol
 - WHEN settings are rendered
 - THEN protocol is shown as `generic`
+
+#### Scenario: Selector flow prevents arbitrary values
+
+- GIVEN the operator is editing antenna protocol in Settings
+- WHEN the operator cycles protocol values using supported selector controls
+- THEN only `generic` or `zebra` can be selected
+- AND arbitrary values such as `foo` cannot be produced by normal selector navigation
