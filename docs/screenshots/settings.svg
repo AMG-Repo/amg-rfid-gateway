@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="700" height="480" viewBox="0 0 700 480">
-  <rect width="700" height="480" rx="10" fill="#181616"/>
-  <rect x="1" y="1" width="698" height="478" rx="9" fill="none" stroke="#2d2d2d" stroke-width="1"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="552" viewBox="0 0 900 552">
+  <rect width="900" height="552" rx="10" fill="#181616"/>
+  <rect x="1" y="1" width="898" height="550" rx="9" fill="none" stroke="#2d2d2d" stroke-width="1"/>
   <text x="24" y="48.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve"></text>
   <text x="24" y="72.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve"></text>
   <text x="24" y="96.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">  Settings</text>
@@ -13,11 +13,13 @@
   <text x="24" y="240.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">    · Log Level:      info</text>
   <text x="24" y="264.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">    · Queue Cap:      10000</text>
   <text x="24" y="288.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">    · Warning Thresh: 1000</text>
-  <text x="24" y="312.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve"></text>
-  <text x="24" y="336.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">  Antennas</text>
-  <text x="24" y="360.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">    ANT-001: 192.168.1.100:49153 (enabled) Zone: entrada</text>
-  <text x="24" y="384.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">    ANT-002: 192.168.1.101:49153 (enabled) Zone: salida</text>
-  <text x="24" y="408.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve"></text>
-  <text x="24" y="432.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">  ↑/k up · ↓/j down · tab/shift+tab · enter edit · s save · esc back</text>
+  <text x="24" y="312.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">    · Antenna ANT-001 Protocol: generic</text>
+  <text x="24" y="336.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#957fb8" xml:space="preserve">    ▸ Antenna ANT-002 Protocol: zebra</text>
+  <text x="24" y="360.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve"></text>
+  <text x="24" y="384.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">  Antennas</text>
+  <text x="24" y="408.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">    ANT-001: 192.168.1.100:49153 (enabled) Zone: entrada Protocol: generic</text>
+  <text x="24" y="432.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">    ANT-002: 192.168.1.101:49153 (enabled) Zone: salida Protocol: zebra</text>
   <text x="24" y="456.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve"></text>
+  <text x="24" y="480.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve">  ↑/k up · ↓/j down · tab/shift+tab · enter edit · s save · esc back</text>
+  <text x="24" y="504.0" font-family="IosevkaTerm NF, JetBrainsMono Nerd Font, JetBrains Mono, Consolas, monospace" font-size="16" fill="#dcd7ba" xml:space="preserve"></text>
 </svg>
