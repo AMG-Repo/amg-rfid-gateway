@@ -868,12 +868,10 @@ func (m SettingsScreenModel) renderAntennaEditor() string {
 }
 
 func (m SettingsScreenModel) renderAntennaFormField(field antennaFormField, label string, value string) string {
-	cursor := "  "
 	if m.antennaEditor.formCursor == field {
-		cursor = "> "
-		value = m.styles.FieldEdit.Render(value)
+		return m.styles.Selected.Render("▸ "+fmt.Sprintf("%s: %s", label, value)) + "\n"
 	}
-	return cursor + fmt.Sprintf("%s: %s\n", label, value)
+	return "  " + fmt.Sprintf("%s: %s\n", label, value)
 }
 
 // renderHelp returns the help text based on current state.

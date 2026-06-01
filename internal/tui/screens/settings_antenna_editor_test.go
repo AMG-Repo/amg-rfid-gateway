@@ -212,7 +212,7 @@ func TestSettingsScreen_AntennaEditorFormViewShowsActiveFieldAndMode(t *testing.
 				m.antennaEditor.startAdd()
 				m.antennaEditor.formCursor = antennaFormFieldID
 			},
-			activeField:   "> ID:",
+			activeField:   "▸ ID:",
 			inactiveField: "  IP:",
 			wantStatus:    "Editing new antenna",
 		},
@@ -223,7 +223,7 @@ func TestSettingsScreen_AntennaEditorFormViewShowsActiveFieldAndMode(t *testing.
 				m.antennaEditor.startEdit()
 				m.antennaEditor.formCursor = antennaFormFieldIP
 			},
-			activeField:   "> IP:",
+			activeField:   "▸ IP:",
 			inactiveField: "  ID:",
 			wantStatus:    "Editing antenna exit",
 		},
@@ -241,6 +241,25 @@ func TestSettingsScreen_AntennaEditorFormViewShowsActiveFieldAndMode(t *testing.
 			assert.Contains(t, view, tt.inactiveField)
 		})
 	}
+}
+
+func TestSettingsScreen_AntennaEditorFormActiveRowUsesSettingsSelectedTreatment(t *testing.T) {
+	m := NewSettingsScreen(&config.GatewayConfig{GatewayID: "gateway", Antennas: testEditorAntennas()})
+	m.antennaEditor.startEdit()
+	m.antennaEditor.formCursor = antennaFormFieldIP
+
+	activeRow := m.renderAntennaFormField(antennaFormFieldIP, "IP", m.antennaEditor.form.ip)
+	inactiveRow := m.renderAntennaFormField(antennaFormFieldID, "ID", m.antennaEditor.form.id)
+
+	require.Contains(t, activeRow, "▸ IP:")
+	assert.Contains(t, activeRow, m.antennaEditor.form.ip)
+	assert.NotContains(t, activeRow, "> IP:")
+	assert.Equal(t, m.styles.Selected.Render("▸ IP: "+m.antennaEditor.form.ip)+"\n", activeRow)
+	assert.Equal(t, "  ID: "+m.antennaEditor.form.id+"\n", inactiveRow)
+	assert.NotContains(t, inactiveRow, "▸")
+
+	view := m.View()
+	assert.Contains(t, view, "↑/k previous • ↓/j next • type edit • space toggle/cycle • enter save • esc cancel")
 }
 
 func TestSettingsScreen_AntennaEditorContextualHelp(t *testing.T) {
