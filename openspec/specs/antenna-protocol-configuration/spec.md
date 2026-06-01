@@ -74,3 +74,29 @@ The settings TUI MUST display each antenna protocol and MUST allow editing it pe
 - WHEN the operator cycles protocol values using supported selector controls
 - THEN only `generic` or `zebra` can be selected
 - AND arbitrary values such as `foo` cannot be produced by normal selector navigation
+
+### Requirement: TUI antenna entry CRUD fields and validation boundaries
+
+The settings TUI MUST allow operators to create, edit, and delete antenna entries containing `id`, `ip`, `port`, `enabled`, `zone`, and `protocol`. The system MUST block save when the antenna set fails configuration validation and SHALL show an error without persisting.
+
+#### Scenario: Create valid antenna entry and save
+
+- GIVEN an operator creates a new valid antenna entry
+- WHEN save is confirmed
+- THEN the new antenna is persisted to `config.yaml`
+- AND existing unrelated settings remain unchanged
+
+#### Scenario: Invalid antenna data blocks persistence
+
+- GIVEN an operator commits an antenna set with invalid values
+- WHEN save is confirmed
+- THEN persistence is rejected with a validation message
+- AND `config.yaml` remains unchanged
+- AND the Settings screen remains active so the operator can fix the invalid fields
+- AND the validation message is visible in the Settings view
+
+#### Scenario: Delete antenna entry and save
+
+- GIVEN an existing antenna entry is marked for deletion
+- WHEN save is confirmed
+- THEN the antenna entry is removed from persisted configuration

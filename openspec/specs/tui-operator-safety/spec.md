@@ -8,7 +8,7 @@ Define operator-safe TUI behavior for explicit settings persistence, unsaved-cha
 
 ### Requirement: Settings persistence requires explicit save confirmation
 
-The system MUST NOT persist Settings changes solely because fields were edited. The system MUST persist Settings only after explicit save intent and explicit confirmation.
+The system MUST NOT persist Settings changes solely because fields were edited. The system MUST persist Settings only after explicit save intent and explicit confirmation. This SHALL apply to scalar settings and staged antenna create/edit/delete changes.
 
 #### Scenario: Editing fields does not persist automatically
 
@@ -25,7 +25,7 @@ The system MUST NOT persist Settings changes solely because fields were edited. 
 
 ### Requirement: Unsaved Settings exit protection
 
-When leaving Settings with unsaved edits, the system MUST present an explicit decision prompt with options to confirm save, discard changes, or stay in Settings.
+When leaving Settings with unsaved edits, the system MUST present an explicit decision prompt with options to confirm save, discard changes, or stay in Settings. The same prompt MUST appear for unsaved antenna CRUD changes.
 
 #### Scenario: Confirm save while leaving Settings
 
@@ -47,6 +47,14 @@ When leaving Settings with unsaved edits, the system MUST present an explicit de
 - WHEN the operator chooses stay
 - THEN navigation away is canceled
 - AND the current editable state remains visible in Settings
+- AND any save/validation error shown during the failed save attempt remains visible for corrective action
+
+#### Scenario: Discard drops unsaved antenna CRUD changes
+
+- GIVEN unsaved antenna create/edit/delete changes exist
+- WHEN the operator chooses discard from the unsaved-exit prompt
+- THEN staged antenna mutations are removed
+- AND persisted antenna configuration remains as before editing
 
 ### Requirement: Status uptime uses backend truth
 
