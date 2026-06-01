@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGatewayConfig_Validate_EmptyGatewayID(t *testing.T) {
@@ -263,6 +266,73 @@ func TestGatewayConfig_Validate_AntennaProtocol(t *testing.T) {
 				t.Fatalf("expected no validation error, got: %v", err)
 			}
 		})
+	}
+}
+
+func TestGatewayConfig_Validate_DuplicateAntennaIDs(t *testing.T) {
+	tests := []struct {
+		name     string
+		antennas []AntennaConfig
+	}{
+		{
+			name: "adjacent duplicate antenna ids are rejected",
+			antennas: []AntennaConfig{
+				{ID: "dock-reader", IP: "192.168.1.100", Port: 6000, Enabled: true},
+				{ID: "dock-reader", IP: "192.168.1.101", Port: 6001, Enabled: true},
+			},
+		},
+		{
+			name: "non-adjacent duplicate antenna ids are rejected",
+			antennas: []AntennaConfig{
+				{ID: "dock-reader", IP: "192.168.1.100", Port: 6000, Enabled: true},
+				{ID: "exit-reader", IP: "192.168.1.101", Port: 6001, Enabled: true},
+				{ID: "dock-reader", IP: "192.168.1.102", Port: 6002, Enabled: false},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validGatewayConfigForTest()
+			cfg.Antennas = tt.antennas
+
+			err := cfg.Validate()
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "duplicate antenna id")
+			assert.Contains(t, err.Error(), "dock-reader")
+		})
+	}
+}
+
+func TestGatewayConfig_Validate_DuplicateAntennaIDsErrorIsDeterministic(t *testing.T) {
+	cfg := validGatewayConfigForTest()
+	cfg.Antennas = []AntennaConfig{
+		{ID: "first-duplicate", IP: "192.168.1.100", Port: 6000, Enabled: true},
+		{ID: "second-duplicate", IP: "192.168.1.101", Port: 6001, Enabled: true},
+		{ID: "first-duplicate", IP: "192.168.1.102", Port: 6002, Enabled: false},
+		{ID: "second-duplicate", IP: "192.168.1.103", Port: 6003, Enabled: false},
+	}
+
+	err := cfg.Validate()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "first-duplicate")
+	assert.NotContains(t, err.Error(), "second-duplicate")
+}
+
+func validGatewayConfigForTest() *GatewayConfig {
+	return &GatewayConfig{
+		GatewayID:     "gw-001",
+		CompanyID:     "comp-123",
+		CloudURL:      "wss://cloud.example.com/ws",
+		JWTSecret:     "secret-key",
+		ListenMode:    "auto",
+		WebAccessMode: "local",
+		WebListenAddr: "127.0.0.1",
+		Antennas: []AntennaConfig{
+			{ID: "ant-1", IP: "192.168.1.100", Port: 6000, Enabled: true},
+		},
 	}
 }
 

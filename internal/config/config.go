@@ -148,6 +148,10 @@ func (c *GatewayConfig) Validate() error {
 		}
 	}
 
+	if err := c.validateUniqueAntennaIDs(); err != nil {
+		return err
+	}
+
 	for i := range c.Antennas {
 		if err := c.Antennas[i].Validate(); err != nil {
 			return fmt.Errorf("antenna %q is invalid: %w", c.Antennas[i].ID, err)
@@ -155,6 +159,24 @@ func (c *GatewayConfig) Validate() error {
 	}
 
 	// HAPPY PATH: All validations passed
+	return nil
+}
+
+func (c *GatewayConfig) validateUniqueAntennaIDs() error {
+	seen := make(map[string]int, len(c.Antennas))
+	for i, antenna := range c.Antennas {
+		if antenna.ID == "" {
+			continue
+		}
+
+		firstIndex, exists := seen[antenna.ID]
+		if exists {
+			return fmt.Errorf("duplicate antenna id %q at antennas[%d] (first used at antennas[%d]); antenna IDs must be unique", antenna.ID, i, firstIndex)
+		}
+
+		seen[antenna.ID] = i
+	}
+
 	return nil
 }
 
@@ -304,6 +326,9 @@ func (c *GatewayConfig) SaveToYAML(path string) error {
 	// NEGATIVE: Validate we have a valid path
 	if path == "" {
 		return errors.New("path cannot be empty")
+	}
+	if err := c.validateUniqueAntennaIDs(); err != nil {
+		return err
 	}
 
 	// Get the directory for the config file
