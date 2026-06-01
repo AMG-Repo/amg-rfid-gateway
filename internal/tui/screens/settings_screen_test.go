@@ -148,6 +148,20 @@ func TestSettingsScreen_Navigation(t *testing.T) {
 			expectPos: 7,
 			numFields: 8,
 		},
+		{
+			name:      "j matches down arrow",
+			startPos:  0,
+			keyMsg:    tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")},
+			expectPos: 1,
+			numFields: 8,
+		},
+		{
+			name:      "k matches up arrow and wraps",
+			startPos:  0,
+			keyMsg:    tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")},
+			expectPos: 7,
+			numFields: 8,
+		},
 	}
 
 	for _, tt := range tests {
@@ -657,9 +671,6 @@ func TestSettingsScreen_EditsAntennaProtocolPerAntenna(t *testing.T) {
 	var newModel tea.Model
 	newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = newModel.(SettingsScreenModel)
-	m.editBuffer = "zebra"
-	newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = newModel.(SettingsScreenModel)
 
 	require.True(t, m.HasChanges())
 	result := m.GetConfig()
@@ -674,6 +685,77 @@ func TestSettingsScreen_EditsAntennaProtocolPerAntenna(t *testing.T) {
 	assert.Equal(t, "keep-token", result.WebAuthToken)
 	assert.Equal(t, "/keep/data", result.DataPath)
 }
+
+func TestSettingsScreen_ProtocolSelectorCyclesSupportedValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		start     config.AntennaProtocol
+		key       tea.KeyMsg
+		wantValue string
+	}{
+		{name: "enter cycles generic forward to zebra", start: config.ProtocolGeneric, key: tea.KeyMsg{Type: tea.KeyEnter}, wantValue: "zebra"},
+		{name: "space cycles generic forward to zebra", start: config.ProtocolGeneric, key: tea.KeyMsg{Type: tea.KeySpace}, wantValue: "zebra"},
+		{name: "right cycles generic forward to zebra", start: config.ProtocolGeneric, key: tea.KeyMsg{Type: tea.KeyRight}, wantValue: "zebra"},
+		{name: "left cycles generic backward to zebra", start: config.ProtocolGeneric, key: tea.KeyMsg{Type: tea.KeyLeft}, wantValue: "zebra"},
+		{name: "right wraps zebra forward to generic", start: config.ProtocolZebra, key: tea.KeyMsg{Type: tea.KeyRight}, wantValue: "generic"},
+		{name: "left wraps zebra backward to generic", start: config.ProtocolZebra, key: tea.KeyMsg{Type: tea.KeyLeft}, wantValue: "generic"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newProtocolSettingsModel(tt.start)
+			protocolField := requireFieldIndex(t, m, "antenna_protocol:dock")
+			m.cursor = protocolField
+
+			newModel, _ := m.Update(tt.key)
+			m = newModel.(SettingsScreenModel)
+
+			require.False(t, m.editing)
+			assert.True(t, m.HasChanges())
+			assert.Equal(t, tt.wantValue, m.values[protocolField])
+			assert.Equal(t, config.AntennaProtocol(tt.wantValue), m.GetConfig().Antennas[0].Protocol)
+		})
+	}
+}
+
+func TestSettingsScreen_ProtocolSelectorPreventsFreeTextInput(t *testing.T) {
+	m := newProtocolSettingsModel(config.ProtocolGeneric)
+	protocolField := requireFieldIndex(t, m, "antenna_protocol:dock")
+	m.cursor = protocolField
+
+	newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = newModel.(SettingsScreenModel)
+	require.False(t, m.editing)
+	require.Equal(t, "zebra", m.values[protocolField])
+
+	for _, r := range "alien" {
+		newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = newModel.(SettingsScreenModel)
+	}
+
+	assert.Equal(t, "zebra", m.values[protocolField])
+	assert.NotEqual(t, config.AntennaProtocol("alien"), m.GetConfig().Antennas[0].Protocol)
+}
+
+func TestSettingsScreen_ProtocolSelectorDefaultsLegacyProtocolToGeneric(t *testing.T) {
+	m := newProtocolSettingsModel("")
+	protocolField := requireFieldIndex(t, m, "antenna_protocol:dock")
+
+	assert.Equal(t, "generic", m.values[protocolField])
+}
+
+func TestSettingsScreen_ProtocolSelectorHelpMatchesControls(t *testing.T) {
+	m := newProtocolSettingsModel(config.ProtocolGeneric)
+	m.cursor = requireFieldIndex(t, m, "antenna_protocol:dock")
+
+	view := m.View()
+
+	assert.Contains(t, view, "←/→ cycle")
+	assert.Contains(t, view, "space/enter cycle")
+	assert.Contains(t, view, "↑/k up")
+	assert.Contains(t, view, "↓/j down")
+}
+
 func TestSettingsScreen_RejectsUnsupportedAntennaProtocol(t *testing.T) {
 	cfg := &config.GatewayConfig{
 		GatewayID: "test",
@@ -702,6 +784,17 @@ func requireFieldIndex(t *testing.T, m SettingsScreenModel, key string) int {
 	}
 	t.Fatalf("field %q not found", key)
 	return -1
+}
+
+func newProtocolSettingsModel(protocol config.AntennaProtocol) SettingsScreenModel {
+	return NewSettingsScreen(&config.GatewayConfig{
+		GatewayID: "test",
+		CloudURL:  "wss://test.com",
+		LogLevel:  "info",
+		Antennas: []config.AntennaConfig{
+			{ID: "dock", IP: "192.168.1.10", Port: 8080, Enabled: true, Protocol: protocol},
+		},
+	})
 }
 
 // Helper function

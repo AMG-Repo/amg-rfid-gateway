@@ -106,13 +106,9 @@ func (m MainScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// NEGATIVE: Handle navigation
 	switch keyMsg.String() {
 	case "up", "k":
-		if m.cursor > 0 {
-			m.cursor--
-		}
+		m.cursor = moveCursor(m.cursor, len(m.items), -1)
 	case "down", "j":
-		if m.cursor < len(m.items)-1 {
-			m.cursor++
-		}
+		m.cursor = moveCursor(m.cursor, len(m.items), 1)
 	case "enter", " ":
 		// Mark selected
 		m.selectedScreen = m.items[m.cursor].Screen
