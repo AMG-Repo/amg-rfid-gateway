@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGatewayConfig_SaveToYAML_Basic(t *testing.T) {
@@ -111,6 +114,41 @@ func TestGatewayConfig_SaveToYAML_PreservesAntennaProtocol(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGatewayConfig_SaveToYAML_DuplicateAntennaIDsRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	originalContent := "gateway_id: original-gw\ncompany_id: original-comp\ncloud_url: wss://old.example.com/ws\njwt_secret: original-secret\nlisten_mode: auto\nweb_access_mode: local\nweb_listen_addr: 127.0.0.1\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(originalContent), 0644))
+
+	cfg := &GatewayConfig{
+		GatewayID:     "gw-001",
+		CompanyID:     "comp-123",
+		CloudURL:      "wss://cloud.example.com/ws",
+		JWTSecret:     "test-secret",
+		ListenMode:    "auto",
+		WebAccessMode: "local",
+		WebListenAddr: "127.0.0.1",
+		Antennas: []AntennaConfig{
+			{ID: "dock-reader", IP: "192.168.1.100", Port: 6000, Enabled: true},
+			{ID: "exit-reader", IP: "192.168.1.101", Port: 6001, Enabled: true},
+			{ID: "dock-reader", IP: "192.168.1.102", Port: 6002, Enabled: false},
+		},
+	}
+
+	err := cfg.SaveToYAML(configPath)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate antenna id")
+	assert.Contains(t, err.Error(), "dock-reader")
+	savedContent, readErr := os.ReadFile(configPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, originalContent, string(savedContent))
+
+	loaded, loadErr := LoadFromYAML(configPath)
+	require.NoError(t, loadErr)
+	assert.Equal(t, "original-gw", loaded.GatewayID)
 }
 
 func TestGatewayConfig_SaveToYAML_CreatesBackup(t *testing.T) {
