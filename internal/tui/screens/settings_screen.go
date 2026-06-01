@@ -877,7 +877,7 @@ func (m SettingsScreenModel) renderAntennaFormField(field antennaFormField, labe
 // renderHelp returns the help text based on current state.
 func (m SettingsScreenModel) renderHelp() string {
 	if m.antennaEditor.mode == antennaEditorModeForm {
-		return "↑/k previous • ↓/j next • type edit • space toggle/cycle • enter save • esc cancel"
+		return "↑/k previous • ↓/j next • type edit • ←/→ cycle protocol • space toggle/cycle • enter save • esc cancel"
 	}
 	if m.antennaEditor.mode == antennaEditorModeDeleteConfirm {
 		return "y confirm • n/esc cancel"

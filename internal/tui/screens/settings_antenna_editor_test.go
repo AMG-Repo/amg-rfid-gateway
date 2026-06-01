@@ -259,7 +259,7 @@ func TestSettingsScreen_AntennaEditorFormActiveRowUsesSettingsSelectedTreatment(
 	assert.NotContains(t, inactiveRow, "▸")
 
 	view := m.View()
-	assert.Contains(t, view, "↑/k previous • ↓/j next • type edit • space toggle/cycle • enter save • esc cancel")
+	assert.Contains(t, view, "↑/k previous • ↓/j next • type edit • ←/→ cycle protocol • space toggle/cycle • enter save • esc cancel")
 }
 
 func TestSettingsScreen_AntennaEditorContextualHelp(t *testing.T) {
@@ -293,7 +293,7 @@ func TestSettingsScreen_AntennaEditorContextualHelp(t *testing.T) {
 			setup: func(m *SettingsScreenModel) {
 				m.antennaEditor.startAdd()
 			},
-			wantHelp: "↑/k previous • ↓/j next • type edit • space toggle/cycle • enter save • esc cancel",
+			wantHelp: "↑/k previous • ↓/j next • type edit • ←/→ cycle protocol • space toggle/cycle • enter save • esc cancel",
 		},
 	}
 
