@@ -71,7 +71,7 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 | **Multi-Antenna** | Supports multiple antennas via goroutines |
 | **Protocol Config** | Per-antenna protocol selection with backward-compatible `generic` default |
 | **Web UI** | Built-in verification interface on port 9090 |
-| **Settings TUI** | Full configuration editing without leaving the TUI |
+| **Settings TUI** | Full configuration editing with explicit save confirmation and unsaved-exit protection |
 
 ### TUI Configurator
 
@@ -101,16 +101,19 @@ Interactive terminal interface using Bubbletea with splash screen and multiple s
 **Screens:**
 - **Antennas**: View all connected antennas, their status, reading counts, and last tag EPC/RSSI
 - **Network**: Connection state to cloud backend and VPS API
-- **System**: Gateway ID, company ID, version, uptime, cache size, sync status
+- **System**: Gateway ID, company ID, version, backend/gateway uptime, cache size, sync status
 - **Settings**: Full TUI-based configuration editor with field validation
   - Gateway ID, Company ID, Cloud URL, Log Level
   - Queue Cap, Warning Threshold
-  - View antenna configurations and edit each antenna protocol
-  - Save changes without restarting
+  - View antenna configurations and edit each antenna protocol with a constrained `generic`/`zebra` selector
+  - Save changes explicitly with `s`, then confirm with `y`
+  - Leaving Settings with unsaved changes prompts to save, discard, or stay
 
 **Navigation:**
-- Arrow keys or `j/k` to navigate
+- Arrow keys or `j/k` to navigate; navigable lists wrap at the first/last item
 - Enter to select/edit
+- In Settings protocol fields, `←/→`, Space, or Enter cycles supported values (`generic`, `zebra`)
+- In Settings, `s` opens save confirmation; `y` persists changes
 - `q` or `Ctrl+C` to quit
 - `Esc` to go back
 
@@ -375,7 +378,7 @@ Each antenna supports a `protocol` field:
 
 Existing configs without `protocol` are treated as `generic`. Unsupported protocol values fail configuration validation so the gateway does not accidentally parse another reader type as generic.
 
-You can edit antenna protocol values from the Settings TUI. At runtime, non-generic protocols are routed through the protocol handler boundary; until a Zebra handler exists, `zebra` fails explicitly instead of being parsed as generic.
+You can edit antenna protocol values from the Settings TUI using the constrained selector (`generic`/`zebra`). At runtime, non-generic protocols are routed through the protocol handler boundary; until a Zebra handler exists, `zebra` fails explicitly instead of being parsed as generic.
 
 ## Usage
 
@@ -417,13 +420,15 @@ sudo tail -f /opt/amg-rfid-gateway/data/gateway.log
 # 2. Main Menu: Navigate with arrow keys
 #    - Antennas: View antenna status and readings
 #    - Network: Cloud connection status
-#    - System: Gateway metrics and sync info
-#    - Settings: Edit configuration fields
+#    - System: Gateway metrics and backend-reported uptime
+#    - Settings: Edit configuration fields; changes stay in memory until explicitly saved
 #    - Quit: Exit the TUI
 
-# Navigate with arrow keys
+# Navigate with arrow keys or j/k; list navigation wraps
 # Enter to select/edit
-# 's' to save changes in Settings screen
+# In Settings, edits are not persisted until 's' save + 'y' confirm
+# If you leave Settings with unsaved edits, choose y save, d discard, or n stay
+# Antenna protocol fields cycle between generic and zebra; free-text protocol entry is not used
 # q or Ctrl+C to quit
 # Esc to go back
 ```

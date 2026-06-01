@@ -26,9 +26,6 @@ type StatusScreenModel struct {
 	// System status
 	status SystemStatus
 
-	// Start time for uptime calculation
-	startTime time.Time
-
 	// Dimensions
 	width  int
 	height int
@@ -102,8 +99,7 @@ func NewStatusScreen() StatusScreenModel {
 			AntennaCount:      0,
 			ConnectedAntennas: 0,
 		},
-		startTime: time.Now(),
-		styles:    NewStatusScreenStyles(),
+		styles: NewStatusScreenStyles(),
 	}
 }
 
@@ -121,9 +117,6 @@ func (m StatusScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the screen.
 func (m StatusScreenModel) View() string {
-	// Calculate current uptime
-	currentUptime := time.Since(m.startTime)
-
 	// Build title
 	title := m.styles.Title.Render("System Status")
 	subtitle := m.styles.Subtitle.Render("Gateway overview and metrics")
@@ -139,7 +132,7 @@ func (m StatusScreenModel) View() string {
 
 	// Runtime section
 	content += m.styles.Section.Render("Runtime")
-	content += m.renderRow("Uptime:", formatDuration(currentUptime))
+	content += m.renderRow("Uptime:", formatDuration(m.status.Uptime))
 	content += m.renderRow("Antennas:", fmt.Sprintf("%d/%d connected", m.status.ConnectedAntennas, m.status.AntennaCount))
 
 	// Sync section
