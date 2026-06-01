@@ -826,7 +826,21 @@ func (m SettingsScreenModel) renderAntennaEditor() string {
 	switch m.antennaEditor.mode {
 	case antennaEditorModeForm:
 		form := m.antennaEditor.form
-		section += fmt.Sprintf("  ID: %s\n  IP: %s\n  Port: %s\n  Enabled: %t\n  Zone: %s\n  Protocol: %s\n", form.id, form.ip, form.port, form.enabled, form.zone, effectiveAntennaProtocol(form.protocol))
+		status := "Editing new antenna"
+		if m.antennaEditor.editingIdx >= 0 {
+			statusID := form.id
+			if statusID == "" && m.antennaEditor.editingIdx < len(m.antennaEditor.draft) {
+				statusID = m.antennaEditor.draft[m.antennaEditor.editingIdx].ID
+			}
+			status = fmt.Sprintf("Editing antenna %s", statusID)
+		}
+		section += "  " + status + "\n"
+		section += m.renderAntennaFormField(antennaFormFieldID, "ID", form.id)
+		section += m.renderAntennaFormField(antennaFormFieldIP, "IP", form.ip)
+		section += m.renderAntennaFormField(antennaFormFieldPort, "Port", form.port)
+		section += m.renderAntennaFormField(antennaFormFieldEnabled, "Enabled", strconv.FormatBool(form.enabled))
+		section += m.renderAntennaFormField(antennaFormFieldZone, "Zone", form.zone)
+		section += m.renderAntennaFormField(antennaFormFieldProtocol, "Protocol", string(effectiveAntennaProtocol(form.protocol)))
 		if m.antennaEditor.err != "" {
 			section += m.styles.FieldError.Render("  "+m.antennaEditor.err) + "\n"
 		}
@@ -853,21 +867,33 @@ func (m SettingsScreenModel) renderAntennaEditor() string {
 	return section
 }
 
+func (m SettingsScreenModel) renderAntennaFormField(field antennaFormField, label string, value string) string {
+	cursor := "  "
+	if m.antennaEditor.formCursor == field {
+		cursor = "> "
+		value = m.styles.FieldEdit.Render(value)
+	}
+	return cursor + fmt.Sprintf("%s: %s\n", label, value)
+}
+
 // renderHelp returns the help text based on current state.
 func (m SettingsScreenModel) renderHelp() string {
 	if m.antennaEditor.mode == antennaEditorModeForm {
-		return "↑/k previous field • ↓/j next field • type edit • ←/→ cycle protocol • space toggle/cycle • enter commit • esc cancel"
+		return "↑/k previous • ↓/j next • type edit • space toggle/cycle • enter save • esc cancel"
 	}
 	if m.antennaEditor.mode == antennaEditorModeDeleteConfirm {
-		return "y delete • n/esc cancel"
+		return "y confirm • n/esc cancel"
+	}
+	if len(m.antennaEditor.draft) == 0 {
+		return "a add antenna • Esc back"
 	}
 	if m.editing {
 		return "enter save • esc cancel • type to edit"
 	}
 	if m.isAntennaProtocolField() {
-		return "↑/k antenna up • ↓/j antenna down • ←/→ cycle protocol • space cycle protocol • a add • e/enter edit • d delete • s save • esc back"
+		return "↑/k up • ↓/j down • a add antenna • e/enter edit • d delete • Esc back"
 	}
-	return "↑/k up • ↓/j down • tab/shift+tab navigate • enter edit • a add • e/enter edit • d delete • s save • esc back"
+	return "↑/k up • ↓/j down • tab/shift+tab navigate • enter edit • s save • esc back"
 }
 
 func (m SettingsScreenModel) isAntennaProtocolField() bool {
