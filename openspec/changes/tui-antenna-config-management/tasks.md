@@ -41,20 +41,20 @@ Chain strategy: pending
 
 ## Phase 3: App Wiring, Error Surfacing, and Operator UX
 
-- [ ] 3.1 RED: add table-driven `internal/tui/app_test.go` cases for SaveIntent with CRUD drafts: invalid edit, valid create/save, valid edit/save, valid delete/save, and discard behavior while antennas are dirty.
-- [ ] 3.2 GREEN: add message bridge in `internal/tui/app.go` (`settingsSaveErrorMsg`) so `handleSettingsSave` sets `settings save` error state instead of only logging.
-- [ ] 3.3 GREEN: update `internal/tui/screens/settings_screen.go` `View()` to show actionable save/validation error text in-screen and clear it on successful save/discard/reset.
-- [ ] 3.4 GREEN: ensure `handleSettingsSave()` in `internal/tui/app.go` keeps operator in Settings on `Validate()`/`SaveToYAML()` failure and does not write `config.yaml`.
-- [ ] 3.5 REFACTOR: make unsaved-exit prompt behavior explicit for antenna drafts (save/discard/stay) and verify cursor/dirty-state remains visible after failed save.
+- [x] 3.1 RED: add table-driven `internal/tui/app_test.go` cases for SaveIntent with CRUD drafts: invalid edit, valid create/save, valid edit/save, valid delete/save, and discard behavior while antennas are dirty.
+- [x] 3.2 GREEN: add message bridge in `internal/tui/app.go` (`settingsSaveErrorMsg`) so `handleSettingsSave` sets `settings save` error state instead of only logging.
+- [x] 3.3 GREEN: update `internal/tui/screens/settings_screen.go` `View()` to show actionable save/validation error text in-screen and clear it on successful save/discard/reset.
+- [x] 3.4 GREEN: ensure `handleSettingsSave()` in `internal/tui/app.go` keeps operator in Settings on `Validate()`/`SaveToYAML()` failure and does not write `config.yaml`.
+- [x] 3.5 REFACTOR: make unsaved-exit prompt behavior explicit for antenna drafts (save/discard/stay) and verify cursor/dirty-state remains visible after failed save.
 
 ## Phase 4: Integration / Verification (TDD RED→GREEN→REFACTOR)
 
-- [ ] 4.1 RED: add `teatest.NewTestModel`-based flow tests in `internal/tui/screens/settings_screen_integration_test.go` for add/edit/delete/save/stay on `internal/tui` models.
-- [ ] 4.2 GREEN: extend `internal/tui/app_test.go` with `go test`-driven table cases asserting `go test -v ./...` relevant scenarios from specs 2/3 and operator-visible error messages when save is blocked.
-- [ ] 4.3 REFACTOR: split settings tests into focused helpers in `internal/tui/screens/settings_screen_test.go` (`t.Helper()` helpers) and keep field index assertions by key for maintainability.
-- [ ] 4.4 RED: add table-driven regression cases in `internal/tui/app_test.go` for protocol selector constrained values (`generic`, `zebra`) and legacy default protocol display from `config.yaml`.
+- [x] 4.1 RED: add `teatest.NewTestModel`-based flow tests in `internal/tui/screens/settings_screen_integration_test.go` for add/edit/delete/save/stay on `internal/tui` models.
+- [x] 4.2 GREEN: extend `internal/tui/app_test.go` with `go test`-driven table cases asserting `go test -v ./...` relevant scenarios from specs 2/3 and operator-visible error messages when save is blocked.
+- [x] 4.3 REFACTOR: split settings tests into focused helpers in `internal/tui/screens/settings_screen_test.go` (`t.Helper()` helpers) and keep field index assertions by key for maintainability.
+- [x] 4.4 RED: add table-driven regression cases in `internal/tui/app_test.go` for protocol selector constrained values (`generic`, `zebra`) and legacy default protocol display from `config.yaml`.
 
 ## Phase 5: Cleanup and Consistency
 
-- [ ] 5.1 REFACTOR: update `openspec/changes/tui-antenna-config-management/specs/antenna-protocol-configuration/spec.md` and `.../specs/tui-operator-safety/spec.md` with explicit validation/error UX mapping to each scenario.
-- [ ] 5.2 REFACTOR: run `go test -v ./...` and document any spec deltas or follow-up test stabilization tasks.
+- [x] 5.1 REFACTOR: update `openspec/changes/tui-antenna-config-management/specs/antenna-protocol-configuration/spec.md` and `.../specs/tui-operator-safety/spec.md` with explicit validation/error UX mapping to each scenario.
+- [x] 5.2 REFACTOR: run `go test -v ./...` and document any spec deltas or follow-up test stabilization tasks.

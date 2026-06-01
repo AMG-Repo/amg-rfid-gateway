@@ -641,36 +641,31 @@ func TestSettingsScreen_RendersAntennaProtocol(t *testing.T) {
 }
 
 func TestSettingsScreen_EditsAntennaProtocolPerAntenna(t *testing.T) {
-	cfg := &config.GatewayConfig{
-		GatewayID:               "gateway-original",
-		CompanyID:               "company-original",
-		CloudURL:                "wss://example.com",
-		JWTSecret:               "secret",
-		ListenMode:              "auto",
-		WebAccessMode:           "local",
-		WebListenAddr:           "127.0.0.1",
-		WebAuthToken:            "keep-token",
-		LogLevel:                "info",
-		SyncInterval:            30,
-		BatchSize:               100,
-		MaxRetries:              5,
-		HealthPort:              8080,
-		DataPath:                "/keep/data",
-		MaxPendingConfirmations: intPtr(222),
-		PendingWarningThreshold: intPtr(111),
-		Antennas: []config.AntennaConfig{
-			{ID: "dock", IP: "192.168.1.10", Port: 8080, Enabled: true, Zone: "entrada", Protocol: config.ProtocolGeneric},
-			{ID: "exit", IP: "192.168.1.11", Port: 8081, Enabled: false, Zone: "salida", Protocol: config.ProtocolGeneric},
-		},
+	cfg := protocolSettingsConfig(config.ProtocolGeneric)
+	cfg.GatewayID = "gateway-original"
+	cfg.CompanyID = "company-original"
+	cfg.JWTSecret = "secret"
+	cfg.ListenMode = "auto"
+	cfg.WebAccessMode = "local"
+	cfg.WebListenAddr = "127.0.0.1"
+	cfg.WebAuthToken = "keep-token"
+	cfg.SyncInterval = 30
+	cfg.BatchSize = 100
+	cfg.MaxRetries = 5
+	cfg.HealthPort = 8080
+	cfg.DataPath = "/keep/data"
+	cfg.MaxPendingConfirmations = intPtr(222)
+	cfg.PendingWarningThreshold = intPtr(111)
+	cfg.Antennas = []config.AntennaConfig{
+		{ID: "dock", IP: "192.168.1.10", Port: 8080, Enabled: true, Zone: "entrada", Protocol: config.ProtocolGeneric},
+		{ID: "exit", IP: "192.168.1.11", Port: 8081, Enabled: false, Zone: "salida", Protocol: config.ProtocolGeneric},
 	}
 	m := NewSettingsScreen(cfg)
 
 	protocolField := requireFieldIndex(t, m, "antenna_protocol:dock")
 	m.cursor = protocolField
 
-	var newModel tea.Model
-	newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
-	m = newModel.(SettingsScreenModel)
+	m = updateSettingsModel(t, m, tea.KeyMsg{Type: tea.KeyRight})
 
 	require.True(t, m.HasChanges())
 	result := m.GetConfig()
@@ -706,8 +701,7 @@ func TestSettingsScreen_ProtocolSelectorCyclesSupportedValues(t *testing.T) {
 			protocolField := requireFieldIndex(t, m, "antenna_protocol:dock")
 			m.cursor = protocolField
 
-			newModel, _ := m.Update(tt.key)
-			m = newModel.(SettingsScreenModel)
+			m = updateSettingsModel(t, m, tt.key)
 
 			require.False(t, m.editing)
 			assert.True(t, m.HasChanges())
@@ -722,14 +716,12 @@ func TestSettingsScreen_ProtocolSelectorPreventsFreeTextInput(t *testing.T) {
 	protocolField := requireFieldIndex(t, m, "antenna_protocol:dock")
 	m.cursor = protocolField
 
-	newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
-	m = newModel.(SettingsScreenModel)
+	m = updateSettingsModel(t, m, tea.KeyMsg{Type: tea.KeyRight})
 	require.False(t, m.editing)
 	require.Equal(t, "zebra", m.values[protocolField])
 
 	for _, r := range "alien" {
-		newModel, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = newModel.(SettingsScreenModel)
+		m = updateSettingsModel(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 
 	assert.Equal(t, "zebra", m.values[protocolField])
@@ -757,7 +749,7 @@ func TestSettingsScreen_ProtocolSelectorHelpMatchesControls(t *testing.T) {
 
 func TestSettingsScreen_RejectsUnsupportedAntennaProtocol(t *testing.T) {
 	cfg := &config.GatewayConfig{
-		GatewayID: "test",
+		GatewayID: "gateway-original",
 		Antennas: []config.AntennaConfig{
 			{ID: "dock", IP: "192.168.1.10", Port: 8080, Enabled: true, Protocol: config.ProtocolGeneric},
 		},
@@ -765,13 +757,20 @@ func TestSettingsScreen_RejectsUnsupportedAntennaProtocol(t *testing.T) {
 	m := NewSettingsScreen(cfg)
 	m.cursor = requireFieldIndex(t, m, "antenna_protocol:dock")
 
-	newModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = newModel.(SettingsScreenModel)
+	m = updateSettingsModel(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	m.editBuffer = "alien"
 
 	err := m.validateCurrentField()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "generic, zebra")
+}
+
+func updateSettingsModel(t *testing.T, m SettingsScreenModel, key tea.KeyMsg) SettingsScreenModel {
+	t.Helper()
+	newModel, _ := m.Update(key)
+	updated, ok := newModel.(SettingsScreenModel)
+	require.Truef(t, ok, "expected SettingsScreenModel, got %T", newModel)
+	return updated
 }
 
 func requireFieldIndex(t *testing.T, m SettingsScreenModel, key string) int {
@@ -786,14 +785,18 @@ func requireFieldIndex(t *testing.T, m SettingsScreenModel, key string) int {
 }
 
 func newProtocolSettingsModel(protocol config.AntennaProtocol) SettingsScreenModel {
-	return NewSettingsScreen(&config.GatewayConfig{
+	return NewSettingsScreen(protocolSettingsConfig(protocol))
+}
+
+func protocolSettingsConfig(protocol config.AntennaProtocol) *config.GatewayConfig {
+	return &config.GatewayConfig{
 		GatewayID: "test",
 		CloudURL:  "wss://test.com",
 		LogLevel:  "info",
 		Antennas: []config.AntennaConfig{
 			{ID: "dock", IP: "192.168.1.10", Port: 8080, Enabled: true, Protocol: protocol},
 		},
-	})
+	}
 }
 
 // Helper function

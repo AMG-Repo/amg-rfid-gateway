@@ -19,6 +19,8 @@ The settings TUI MUST allow operators to create, edit, and delete antenna entrie
 - WHEN save is confirmed
 - THEN persistence is rejected with a validation message
 - AND `config.yaml` remains unchanged
+- AND the Settings screen remains active so the operator can fix the invalid fields
+- AND the validation message is visible in the Settings view
 
 #### Scenario: Delete antenna entry and save
 
