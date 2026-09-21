@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -100,6 +102,92 @@ func TestGatewayConfig_ApplyDefaults(t *testing.T) {
 	// Test SocketPath default
 	if cfg.SocketPath != "/tmp/amg-rfid-gateway.sock" {
 		t.Errorf("expected SocketPath default '/tmp/amg-rfid-gateway.sock', got %q", cfg.SocketPath)
+	}
+}
+
+func TestLoadFromYAMLHealthListenAddr(t *testing.T) {
+	tests := []struct {
+		name           string
+		content        string
+		want           string
+		wantHealthPort int
+		wantErr        string
+	}{
+		{
+			name: "omitted address defaults to loopback",
+			content: `health_port: 18080
+`,
+			want:           "127.0.0.1",
+			wantHealthPort: 18080,
+		},
+		{
+			name: "explicit IPv4 loopback override is accepted",
+			content: `health_listen_addr: "127.0.0.2"
+`,
+			want: "127.0.0.2",
+		},
+		{
+			name: "explicit IPv6 loopback is accepted",
+			content: `health_listen_addr: "::1"
+`,
+			want: "::1",
+		},
+		{
+			name: "explicit empty address is rejected",
+			content: `health_listen_addr: ""
+`,
+			wantErr: "health_listen_addr",
+		},
+		{
+			name: "IPv4 wildcard address is rejected",
+			content: `health_listen_addr: "0.0.0.0"
+`,
+			wantErr: "health_listen_addr",
+		},
+		{
+			name: "non-loopback address is rejected",
+			content: `health_listen_addr: "192.0.2.10"
+`,
+			wantErr: "health_listen_addr",
+		},
+		{
+			name: "IPv6 wildcard address is rejected",
+			content: `health_listen_addr: "::"
+`,
+			wantErr: "health_listen_addr",
+		},
+		{
+			name: "malformed address is rejected",
+			content: `health_listen_addr: "not-an-ip"
+`,
+			wantErr: "health_listen_addr",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			cfg, err := LoadFromYAML(path)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("LoadFromYAML() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadFromYAML() error = %v", err)
+			}
+			if cfg.HealthListenAddr != tt.want {
+				t.Fatalf("HealthListenAddr = %q, want %q", cfg.HealthListenAddr, tt.want)
+			}
+			if tt.wantHealthPort != 0 && cfg.HealthPort != tt.wantHealthPort {
+				t.Fatalf("HealthPort = %d, want %d", cfg.HealthPort, tt.wantHealthPort)
+			}
+		})
 	}
 }
 

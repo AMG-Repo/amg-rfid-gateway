@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -200,8 +201,8 @@ func main() {
 	}
 
 	// Start HTTP server for health and metrics
-	go startHTTPServer(cfg.HealthPort, healthMonitor, metricsCollector)
-	log.Printf("HTTP server started on port %d", cfg.HealthPort)
+	go startHTTPServer(cfg.HealthListenAddr, cfg.HealthPort, healthMonitor, metricsCollector)
+	log.Printf("HTTP server started on %s", healthServerAddress(cfg.HealthListenAddr, cfg.HealthPort))
 
 	// Wait for interrupt signal
 	sigCh := make(chan os.Signal, 1)
@@ -505,8 +506,13 @@ func findSubstring(s, substr string) bool {
 	return false
 }
 
-// startHTTPServer starts the HTTP server for health and metrics endpoints
-func startHTTPServer(port int, monitor *health.Monitor, metrics *monitoring.Metrics) {
+// healthServerAddress returns the listener address for health and metrics endpoints.
+func healthServerAddress(listenAddr string, port int) string {
+	return net.JoinHostPort(listenAddr, strconv.Itoa(port))
+}
+
+// startHTTPServer starts the HTTP server for health and metrics endpoints.
+func startHTTPServer(listenAddr string, port int, monitor *health.Monitor, metrics *monitoring.Metrics) {
 	mux := http.NewServeMux()
 
 	// Health endpoint
@@ -523,7 +529,7 @@ func startHTTPServer(port int, monitor *health.Monitor, metrics *monitoring.Metr
 	})
 
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
+		Addr:    healthServerAddress(listenAddr, port),
 		Handler: mux,
 	}
 

@@ -15,7 +15,8 @@ sync_interval: 30s
 batch_size: 100
 max_retries: 5
 
-# Health check endpoint port
+# Health and metrics endpoint (loopback-only by default; use an IP literal)
+health_listen_addr: "127.0.0.1"
 health_port: 8080
 
 # Data storage path (SQLite database)
