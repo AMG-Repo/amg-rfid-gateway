@@ -17,8 +17,6 @@ import (
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
 )
 
-const defaultSocketPath = "/tmp/amg-gateway.sock"
-
 // HealthMonitor defines the interface for getting health status.
 type HealthMonitor interface {
 	GetStatus() models.GatewayHealthStatus
@@ -80,7 +78,7 @@ type BridgeServer struct {
 // NewBridgeServer creates a new bridge server.
 func NewBridgeServer(socketPath string, health HealthMonitor, antennas AntennaProvider) *BridgeServer {
 	if socketPath == "" {
-		socketPath = defaultSocketPath
+		socketPath = config.DefaultSocketPath
 	}
 
 	return &BridgeServer{

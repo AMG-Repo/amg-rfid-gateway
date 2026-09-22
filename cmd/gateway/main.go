@@ -41,6 +41,12 @@ func cacheDBPath(cfg *config.GatewayConfig) string {
 	return filepath.Join(cfg.DataPath, "cache.db")
 }
 
+type bridgeServerConstructor func(string, tui.HealthMonitor, tui.AntennaProvider) *tui.BridgeServer
+
+func newBridgeServer(cfg *config.GatewayConfig, healthMonitor tui.HealthMonitor, antennaProvider tui.AntennaProvider, constructor bridgeServerConstructor) *tui.BridgeServer {
+	return constructor(cfg.SocketPath, healthMonitor, antennaProvider)
+}
+
 func main() {
 	var configPath string
 	flag.StringVar(&configPath, "config", "", "Path to config file (auto-detected if not specified)")
@@ -144,7 +150,7 @@ func main() {
 	antennaProvider := antenna.NewAntennaManagerProvider()
 
 	// Initialize and start bridge server for TUI
-	bridgeServer := tui.NewBridgeServer("", healthMonitor, antennaProvider)
+	bridgeServer := newBridgeServer(cfg, healthMonitor, antennaProvider, tui.NewBridgeServer)
 	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
 	defer bridgeCancel()
 

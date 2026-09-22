@@ -36,6 +36,15 @@ func (m *mockAntennaProvider) GetAntennaStatuses() []antenna.AntennaStatus {
 	return m.antennas
 }
 
+func TestBridgeServerAndClientUseConfigDefaultSocketPath(t *testing.T) {
+	server := NewBridgeServer("", nil, nil)
+	client := NewBridgeClient("")
+
+	assert.Equal(t, config.DefaultSocketPath, server.socketPath)
+	assert.Equal(t, config.DefaultSocketPath, client.socketPath)
+	assert.Equal(t, server.socketPath, client.socketPath)
+}
+
 func TestBridgeServer_StartStop(t *testing.T) {
 	socketPath := "/tmp/test-bridge-" + t.Name() + ".sock"
 	defer os.Remove(socketPath)

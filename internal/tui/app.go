@@ -136,7 +136,7 @@ func NewApp(cfgPath string, version string) (*App, error) {
 	styles := NewStyles()
 
 	// Create bridge client
-	bridgeClient := NewBridgeClient("")
+	bridgeClient := NewBridgeClient(cfg.SocketPath)
 
 	app := &App{
 		currentScreen: ScreenSplash,
