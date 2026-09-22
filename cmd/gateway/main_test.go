@@ -1,13 +1,119 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/tui"
 )
+
+func TestMainBuildsBridgeServerWithConfiguredSocketPath(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse gateway main source: %v", err)
+	}
+
+	mainFunc := functionDecl(file, "main")
+	if mainFunc == nil {
+		t.Fatal("gateway source must declare main")
+	}
+
+	call := callTo(mainFunc.Body, "newBridgeServer")
+	if call == nil {
+		t.Fatal("main must construct the bridge through newBridgeServer, not direct tui.NewBridgeServer")
+	}
+	if len(call.Args) != 4 {
+		t.Fatalf("newBridgeServer in main has %d arguments, want 4", len(call.Args))
+	}
+	if !isIdentifier(call.Args[0], "cfg") {
+		t.Fatalf("newBridgeServer first argument = %s, want cfg", exprString(call.Args[0]))
+	}
+	if !isSelector(call.Args[3], "tui", "NewBridgeServer") {
+		t.Fatalf("newBridgeServer constructor argument = %s, want tui.NewBridgeServer", exprString(call.Args[3]))
+	}
+}
+
+func functionDecl(file *ast.File, name string) *ast.FuncDecl {
+	for _, decl := range file.Decls {
+		funcDecl, ok := decl.(*ast.FuncDecl)
+		if ok && funcDecl.Name.Name == name {
+			return funcDecl
+		}
+	}
+	return nil
+}
+
+func callTo(body *ast.BlockStmt, name string) *ast.CallExpr {
+	var match *ast.CallExpr
+	ast.Inspect(body, func(node ast.Node) bool {
+		if match != nil {
+			return false
+		}
+		call, ok := node.(*ast.CallExpr)
+		if ok && isIdentifier(call.Fun, name) {
+			match = call
+		}
+		return true
+	})
+	return match
+}
+
+func isIdentifier(expr ast.Expr, name string) bool {
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == name
+}
+
+func isSelector(expr ast.Expr, packageName, selector string) bool {
+	selectorExpr, ok := expr.(*ast.SelectorExpr)
+	return ok && isIdentifier(selectorExpr.X, packageName) && selectorExpr.Sel.Name == selector
+}
+
+func exprString(expr ast.Expr) string {
+	if ident, ok := expr.(*ast.Ident); ok {
+		return ident.Name
+	}
+	if selector, ok := expr.(*ast.SelectorExpr); ok {
+		return exprString(selector.X) + "." + selector.Sel.Name
+	}
+	return "unexpected expression"
+}
+
+func TestNewBridgeServerUsesConfiguredSocketPath(t *testing.T) {
+	const configuredSocketPath = "/run/amg-rfid-gateway/bridge.sock"
+
+	cfg := &config.GatewayConfig{SocketPath: configuredSocketPath}
+	var receivedSocketPath string
+
+	newBridgeServer(cfg, nil, nil, func(socketPath string, _ tui.HealthMonitor, _ tui.AntennaProvider) *tui.BridgeServer {
+		receivedSocketPath = socketPath
+		return nil
+	})
+
+	if receivedSocketPath != configuredSocketPath {
+		t.Fatalf("bridge constructor socket path = %q, want %q", receivedSocketPath, configuredSocketPath)
+	}
+}
+
+func TestNewBridgeServerUsesEffectiveDefaultSocketPath(t *testing.T) {
+	cfg := &config.GatewayConfig{}
+	cfg.ApplyDefaults()
+	var receivedSocketPath string
+
+	newBridgeServer(cfg, nil, nil, func(socketPath string, _ tui.HealthMonitor, _ tui.AntennaProvider) *tui.BridgeServer {
+		receivedSocketPath = socketPath
+		return nil
+	})
+
+	if receivedSocketPath != cfg.SocketPath {
+		t.Fatalf("bridge constructor socket path = %q, want configured default %q", receivedSocketPath, cfg.SocketPath)
+	}
+}
 
 func TestHealthServerAddress(t *testing.T) {
 	tests := []struct {

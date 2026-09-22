@@ -15,7 +15,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const legacyLANConfigMigrationError = "legacy config detected: web_access_mode is missing while web_listen_addr=0.0.0.0; set web_access_mode: \"lan\" and web_auth_token, or change web_listen_addr to \"127.0.0.1\""
+const (
+	legacyLANConfigMigrationError = "legacy config detected: web_access_mode is missing while web_listen_addr=0.0.0.0; set web_access_mode: \"lan\" and web_auth_token, or change web_listen_addr to \"127.0.0.1\""
+
+	// DefaultSocketPath is the historical Unix socket path shared by the gateway bridge and TUI client.
+	DefaultSocketPath = "/tmp/amg-gateway.sock"
+)
 
 // AntennaProtocol identifies the packet protocol used by an antenna.
 type AntennaProtocol string
@@ -601,7 +606,7 @@ func (c *GatewayConfig) ApplyDefaults() {
 		c.ReconnectMaxBackoff = 30 * time.Second
 	}
 	if c.SocketPath == "" {
-		c.SocketPath = "/tmp/amg-rfid-gateway.sock"
+		c.SocketPath = DefaultSocketPath
 	}
 
 	// Web UI defaults

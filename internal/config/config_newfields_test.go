@@ -100,8 +100,12 @@ func TestGatewayConfig_ApplyDefaults(t *testing.T) {
 	}
 
 	// Test SocketPath default
-	if cfg.SocketPath != "/tmp/amg-rfid-gateway.sock" {
-		t.Errorf("expected SocketPath default '/tmp/amg-rfid-gateway.sock', got %q", cfg.SocketPath)
+	const historicalBridgeSocketPath = "/tmp/amg-gateway.sock"
+	if DefaultSocketPath != historicalBridgeSocketPath {
+		t.Errorf("DefaultSocketPath = %q, want historical bridge default %q", DefaultSocketPath, historicalBridgeSocketPath)
+	}
+	if cfg.SocketPath != DefaultSocketPath {
+		t.Errorf("SocketPath default = %q, want %q", cfg.SocketPath, DefaultSocketPath)
 	}
 }
 

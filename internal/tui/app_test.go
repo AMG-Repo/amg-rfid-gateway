@@ -14,6 +14,17 @@ import (
 	"github.com/amg-rfid/amg-rfid-gateway/internal/tui/screens"
 )
 
+func TestNewAppUsesConfiguredBridgeSocketPath(t *testing.T) {
+	const socketPath = "/run/amg-rfid-gateway/tui.sock"
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("socket_path: "+socketPath+"\n"), 0o600))
+
+	app, err := NewApp(configPath, "test")
+	require.NoError(t, err)
+	assert.Equal(t, socketPath, app.bridgeClient.socketPath)
+}
+
 func TestApp_SettingsResizeReachesSettingsScreen(t *testing.T) {
 	cfg := validTUITestConfig()
 	app := &App{settings: screens.NewSettingsScreen(cfg)}

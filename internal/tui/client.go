@@ -24,7 +24,7 @@ type BridgeClient struct {
 // NewBridgeClient creates a new bridge client.
 func NewBridgeClient(socketPath string) *BridgeClient {
 	if socketPath == "" {
-		socketPath = defaultSocketPath
+		socketPath = config.DefaultSocketPath
 	}
 
 	return &BridgeClient{
