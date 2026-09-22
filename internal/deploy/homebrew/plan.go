@@ -5,6 +5,7 @@ package homebrew
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"os"
 	"syscall"
@@ -21,6 +22,7 @@ type Inventory struct {
 	Config  ObjectState
 }
 type ContentObservation struct {
+	seal               *observationSeal
 	Inventory          Inventory
 	Blockers           []string
 	Code               string
@@ -38,6 +40,23 @@ type ContentObservation struct {
 func (p ContentObservation) String() string {
 	return p.Code + " runtime/config=" + p.RuntimeConfig + " systemd=" + p.SystemdTrust
 }
+
+type observationSeal struct{ digest [32]byte }
+
+func observationDigest(o ContentObservation) [32]byte {
+	// JSON includes every exported observation field and excludes the private seal.
+	bytes, _ := json.Marshal(o)
+	return sha256.Sum256(bytes)
+}
+
+func sealObservation(o *ContentObservation) {
+	o.seal = &observationSeal{digest: observationDigest(*o)}
+}
+
+func validObservation(o ContentObservation) bool {
+	return o.seal != nil && o.seal.digest == observationDigest(o)
+}
+
 func refusal(code string) ContentObservation {
 	return ContentObservation{Code: code, RuntimeConfig: "NOT VERIFIED", SystemdTrust: "NOT VERIFIED", IdentityContinuity: "NOT PROVED"}
 }
@@ -100,10 +119,12 @@ func observeWithEvidence(p Profile, version, arch string, ev evidence, stat func
 		return refusal("unsafe_config")
 	}
 	_, owner, _ := metadata(f)
-	return ContentObservation{Code: "content_equal", Version: version, Architecture: arch, ArchiveSHA256: ev.archive, GatewaySHA256: ev.member, PackageIdentity: id,
+	result := ContentObservation{Code: "content_equal", Version: version, Architecture: arch, ArchiveSHA256: ev.archive, GatewaySHA256: ev.member, PackageIdentity: id,
 		Inventory:     Inventory{Package: ObjectState{Identity: id, Owner: owner, Mode: uint32(f.Mode().Perm())}, Config: ObjectState{Identity: configID, Owner: configOwner, Mode: uint32(config.Mode().Perm())}},
 		Blockers:      []string{"homebrew_receipt_unverified", "config_semantics_unverified", "data_state_unverified", "service_state_unverified", "network_isolation_unverified", "future_path_identity_unproved"},
 		RuntimeConfig: "NOT VERIFIED", SystemdTrust: "NOT VERIFIED", IdentityContinuity: "NOT PROVED"}
+	sealObservation(&result)
+	return result
 }
 
 // readPackage traverses from / using no-follow directory handles and bounds reads.
