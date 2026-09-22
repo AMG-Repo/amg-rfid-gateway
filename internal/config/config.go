@@ -3,11 +3,13 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -38,16 +40,17 @@ func IsSupportedAntennaProtocol(protocol AntennaProtocol) bool {
 
 // GatewayConfig holds the complete configuration for the RFID gateway.
 type GatewayConfig struct {
-	GatewayID    string          `yaml:"gateway_id"`
-	CompanyID    string          `yaml:"company_id"`
-	CloudURL     string          `yaml:"cloud_url"`
-	JWTSecret    string          `yaml:"jwt_secret"`
-	Antennas     []AntennaConfig `yaml:"antennas"`
-	SyncInterval time.Duration   `yaml:"sync_interval"`
-	BatchSize    int             `yaml:"batch_size"`
-	MaxRetries   int             `yaml:"max_retries"`
-	HealthPort   int             `yaml:"health_port"`
-	DataPath     string          `yaml:"data_path"`
+	GatewayID        string          `yaml:"gateway_id"`
+	CompanyID        string          `yaml:"company_id"`
+	CloudURL         string          `yaml:"cloud_url"`
+	JWTSecret        string          `yaml:"jwt_secret"`
+	Antennas         []AntennaConfig `yaml:"antennas"`
+	SyncInterval     time.Duration   `yaml:"sync_interval"`
+	BatchSize        int             `yaml:"batch_size"`
+	MaxRetries       int             `yaml:"max_retries"`
+	HealthPort       int             `yaml:"health_port"`
+	HealthListenAddr string          `yaml:"health_listen_addr,omitempty"`
+	DataPath         string          `yaml:"data_path"`
 
 	// Permanent listening mode configuration (REQ-A006)
 	ListenMode                string        `yaml:"listen_mode"`
@@ -121,6 +124,13 @@ func (c *GatewayConfig) Validate() error {
 	// NEGATIVE: JWTSecret cannot be empty
 	if c.JWTSecret == "" {
 		return errors.New("jwt_secret cannot be empty")
+	}
+
+	// NEGATIVE: Health listen address must be a safe IP literal when explicitly set.
+	if c.HealthListenAddr != "" {
+		if err := validateHealthListenAddr(c.HealthListenAddr); err != nil {
+			return err
+		}
 	}
 
 	// NEGATIVE: ListenMode must be valid (REQ-A006)
@@ -239,11 +249,38 @@ func LoadFromYAML(path string) (*GatewayConfig, error) {
 		return nil, errors.New(legacyLANConfigMigrationError)
 	}
 
+	var raw map[string]yaml.Node
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("failed to parse config fields: %w", err)
+	}
+	if _, explicitlySet := raw["health_listen_addr"]; explicitlySet {
+		if err := validateHealthListenAddr(cfg.HealthListenAddr); err != nil {
+			return nil, err
+		}
+	}
+
 	// Apply defaults after loading
 	cfg.ApplyDefaults()
 
 	// HAPPY PATH
 	return &cfg, nil
+}
+
+// validateHealthListenAddr rejects unsafe or malformed explicit health listener addresses.
+func validateHealthListenAddr(addr string) error {
+	if strings.TrimSpace(addr) == "" {
+		return errors.New("health_listen_addr cannot be empty")
+	}
+	if strings.TrimSpace(addr) != addr {
+		return errors.New("health_listen_addr must not contain surrounding whitespace")
+	}
+
+	ip := net.ParseIP(addr)
+	if ip == nil || !ip.IsLoopback() {
+		return errors.New("health_listen_addr must be a loopback IP address")
+	}
+
+	return nil
 }
 
 // AutoDetectPath searches for the config file in standard locations.
@@ -524,6 +561,9 @@ func (c *GatewayConfig) ApplyDefaults() {
 	}
 	if c.HealthPort == 0 {
 		c.HealthPort = 8080
+	}
+	if c.HealthListenAddr == "" {
+		c.HealthListenAddr = "127.0.0.1"
 	}
 	if c.DataPath == "" {
 		c.DataPath = "./data"

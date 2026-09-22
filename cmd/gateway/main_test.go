@@ -9,6 +9,36 @@ import (
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 )
 
+func TestHealthServerAddress(t *testing.T) {
+	tests := []struct {
+		name       string
+		listenAddr string
+		port       int
+		want       string
+	}{
+		{
+			name:       "IPv4 loopback",
+			listenAddr: "127.0.0.1",
+			port:       8080,
+			want:       "127.0.0.1:8080",
+		},
+		{
+			name:       "IPv6 loopback",
+			listenAddr: "::1",
+			port:       8080,
+			want:       "[::1]:8080",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := healthServerAddress(tt.listenAddr, tt.port); got != tt.want {
+				t.Fatalf("healthServerAddress(%q, %d) = %q, want %q", tt.listenAddr, tt.port, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCacheDBPathUsesConfiguredDataPath(t *testing.T) {
 	tests := []struct {
 		name     string
