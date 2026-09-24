@@ -12,9 +12,24 @@ import (
 	"testing"
 )
 
+func TestFixtureTransactionUsesCurrentCheckout(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := fixtureTransaction(t)
+	if filepath.Dir(filepath.Dir(tx.root)) != cwd {
+		t.Fatalf("fixture parent = %q, want %q", filepath.Dir(filepath.Dir(tx.root)), cwd)
+	}
+}
+
 func fixtureTransaction(t *testing.T) dataTransaction {
 	t.Helper()
-	root, err := os.MkdirTemp("/home/jesus/Work/amg-rfid-gateway-homebrew-deployment-hardening", "transaction-fixture-")
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.MkdirTemp(cwd, "transaction-fixture-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -658,7 +673,11 @@ func TestTransactionJournalOperationFailures(t *testing.T) {
 }
 
 func TestTransactionRoundTrip(t *testing.T) {
-	root, err := os.MkdirTemp("/home/jesus/Work/amg-rfid-gateway-homebrew-deployment-hardening", "transaction-fixture-")
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.MkdirTemp(cwd, "transaction-fixture-")
 	if err != nil {
 		t.Fatal(err)
 	}
