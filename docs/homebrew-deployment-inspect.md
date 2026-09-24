@@ -1,0 +1,7 @@
+# Local Homebrew metadata inspection
+
+`go run ./cmd/homebrew-deploy -package /absolute/package -config /absolute/config -package-device DEVICE -package-inode INODE` accepts explicit local paths and caller-supplied expected device/inode metadata. The caller's identity claim is **unauthenticated**: this tool does not discover or verify Homebrew package provenance. Avoid secret-bearing path names in arguments and shell history. It does not read config contents, execute brew, or write files.
+
+On Linux, inspection returns a metadata-only pathname snapshot. It rejects missing, symlinked, nonregular, wrong-owner, and group/world-writable files or ancestor directories, **including root-owned sticky directories such as `/tmp`**. Other platforms refuse as `unsupported_platform`. Fixed JSON result codes omit paths, raw errors, and file contents; `RuntimeConfig` and `SystemdTrust` are `NOT VERIFIED`. Exit 0 means `inspection_only`, exit 2 means refusal; neither is mutation eligibility. This command produces **no plan** and offers no apply, rollback, service control, or activation.
+
+Pathname observations are not concurrency-safe proofs: same-UID interference, mounts, executable provenance, runtime/config semantics, and service-manager trust remain unverified. Fixture tests model a private trusted ancestor solely in an injected metadata provider; production has no sticky-directory exception. No Raspberry safety, offline behavior, or deployment readiness follows from inspection.
