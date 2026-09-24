@@ -3,6 +3,7 @@
 package homebrew
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -10,6 +11,15 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestPlanRequiresBoundConfigEvidence(t *testing.T) {
+	obs := ContentObservation{Code: "content_equal"}
+	sealObservation(&obs)
+	p := PlanChange(obs, Selection{})
+	if p.Code != "untrusted_config_observation" {
+		t.Fatalf("unobserved config accepted: %+v", p)
+	}
+}
 
 func TestPlanRejectsForgedObservation(t *testing.T) {
 	got := PlanChange(ContentObservation{Code: "content_equal"}, Selection{})
@@ -67,7 +77,9 @@ func TestPlanRejectsSpecialDataMode(t *testing.T) {
 			}
 			before := ObjectState{id, owner, 0775}
 			s := Selection{Config: config, Data: data, Runtime: runtime, Unit: unit, ConfigBefore: state(config), DataBefore: before, RuntimeBefore: state(runtime), UnitBefore: state(unit), DataDesiredMode: 0700}
-			obs := ContentObservation{Code: "content_equal", Inventory: Inventory{Config: s.ConfigBefore}}
+			obs := ContentObservation{Code: "content_equal", Inventory: Inventory{Config: s.ConfigBefore}, configPath: config, configObserved: true}
+			bytes, _ := os.ReadFile(config)
+			obs.configDigest = sha256.Sum256(bytes)
 			sealObservation(&obs)
 			stat := func(path string) (os.FileInfo, error) {
 				if path == data {
@@ -84,7 +96,19 @@ func TestPlanRejectsSpecialDataMode(t *testing.T) {
 }
 
 func TestConditionalMetadataProposal(t *testing.T) {
-	root := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.MkdirTemp(cwd, "change-plan-fixture-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("remove fixture: %v", err)
+		}
+	})
 	makeFile := func(name string) string {
 		t.Helper()
 		p := filepath.Join(root, name)
@@ -93,9 +117,12 @@ func TestConditionalMetadataProposal(t *testing.T) {
 		}
 		return p
 	}
-	cfg := makeFile("config")
+	cfg := filepath.Join(root, "config")
 	unit := makeFile("unit")
 	data := filepath.Join(root, "data")
+	if err := os.WriteFile(cfg, []byte("data_path: "+data+"\nsocket_path: /run/amg-rfid-gateway/gateway.sock\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	runtime := filepath.Join(root, "runtime")
 	for _, p := range []string{data, runtime} {
 		if err := os.Mkdir(p, 0700); err != nil {
@@ -119,7 +146,12 @@ func TestConditionalMetadataProposal(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.DataBefore = state(data)
-	obs := ContentObservation{Code: "content_equal", Inventory: Inventory{Config: s.ConfigBefore}}
+	obs := ContentObservation{Code: "content_equal", Inventory: Inventory{Config: s.ConfigBefore}, configPath: cfg, configObserved: true}
+	bytes, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs.configDigest = sha256.Sum256(bytes)
 	sealObservation(&obs)
 	mutated := obs
 	mutated.Inventory.Config.Mode = 0777
@@ -150,6 +182,21 @@ func TestConditionalMetadataProposal(t *testing.T) {
 	b, _ := json.Marshal(second)
 	if string(a) != string(b) || first.ApplyEligible || first.Code != "conditional_proposal" || len(first.Transitions) != 1 || !first.Service.FilePreparationProposed || first.Service.UnitTransitionProposed || first.Service.StartProposed || first.Service.EnableProposed || first.Service.ActivationEligible {
 		t.Fatalf("bad proposal: %s", a)
+	}
+	for _, blocker := range []string{"service_state_unverified", "network_isolation_unverified", "homebrew_receipt_unverified", "inverse_execution_unproved"} {
+		found := false
+		for _, actual := range first.Blockers {
+			if actual == blocker {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("matching policy omitted blocker %s", blocker)
+		}
+	}
+	if first.ApplyEligible {
+		t.Fatal("matching policy authorized apply")
 	}
 	tr := first.Transitions[0]
 	if tr.Change != "restrict_mode_existing_directory" || tr.Precondition.Mode != 0775 || tr.Expected.Mode != 0700 || tr.InversePrecondition != tr.Expected || tr.InverseExpected != tr.Precondition || tr.Expected.Identity != s.DataBefore.Identity {

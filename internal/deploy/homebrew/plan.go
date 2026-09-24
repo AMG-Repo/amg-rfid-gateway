@@ -22,6 +22,9 @@ type Inventory struct {
 	Config  ObjectState
 }
 type ContentObservation struct {
+	configDigest       [32]byte
+	configObserved     bool
+	configPath         string
 	seal               *observationSeal
 	Inventory          Inventory
 	Blockers           []string
@@ -44,9 +47,20 @@ func (p ContentObservation) String() string {
 type observationSeal struct{ digest [32]byte }
 
 func observationDigest(o ContentObservation) [32]byte {
-	// JSON includes every exported observation field and excludes the private seal.
+	// Include private config evidence as well as all exported fields in the seal.
 	bytes, _ := json.Marshal(o)
-	return sha256.Sum256(bytes)
+	h := sha256.New()
+	_, _ = h.Write(bytes)
+	_, _ = h.Write(o.configDigest[:])
+	_, _ = h.Write([]byte(o.configPath))
+	if o.configObserved {
+		_, _ = h.Write([]byte{1})
+	} else {
+		_, _ = h.Write([]byte{0})
+	}
+	var digest [32]byte
+	copy(digest[:], h.Sum(nil))
+	return digest
 }
 
 func sealObservation(o *ContentObservation) {
@@ -123,6 +137,11 @@ func observeWithEvidence(p Profile, version, arch string, ev evidence, stat func
 		Inventory:     Inventory{Package: ObjectState{Identity: id, Owner: owner, Mode: uint32(f.Mode().Perm())}, Config: ObjectState{Identity: configID, Owner: configOwner, Mode: uint32(config.Mode().Perm())}},
 		Blockers:      []string{"homebrew_receipt_unverified", "config_semantics_unverified", "data_state_unverified", "service_state_unverified", "network_isolation_unverified", "future_path_identity_unproved"},
 		RuntimeConfig: "NOT VERIFIED", SystemdTrust: "NOT VERIFIED", IdentityContinuity: "NOT PROVED"}
+	if configBytes, readErr := readConfigBytes(p.Config, result.Inventory.Config); readErr == nil {
+		result.configDigest = sha256.Sum256(configBytes)
+		result.configObserved = true
+		result.configPath = p.Config
+	}
 	sealObservation(&result)
 	return result
 }
