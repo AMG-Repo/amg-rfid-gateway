@@ -48,6 +48,9 @@ func planChangeWith(observation ContentObservation, selected Selection, stat fun
 	if !validObservation(observation) || observation.Code != "content_equal" {
 		return refuse("untrusted_observation")
 	}
+	if !observation.configObserved || observation.configPath == "" {
+		return refuse("untrusted_config_observation")
+	}
 	surfaces := []struct {
 		path      string
 		before    ObjectState
@@ -95,13 +98,17 @@ func planChangeWith(observation ContentObservation, selected Selection, stat fun
 			path = filepath.Dir(path)
 		}
 	}
-	if selected.ConfigBefore != observation.Inventory.Config {
+	if selected.ConfigBefore != observation.Inventory.Config || selected.Config != observation.configPath {
 		return refuse("stale_config")
 	}
 	if selected.DataDesiredMode != 0700 || (selected.DataBefore.Mode != 0700 && selected.DataBefore.Mode != 0775) {
 		return refuse("unsafe_desired_mode")
 	}
-	p := ChangePlan{Code: "conditional_proposal", Blockers: []string{"secret_content_unverified", "crash_recovery_unproved", "service_state_unverified", "network_isolation_unverified", "future_path_identity_unproved", "inverse_execution_unproved", "homebrew_receipt_unverified"}}
+	policy := ObserveConfigPolicy(observation, selected)
+	if policy.Code != "config_policy_equal" {
+		return refuse(policy.Code)
+	}
+	p := ChangePlan{Code: "conditional_proposal", Blockers: []string{"config_runtime_safety_unverified", "crash_recovery_unproved", "service_state_unverified", "network_isolation_unverified", "future_path_identity_unproved", "inverse_execution_unproved", "homebrew_receipt_unverified"}}
 	if selected.DataBefore.Mode != selected.DataDesiredMode {
 		before := Condition{selected.DataBefore.Identity, selected.DataBefore.Owner, selected.DataBefore.Mode}
 		after := Condition{selected.DataBefore.Identity, selected.DataBefore.Owner, selected.DataDesiredMode}
