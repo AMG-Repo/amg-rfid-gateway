@@ -148,7 +148,7 @@ func TestConditionalMetadataProposal(t *testing.T) {
 	second := planChangeWith(obs, s, trustedFixtureStat)
 	a, _ := json.Marshal(first)
 	b, _ := json.Marshal(second)
-	if string(a) != string(b) || first.ApplyEligible || first.Code != "conditional_proposal" || len(first.Transitions) != 1 {
+	if string(a) != string(b) || first.ApplyEligible || first.Code != "conditional_proposal" || len(first.Transitions) != 1 || !first.Service.FilePreparationProposed || first.Service.UnitTransitionProposed || first.Service.StartProposed || first.Service.EnableProposed || first.Service.ActivationEligible {
 		t.Fatalf("bad proposal: %s", a)
 	}
 	tr := first.Transitions[0]

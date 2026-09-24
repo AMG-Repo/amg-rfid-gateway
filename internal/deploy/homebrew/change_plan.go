@@ -33,6 +33,7 @@ type ChangePlan struct {
 	Transitions   []Transition
 	Blockers      []string
 	ApplyEligible bool
+	Service       ServiceBoundary
 }
 
 // PlanChange is a pure non-authorizing metadata proposal. No service evidence is
@@ -106,6 +107,7 @@ func planChangeWith(observation ContentObservation, selected Selection, stat fun
 		after := Condition{selected.DataBefore.Identity, selected.DataBefore.Owner, selected.DataDesiredMode}
 		p.Transitions = []Transition{{Surface: "data", Change: "restrict_mode_existing_directory", Precondition: before, Expected: after, InversePrecondition: after, InverseExpected: before}}
 	}
+	p.Service = modelServiceBoundary(p)
 	return p
 }
 func validSelectedPath(path string) bool {
