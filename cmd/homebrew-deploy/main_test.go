@@ -8,6 +8,39 @@ import (
 	"testing"
 )
 
+func TestCLIContentCheckOutput(t *testing.T) {
+	args := []string{"-package", "/secret/package", "-config", "/secret/config", "-package-device", "2", "-package-inode", "3", "-version", "v0.6.5", "-arch", "linux-amd64"}
+	var out bytes.Buffer
+	success := func(p homebrew.Profile, version, arch string) homebrew.ContentObservation {
+		if p.PackageIdentity != (homebrew.Identity{Device: 2, Inode: 3}) || version != "v0.6.5" || arch != "linux-amd64" {
+			t.Fatal("unforwarded inputs")
+		}
+		return homebrew.ContentObservation{Code: "content_equal", Blockers: []string{"service_state_unverified"}, RuntimeConfig: "NOT VERIFIED", SystemdTrust: "NOT VERIFIED"}
+	}
+	if code := runContentCheckWith(args, &out, success); code != 0 {
+		t.Fatalf("observation exit %d", code)
+	}
+	if strings.Contains(out.String(), "/secret") || !strings.Contains(out.String(), "service_state_unverified") {
+		t.Fatalf("unsanitized output %s", out.String())
+	}
+	out.Reset()
+	if code := run([]string{"content-check", "-package", "/secret/package", "-version", "v0.6.4", "-arch", "linux-amd64"}, &out); code != 2 {
+		t.Fatalf("refusal exit %d", code)
+	}
+	if strings.Contains(out.String(), "/secret") || !strings.Contains(out.String(), "unsupported_evidence") {
+		t.Fatalf("refusal output %s", out.String())
+	}
+}
+
+func TestOldPlanCommandRejected(t *testing.T) {
+	var out bytes.Buffer
+	if code := run([]string{"plan", "-package", "/secret/path"}, &out); code != 2 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out.String(), "unsupported_action") || strings.Contains(out.String(), "/secret/path") {
+		t.Fatalf("output %s", out.String())
+	}
+}
 func TestCLIInspectionOutput(t *testing.T) {
 	var out bytes.Buffer
 	code := runWith([]string{"-package", "/fixture/package", "-config", "/fixture/config", "-package-device", "2", "-package-inode", "3"}, &out, func(p homebrew.Profile) homebrew.Result {
