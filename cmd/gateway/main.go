@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -331,6 +332,9 @@ func loadConfig(path string) (*config.GatewayConfig, error) {
 		}
 		if err := cfg.Validate(); err != nil {
 			return nil, fmt.Errorf("configuration validation failed: %w", err)
+		}
+		if unknown := cfg.UnknownRootKeys(); len(unknown) > 0 {
+			log.Printf("WARNING: config ignores unknown root keys: %s", strings.Join(unknown, ", "))
 		}
 		return cfg, nil
 	}

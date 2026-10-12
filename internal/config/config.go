@@ -7,7 +7,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -87,6 +89,29 @@ type GatewayConfig struct {
 
 	// Logging configuration
 	LogLevel string `yaml:"log_level"`
+
+	// unknownRootKeys lists root keys LoadFromYAML found but ignored.
+	// Unexported so it is never saved to YAML or sent as JSON.
+	unknownRootKeys []string
+}
+
+// UnknownRootKeys returns the sorted root keys of the loaded file that no field
+// reads. They are ignored, so a misspelled or unsupported section has no effect.
+func (c *GatewayConfig) UnknownRootKeys() []string {
+	return append([]string(nil), c.unknownRootKeys...)
+}
+
+// knownRootKeys returns the yaml names of every GatewayConfig field.
+func knownRootKeys() map[string]bool {
+	known := make(map[string]bool)
+	typ := reflect.TypeOf(GatewayConfig{})
+	for i := 0; i < typ.NumField(); i++ {
+		name := strings.Split(typ.Field(i).Tag.Get("yaml"), ",")[0]
+		if name != "" && name != "-" {
+			known[name] = true
+		}
+	}
+	return known
 }
 
 // AntennaConfig holds configuration for a single antenna.
@@ -258,6 +283,14 @@ func LoadFromYAML(path string) (*GatewayConfig, error) {
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("failed to parse config fields: %w", err)
 	}
+	known := knownRootKeys()
+	for key := range raw {
+		if !known[key] {
+			cfg.unknownRootKeys = append(cfg.unknownRootKeys, key)
+		}
+	}
+	sort.Strings(cfg.unknownRootKeys)
+
 	if _, explicitlySet := raw["health_listen_addr"]; explicitlySet {
 		if err := validateHealthListenAddr(cfg.HealthListenAddr); err != nil {
 			return nil, err
