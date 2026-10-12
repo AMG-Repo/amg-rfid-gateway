@@ -11,7 +11,6 @@ set -euo pipefail
 # Configuration
 INSTALL_DIR="/opt/amg-rfid-gateway"
 CONFIG_DIR="${INSTALL_DIR}"
-DATA_DIR="${INSTALL_DIR}/data"
 BACKUP_DIR="${INSTALL_DIR}/backup"
 BINARY_PATH="${INSTALL_DIR}/gateway"
 SERVICE_NAME="amg-rfid-gateway"
@@ -306,7 +305,8 @@ verify_checksum() {
 # Create backup
 create_backup() {
     local version="$1"
-    local backup_name="gateway-${version}-$(date +%Y%m%d-%H%M%S)"
+    local backup_name
+    backup_name="gateway-${version}-$(date +%Y%m%d-%H%M%S)"
     local backup_path="${BACKUP_DIR}/${backup_name}"
     
     log_info "Creating backup: $backup_name"
@@ -426,6 +426,8 @@ perform_update() {
     
     # Create temp directory
     mkdir -p "$temp_dir"
+    # temp_dir is local: expand it now, the EXIT trap runs after it is out of scope.
+    # shellcheck disable=SC2064
     trap "rm -rf '$temp_dir'" EXIT
     
     # Download new binary

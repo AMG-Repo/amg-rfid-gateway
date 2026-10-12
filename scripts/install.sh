@@ -155,7 +155,8 @@ download_binary() {
     
     # Determine architecture
     local arch_suffix
-    local arch=$(uname -m)
+    local arch
+    arch=$(uname -m)
     case "$arch" in
         aarch64|arm64)
             arch_suffix="arm64"
@@ -217,7 +218,8 @@ install_binary() {
     
     # Backup existing binary if present
     if [[ -f "$install_path" ]]; then
-        local backup_name="gateway-backup-$(date +%Y%m%d-%H%M%S)"
+        local backup_name
+        backup_name="gateway-backup-$(date +%Y%m%d-%H%M%S)"
         cp "$install_path" "${BACKUP_DIR}/${backup_name}"
         log_info "Existing binary backed up to ${BACKUP_DIR}/${backup_name}"
     fi
