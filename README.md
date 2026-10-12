@@ -14,7 +14,7 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 - **Multi-Antenna Support**: Connect multiple antennas simultaneously
 - **Per-Antenna Protocol Config**: Configure each antenna protocol independently (`generic` by default)
 - **Web UI**: Built-in web interface for manual tag confirmation
-- **OTA Updates**: Automatic over-the-air updates from GitHub releases
+- **Updates**: Manual upgrades via Homebrew or `scripts/update.sh` (no automatic updates)
 - **Health Monitoring**: Built-in health checks and Prometheus metrics
 
 ## Architecture
@@ -117,14 +117,12 @@ Interactive terminal interface using Bubbletea with splash screen and multiple s
 - `q` or `Ctrl+C` to quit
 - `Esc` to go back
 
-### OTA Updates
+### Updates
 
-Automatic updates from GitHub releases with Homebrew tap auto-update:
+The gateway does not update itself. `internal/updater` contains OTA code that
+is not wired into the gateway yet, so upgrades are manual:
 
 ```bash
-# Check for updates manually
-./gateway --check-update
-
 # Update via Homebrew
 brew upgrade amg-rfid-gateway
 
@@ -325,19 +323,12 @@ pending_warning_threshold: 1000        # Warning threshold (0 = never warn)
 
 # Logging
 log_level: "info"                      # debug, info, warn, error
-
-# Metrics configuration (optional)
-metrics:
-  enabled: true
-  port: 9091
-  path: "/metrics"
-
-# OTA Update settings (optional)
-updates:
-  check_interval: "24h"
-  auto_update: false
-  channel: "stable"  # stable, beta
 ```
+
+Prometheus metrics have no settings: they are always served at `/metrics` on the
+health listener (`health_listen_addr`:`health_port`). Root keys the gateway does
+not know (for example the old `metrics:` or `updates:` sections) are ignored and
+logged at startup as `WARNING: config ignores unknown root keys: ...`.
 
 ### Configuration Fields Reference
 
@@ -624,7 +615,7 @@ amg-rfid-gateway/
 │   ├── sync/                 # Cloud sync engine
 │   ├── tui/                  # TUI screens and app
 │   │   └── screens/          # Splash, Main, Antennas, Network, Status, Settings
-│   ├── updater/              # OTA update logic
+│   ├── updater/              # OTA update logic (not wired into the gateway)
 │   ├── verify/               # Tool verification logic
 │   ├── version/              # Version information
 │   ├── web/                  # Web UI server
@@ -670,7 +661,8 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - [x] Settings screen for TUI-based config editing
 - [x] Auto-detect configuration
 - [x] Web UI for local verification
-- [x] OTA updates with Homebrew support
+- [x] Manual updates with Homebrew support
+- [ ] Automatic OTA updates (`internal/updater` exists but is not wired in)
 - [x] Prometheus metrics
 - [x] Shared module (amg-rfid-shared-go)
 - [x] Permanent listening mode with adaptive delays

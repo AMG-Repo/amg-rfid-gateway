@@ -72,14 +72,7 @@ pending_warning_threshold: 1000     # Show warning when pending count exceeds th
 # Logging level: debug, info, warn, error
 log_level: "info"
 
-# Metrics configuration (optional)
-metrics:
-  enabled: true
-  port: 9091
-  path: "/metrics"
-
-# OTA Update settings (optional)
-updates:
-  check_interval: "24h"
-  auto_update: false
-  channel: "stable"  # stable, beta
+# Prometheus metrics are always served at /metrics on the health listener
+# (health_listen_addr:health_port); there are no metrics settings.
+# The gateway has no automatic updates; upgrade with Homebrew or scripts/update.sh.
+# Unknown root keys are ignored and logged as a WARNING at startup.

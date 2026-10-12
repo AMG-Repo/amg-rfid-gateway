@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -219,5 +221,42 @@ antennas: []
 		if !strings.Contains(errText, expected) {
 			t.Fatalf("expected error %q to contain %q", errText, expected)
 		}
+	}
+}
+
+func TestLoadConfigWarnsAboutUnknownRootKeys(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	content := `
+gateway_id: "gw-1"
+company_id: "company-1"
+cloud_url: "wss://example.com/ws"
+jwt_secret: "secret"
+antennas:
+  - id: "ant-1"
+    ip: "192.168.1.10"
+    port: 4001
+    enabled: true
+metrics:
+  enabled: true
+updates:
+  auto_update: true
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("unknown keys must not fail loading: %v", err)
+	}
+	if cfg.GatewayID != "gw-1" {
+		t.Fatalf("GatewayID = %q, want gw-1", cfg.GatewayID)
+	}
+	want := "WARNING: config ignores unknown root keys: metrics, updates"
+	if !strings.Contains(logs.String(), want) {
+		t.Fatalf("log = %q, want it to contain %q", logs.String(), want)
 	}
 }
