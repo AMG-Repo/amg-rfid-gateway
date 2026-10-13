@@ -376,11 +376,12 @@ func (s *LocalStore) UpsertUsers(users []User) error {
 	stmt, err := tx.Prepare(`
 		INSERT INTO users (id, company_id, name, role, department, rfid_tag, active, last_synced_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(rfid_tag) DO UPDATE SET
+		ON CONFLICT(id) DO UPDATE SET
 			company_id = excluded.company_id,
 			name = excluded.name,
 			role = excluded.role,
 			department = excluded.department,
+			rfid_tag = excluded.rfid_tag,
 			active = excluded.active,
 			last_synced_at = excluded.last_synced_at
 	`)
