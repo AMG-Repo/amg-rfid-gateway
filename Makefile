@@ -17,7 +17,9 @@ GOMOD=$(GOCMD) mod
 
 # Build flags
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
-LDFLAGS=-ldflags "-s -w -X github.com/amg-rfid/amg-rfid-gateway/internal/version.Version=$(VERSION)"
+# Binaries log "v<Version>", so a leading "v" from the tag is stripped (matches release.yml).
+APP_VERSION=$(patsubst v%,%,$(VERSION))
+LDFLAGS=-ldflags "-s -w -X github.com/amg-rfid/amg-rfid-gateway/internal/version.Version=$(APP_VERSION)"
 
 # Default target
 .DEFAULT_GOAL := help
