@@ -14,7 +14,7 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 - **Multi-Antenna Support**: Connect multiple antennas simultaneously
 - **Per-Antenna Protocol Config**: Configure each antenna protocol independently (`generic` by default)
 - **Web UI**: Built-in web interface for manual tag confirmation
-- **Updates**: Manual upgrades via Homebrew or `scripts/update.sh` (no automatic updates)
+- **Updates**: Manual upgrades via Homebrew (no automatic updates)
 - **Health Monitoring**: Built-in health checks and Prometheus metrics
 
 ## Architecture
@@ -120,22 +120,14 @@ Interactive terminal interface using Bubbletea with splash screen and multiple s
 ### Updates
 
 The gateway does not update itself. `internal/updater` contains OTA code that
-is not wired into the gateway yet, so upgrades are manual:
+is not wired into the gateway yet, so upgrades are manual through Homebrew:
 
 ```bash
-# Update via Homebrew
-brew upgrade amg-rfid-gateway
-
-# Update via script
-sudo ./scripts/update.sh
+brew update && brew upgrade amg-rfid-gateway
 ```
 
-**Safety Features:**
-- SHA256 checksum verification
-- Automatic backup before update
-- Health check after update
-- Automatic rollback on failure
-- Preserves config.yaml and data/
+Each release updates the tap formula automatically. Homebrew verifies the
+release tarball SHA256 and keeps `config.yaml` and data outside the keg.
 
 ## Installation
 
@@ -569,11 +561,11 @@ curl http://localhost:8080/health
 # Manual update via Homebrew
 brew update && brew upgrade amg-rfid-gateway
 
-# Manual update via script
-sudo ./scripts/update.sh --force
+# Reinstall the current version
+brew reinstall amg-rfid-gateway
 
 # Check GitHub releases
-curl -s https://api.github.com/repos/amg-rfid/amg-rfid-gateway/releases/latest
+curl -s https://api.github.com/repos/AMG-Repo/amg-rfid-gateway/releases/latest
 ```
 
 ## Development
@@ -627,7 +619,6 @@ amg-rfid-gateway/
 │   └── config.example.yaml   # Example configuration
 ├── scripts/
 │   ├── install.sh            # Installation script
-│   ├── update.sh             # Update script
 │   └── systemd/              # SystemD service files
 ├── test/
 │   └── e2e/                  # Integration tests
