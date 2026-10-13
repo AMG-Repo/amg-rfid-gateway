@@ -38,13 +38,19 @@ jobs:
         with:
           go-version: '1.25'
 
+      # Binaries log "v<Version>", so the tag's leading "v" is stripped.
+      - name: Resolve version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "APP_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
       - name: Build gateway
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          go build -ldflags "-s -w" -o gateway ./cmd/gateway
+          go build -ldflags "-s -w -X github.com/amg-rfid/amg-rfid-gateway/internal/version.Version=${APP_VERSION}" -o gateway ./cmd/gateway
 
       - name: Build TUI
         env:
@@ -52,7 +58,18 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          go build -ldflags "-s -w" -o gateway-tui ./cmd/tui
+          go build -ldflags "-s -w -X github.com/amg-rfid/amg-rfid-gateway/internal/version.Version=${APP_VERSION}" -o gateway-tui ./cmd/tui
+
+      # Only the amd64 artifact runs on the runner; both builds share the same flags.
+      - name: Verify embedded version
+        if: matrix.goarch == 'amd64'
+        run: |
+          OUT=$(timeout 10 ./gateway -config /nonexistent/config.yaml 2>&1 || true)
+          echo "${OUT}" | head -1
+          if ! echo "${OUT}" | grep -qF "v${APP_VERSION} starting..."; then
+            echo "::error::gateway binary does not report version ${APP_VERSION}"
+            exit 1
+          fi
 
       - name: Package
         run: |
