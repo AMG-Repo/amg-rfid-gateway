@@ -96,9 +96,10 @@ func (c *VPSClient) FetchTools(companyID string) ([]localstore.Tool, error) {
 }
 
 // FetchUsers retrieves all users for a company from the VPS.
-// Calls GET /api/v1/users?company_id={company_id}
+// Calls GET /api/v1/gateway/users?company_id={company_id}
+// This endpoint requires GatewayAuth (JWT token).
 func (c *VPSClient) FetchUsers(companyID string) ([]localstore.User, error) {
-	url := fmt.Sprintf("%s/api/v1/users?company_id=%s", c.baseURL, companyID)
+	url := fmt.Sprintf("%s/api/v1/gateway/users?company_id=%s", c.baseURL, companyID)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -106,6 +107,10 @@ func (c *VPSClient) FetchUsers(companyID string) ([]localstore.User, error) {
 	}
 
 	req.Header.Set("Accept", "application/json")
+	// Add Authorization header for protected gateway endpoint
+	if c.jwtToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
