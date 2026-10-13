@@ -150,15 +150,31 @@ gateway-tui
 brew services start amg-rfid-gateway
 ```
 
-### Quick Install (Alternative)
+### Release Tarball (Alternative, systemd under /opt)
+
+Releases publish `amg-rfid-gateway-vX.Y.Z-linux-{arm64,amd64}.tar.gz` (with
+`gateway`, `gateway-tui` and `config.example.yaml`) plus `checksums.txt`.
 
 ```bash
-# Download and run install script
-curl -sSL https://raw.githubusercontent.com/amg-rfid/amg-rfid-gateway/main/scripts/install.sh | sudo bash
+VERSION=v0.7.2   # see https://github.com/AMG-Repo/amg-rfid-gateway/releases
+ARCH=arm64       # or amd64
+BASE=https://github.com/AMG-Repo/amg-rfid-gateway/releases/download/$VERSION
+PKG=amg-rfid-gateway-$VERSION-linux-$ARCH
 
-# Or with wget
-wget -qO- https://raw.githubusercontent.com/amg-rfid/amg-rfid-gateway/main/scripts/install.sh | sudo bash
+# 1. Download and verify
+curl -fsSLO "$BASE/$PKG.tar.gz"
+curl -fsSLO "$BASE/checksums.txt"
+sha256sum -c --ignore-missing checksums.txt
+tar -xzf "$PKG.tar.gz"
+
+# 2. Install with the script, using the verified local binary
+curl -fsSLO https://raw.githubusercontent.com/AMG-Repo/amg-rfid-gateway/main/scripts/install.sh
+sudo bash install.sh --binary "$PKG/gateway"
+sudo install -m 0755 "$PKG/gateway-tui" /opt/amg-rfid-gateway/gateway-tui
 ```
+
+Always pass `--binary`: the script's own download step still uses legacy
+asset names.
 
 ### Manual Installation
 
@@ -168,18 +184,15 @@ sudo useradd -r -s /bin/false gateway
 sudo mkdir -p /opt/amg-rfid-gateway/data
 sudo chown -R gateway:gateway /opt/amg-rfid-gateway
 
-# 2. Download binary
-wget https://github.com/amg-rfid/amg-rfid-gateway/releases/latest/download/gateway-linux-arm64
-sudo mv gateway-linux-arm64 /opt/amg-rfid-gateway/gateway
-sudo chmod +x /opt/amg-rfid-gateway/gateway
-
-# Also download TUI binary
-wget https://github.com/amg-rfid/amg-rfid-gateway/releases/latest/download/gateway-tui-linux-arm64
-sudo mv gateway-tui-linux-arm64 /opt/amg-rfid-gateway/gateway-tui
-sudo chmod +x /opt/amg-rfid-gateway/gateway-tui
+# 2. Download, verify and extract the release (variables as above)
+curl -fsSLO "$BASE/$PKG.tar.gz"
+curl -fsSLO "$BASE/checksums.txt"
+sha256sum -c --ignore-missing checksums.txt
+tar -xzf "$PKG.tar.gz"
+sudo install -m 0755 "$PKG/gateway" "$PKG/gateway-tui" /opt/amg-rfid-gateway/
 
 # 3. Create config
-cp configs/config.example.yaml /opt/amg-rfid-gateway/config.yaml
+sudo cp "$PKG/config.example.yaml" /opt/amg-rfid-gateway/config.yaml
 # Edit config.yaml with your settings
 
 # 4. Install systemd service
@@ -195,7 +208,7 @@ sudo systemctl start gateway
 # Requirements: Go 1.25+
 
 # Clone repository
-git clone https://github.com/amg-rfid/amg-rfid-gateway.git
+git clone https://github.com/AMG-Repo/amg-rfid-gateway.git
 cd amg-rfid-gateway
 
 # Build for Raspberry Pi (ARM64)
@@ -643,7 +656,7 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 - Email: support@amg-rfid.com
 - Discord: [AMG-RFID Community](https://discord.gg/amg-rfid)
-- Issues: [GitHub Issues](https://github.com/amg-rfid/amg-rfid-gateway/issues)
+- Issues: [GitHub Issues](https://github.com/AMG-Repo/amg-rfid-gateway/issues)
 
 ## Roadmap
 
