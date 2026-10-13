@@ -1,4 +1,4 @@
-.PHONY: build build-arm64 build-tui test test-verbose clean install deploy lint shellcheck help
+.PHONY: build build-arm64 build-tui test test-verbose test-raspberry-ssh-access clean install deploy lint shellcheck help validate-scripts
 
 # Variables
 BINARY_NAME=gateway
@@ -67,6 +67,9 @@ test-coverage: ## Run tests with coverage report
 	$(GOTEST) -v -coverprofile=coverage.out ./...
 	$(GOCMD) tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
+
+test-raspberry-ssh-access: ## Run hermetic Raspberry Pi SSH helper tests
+	bash scripts/tests/setup-raspberry-pi-ssh-access-test.sh
 
 lint: ## Run Go linter (requires golangci-lint)
 	@echo "Running linter..."
