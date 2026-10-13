@@ -113,9 +113,10 @@ validate_port() {
 
 expand_key_path() {
   local path="$1"
+  # shellcheck disable=SC2088 # literal tilde is matched on purpose, then expanded
   if [[ "$path" == "~" ]]; then
     path="${HOME}"
-  elif [[ "$path" == "~/"* ]]; then
+  elif [[ "${path:0:2}" == '~/' ]]; then
     path="${HOME}/${path#~/}"
   elif [[ "$path" != /* ]]; then
     path="${PWD}/${path}"
@@ -258,7 +259,9 @@ DEFAULT_KEY="${SSH_DIR}/amg-rfid-raspberry-${SSH_ALIAS}_ed25519"
 read -r -p "Dedicated Ed25519 private key path [${DEFAULT_KEY}]: " SSH_KEY
 SSH_KEY="${SSH_KEY:-${DEFAULT_KEY}}"
 SSH_KEY="$(expand_key_path "$SSH_KEY")"
-[[ -n "$SSH_KEY" ]] && ! contains_control_chars "$SSH_KEY" || fail "Private key path must not contain control characters."
+if [[ -z "$SSH_KEY" ]] || contains_control_chars "$SSH_KEY"; then
+  fail "Private key path must not contain control characters."
+fi
 [[ "$SSH_KEY" != *'%'* && "$SSH_KEY" != *'$'* ]] || fail "Private key path must not contain SSH percent tokens or environment-expansion syntax."
 
 read -r -p "Independently verified SHA256 host-key fingerprint: " EXPECTED_FINGERPRINT
