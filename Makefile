@@ -132,14 +132,6 @@ uninstall: ## Uninstall from system (requires sudo)
 	rm -rf $(INSTALL_DIR)
 	@echo "Uninstalled"
 
-update: ## Update to latest version (requires sudo)
-	@echo "Updating gateway..."
-	@if [ "$$(id -u)" != "0" ]; then \
-		echo "Error: update target requires sudo"; \
-		exit 1; \
-	fi
-	./scripts/update.sh
-
 # Service management (requires sudo)
 start: ## Start the gateway service
 	@sudo systemctl start $(SERVICE_NAME)
@@ -168,7 +160,6 @@ shellcheck: ## Run shellcheck on shell scripts (if installed)
 validate-scripts: ## Validate shell script syntax
 	@echo "Validating shell scripts..."
 	@bash -n scripts/install.sh && echo "  install.sh: OK"
-	@bash -n scripts/update.sh && echo "  update.sh: OK"
 	@echo "All scripts valid"
 
 # CI/CD targets

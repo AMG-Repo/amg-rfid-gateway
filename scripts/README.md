@@ -59,47 +59,6 @@ sudo ./install.sh --binary ./gateway-arm64
 5. Installs systemd service
 6. Enables auto-start on boot
 
-### update.sh
-
-Safely updates the gateway to a new version with automatic backup and rollback.
-
-**Usage:**
-
-```bash
-sudo ./update.sh [OPTIONS]
-```
-
-**Options:**
-
-- `-v, --version VERSION` - Update to specific version (default: latest)
-- `-f, --force` - Force update even if versions match
-- `-c, --check-only` - Only check for updates, don't install
-- `-h, --help` - Show help message
-
-**Examples:**
-
-```bash
-# Check and install latest version
-sudo ./update.sh
-
-# Install specific version
-sudo ./update.sh --version v1.2.0
-
-# Only check for updates
-sudo ./update.sh --check-only
-
-# Force reinstall current version
-sudo ./update.sh --force
-```
-
-**Safety Features:**
-
-- Creates timestamped backup before update
-- Verifies binary checksum (SHA256)
-- Health check after update
-- Automatic rollback on failure
-- Keeps last 5 backups
-
 ### systemd/gateway.service
 
 Systemd service unit file for running the gateway as a system service.
@@ -153,7 +112,6 @@ After installation, the following structure is created:
 │   └── gateway-v1.1.0-...    # Previous versions
 └── scripts/
     ├── install.sh            # Installation script
-    ├── update.sh             # Update script
     └── systemd/
         └── gateway.service   # Systemd unit file
 ```
@@ -189,15 +147,16 @@ sudo journalctl -u amg-rfid-gateway -n 50
 sudo /opt/amg-rfid-gateway/gateway --config /opt/amg-rfid-gateway/config.yaml --validate
 ```
 
-### Update failed
+### Updating
+
+Updates go through Homebrew (`brew update && brew upgrade amg-rfid-gateway`).
+For `/opt` installs, re-run `install.sh` with the new binary; it backs up the
+previous binary to `/opt/amg-rfid-gateway/backup/`.
 
 ```bash
-# Check available backups
-ls -la /opt/amg-rfid-gateway/backup/
-
-# Manual rollback
+# Manual rollback of an /opt install
 sudo systemctl stop amg-rfid-gateway
-sudo cp /opt/amg-rfid-gateway/backup/gateway-vX.Y.Z-TIMESTAMP /opt/amg-rfid-gateway/gateway
+sudo cp /opt/amg-rfid-gateway/backup/gateway-backup-TIMESTAMP /opt/amg-rfid-gateway/gateway
 sudo systemctl start amg-rfid-gateway
 ```
 

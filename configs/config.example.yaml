@@ -74,5 +74,5 @@ log_level: "info"
 
 # Prometheus metrics are always served at /metrics on the health listener
 # (health_listen_addr:health_port); there are no metrics settings.
-# The gateway has no automatic updates; upgrade with Homebrew or scripts/update.sh.
+# The gateway has no automatic updates; upgrade with Homebrew (brew upgrade amg-rfid-gateway).
 # Unknown root keys are ignored and logged as a WARNING at startup.
