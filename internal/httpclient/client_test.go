@@ -113,8 +113,11 @@ func TestFetchUsers_Success(t *testing.T) {
 		if r.Method != "GET" {
 			t.Errorf("expected GET method, got %s", r.Method)
 		}
-		if r.URL.Path != "/api/v1/users" {
-			t.Errorf("expected path /api/v1/users, got %s", r.URL.Path)
+		if r.URL.Path != "/api/v1/gateway/users" {
+			t.Errorf("expected path /api/v1/gateway/users, got %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Errorf("expected Authorization 'Bearer test-token', got %q", got)
 		}
 
 		companyID := r.URL.Query().Get("company_id")
