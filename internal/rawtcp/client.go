@@ -26,6 +26,8 @@ type AntennaConfig struct {
 	ID       string
 	Enabled  bool
 	Protocol config.AntennaProtocol
+	// PortLocations maps reader port numbers to location IDs (multi-port readers).
+	PortLocations map[int]string
 }
 
 // Validate checks the antenna configuration
@@ -220,13 +222,13 @@ func RunAntenna(ctx context.Context, client *Client, cache Cache, antenna Antenn
 		selectedProtocol = config.ProtocolGeneric
 	}
 	handler := antennapkg.ProtocolHandlerFor(selectedProtocol)
-	if handler.Protocol() != config.ProtocolGeneric {
+	if _, unsupported := handler.(antennapkg.UnsupportedProtocolHandler); unsupported {
 		return fmt.Errorf("antenna %s cannot run configured protocol: %w: %s", antenna.ID, antennapkg.ErrUnsupportedProtocol, selectedProtocol)
 	}
 
 	// Read loop
 	buf := make([]byte, 4096)
-	extractor := protocol.NewStreamExtractor()
+	extractor := antennapkg.NewFrameExtractor(selectedProtocol)
 	for {
 		select {
 		case <-ctx.Done():
@@ -248,8 +250,9 @@ func RunAntenna(ctx context.Context, client *Client, cache Cache, antenna Antenn
 
 		for _, frame := range extractor.Append(buf[:n]) {
 			if err := handler.HandleFrame(antennapkg.PacketContext{
-				AntennaID: antenna.ID,
-				Cache:     cache,
+				AntennaID:     antenna.ID,
+				Cache:         cache,
+				PortLocations: antenna.PortLocations,
 			}, frame); err != nil {
 				continue
 			}
