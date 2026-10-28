@@ -136,3 +136,22 @@ func closeTo(a, b float64) bool {
 	d := a - b
 	return d < 1e-6 && d > -1e-6
 }
+
+// TestRealUR4StopResponse pins the response captured from a physical UR4
+// (192.168.99.202:8888, 2026-10-28) to the stop-inventory frame.
+func TestRealUR4StopResponse(t *testing.T) {
+	captured := []byte{0xA5, 0x5A, 0x00, 0x09, 0x8D, 0x01, 0x85, 0x0D, 0x0A}
+
+	frames := NewStreamExtractor().Append(captured)
+	if len(frames) != 1 {
+		t.Fatalf("got %d frames, want 1", len(frames))
+	}
+	f, err := Decode(frames[0])
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	ok, err := ParseStopResponse(f)
+	if err != nil || !ok {
+		t.Fatalf("ParseStopResponse = (%v, %v), want (true, nil)", ok, err)
+	}
+}
