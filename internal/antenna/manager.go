@@ -14,7 +14,6 @@ import (
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
-	"github.com/amg-rfid/amg-rfid-shared-go/protocol"
 )
 
 // CommandSender defines the interface for sending commands to the antenna.
@@ -403,6 +402,8 @@ func (m *AntennaManager) HandlePacket(data []byte) error {
 		Cache:     m.cache,
 		EventBus:  m.eventBus,
 		Stats:     m,
+
+		PortLocations: m.config.PortLocations,
 	}
 
 	// Unsupported/non-generic protocols must not be rejected by Generic RFID
@@ -453,7 +454,7 @@ func (m *AntennaManager) dataReader(ctx context.Context, conn net.Conn) {
 	// NOTE: Do NOT close conn here — connection lifecycle is managed by rawtcp.Client
 
 	buf := make([]byte, 4096)
-	extractor := protocol.NewStreamExtractor()
+	extractor := NewFrameExtractor(m.config.Protocol)
 
 	for {
 		select {

@@ -32,11 +32,14 @@ const (
 	ProtocolGeneric AntennaProtocol = "generic"
 	// ProtocolZebra is a known protocol value reserved for Zebra-specific handling.
 	ProtocolZebra AntennaProtocol = "zebra"
+	// ProtocolChainway is the Chainway UR4 fixed reader TCP protocol (command mode).
+	ProtocolChainway AntennaProtocol = "chainway"
 )
 
 var supportedAntennaProtocols = map[AntennaProtocol]struct{}{
-	ProtocolGeneric: {},
-	ProtocolZebra:   {},
+	ProtocolGeneric:  {},
+	ProtocolZebra:    {},
+	ProtocolChainway: {},
 }
 
 // IsSupportedAntennaProtocol reports whether protocol is accepted by config validation.
@@ -122,6 +125,9 @@ type AntennaConfig struct {
 	Enabled  bool            `yaml:"enabled"`
 	Zone     string          `yaml:"zone"` // "entrada", "salida", or "" (empty for auto)
 	Protocol AntennaProtocol `yaml:"protocol,omitempty"`
+	// PortLocations maps a multi-port reader's port number (Chainway ANT 1..4)
+	// to the location ID recorded as the reading's antenna ID.
+	PortLocations map[int]string `yaml:"port_locations,omitempty"`
 }
 
 // Validate checks the gateway configuration.

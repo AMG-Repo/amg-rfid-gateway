@@ -4,9 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
+	"time"
 
+	"github.com/amg-rfid/amg-rfid-gateway/internal/chainway"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
+	"github.com/amg-rfid/amg-rfid-shared-go/models"
 	"github.com/amg-rfid/amg-rfid-shared-go/protocol"
 )
 
@@ -32,12 +36,31 @@ type PacketContext struct {
 	Cache     Cache
 	EventBus  *events.EventBus
 	Stats     ReadingStatsUpdater
+	// PortLocations maps reader port numbers to location IDs (multi-port readers).
+	PortLocations map[int]string
+}
+
+// FrameExtractor reassembles complete protocol frames from TCP chunks.
+type FrameExtractor interface {
+	Append(chunk []byte) [][]byte
+}
+
+// NewFrameExtractor returns the stream extractor for protocol. Generic framing
+// is used for generic and for protocols without their own framing.
+func NewFrameExtractor(p config.AntennaProtocol) FrameExtractor {
+	if p == config.ProtocolChainway {
+		return chainway.NewStreamExtractor()
+	}
+	return protocol.NewStreamExtractor()
 }
 
 // ProtocolHandlerFor returns the handler selected for protocol.
 func ProtocolHandlerFor(protocol config.AntennaProtocol) ProtocolHandler {
 	if protocol == "" || protocol == config.ProtocolGeneric {
 		return GenericProtocolHandler{}
+	}
+	if protocol == config.ProtocolChainway {
+		return ChainwayProtocolHandler{}
 	}
 
 	return UnsupportedProtocolHandler{protocol: protocol}
@@ -112,6 +135,66 @@ func (h UnsupportedProtocolHandler) Protocol() config.AntennaProtocol {
 // HandleFrame returns an explicit unsupported-protocol error and does not parse/store frame data.
 func (h UnsupportedProtocolHandler) HandleFrame(ctx PacketContext, frame []byte) error {
 	return fmt.Errorf("%w: %s", ErrUnsupportedProtocol, h.protocol)
+}
+
+// ChainwayProtocolHandler handles Chainway UR4 frames.
+type ChainwayProtocolHandler struct{}
+
+// Protocol identifies this handler.
+func (ChainwayProtocolHandler) Protocol() config.AntennaProtocol {
+	return config.ProtocolChainway
+}
+
+// HandleFrame stores 0x83 tag notifications and ignores other valid frames.
+func (ChainwayProtocolHandler) HandleFrame(ctx PacketContext, frame []byte) error {
+	f, err := chainway.Decode(frame)
+	if err != nil {
+		return err
+	}
+	if f.Cmd != chainway.CmdTagNotification {
+		log.Printf("[DEBUG] Chainway frame 0x%02X from antenna %s ignored", f.Cmd, ctx.AntennaID)
+		return nil
+	}
+	tag, err := chainway.ParseTag(f.Data)
+	if err != nil {
+		return err
+	}
+	if ctx.Cache == nil {
+		return errors.New("cache is required for chainway tag data")
+	}
+
+	antennaID := ctx.AntennaID
+	if loc, ok := ctx.PortLocations[tag.Antenna]; ok && loc != "" {
+		antennaID = loc
+	}
+	rssi := 0
+	if tag.RSSIValid {
+		rssi = int(math.Round(tag.RSSI))
+	}
+	reading := models.Reading{
+		AntennaID: antennaID,
+		GatewayID: ctx.GatewayID,
+		EPC:       tag.EPC,
+		RSSI:      rssi,
+		Timestamp: time.Now(),
+	}
+	if err := ctx.Cache.Store(reading); err != nil {
+		return fmt.Errorf("failed to store reading: %w", err)
+	}
+	if ctx.EventBus != nil {
+		ctx.EventBus.Publish(events.TagDetected{
+			EPC:       reading.EPC,
+			RSSI:      reading.RSSI,
+			AntennaID: reading.AntennaID,
+			Timestamp: reading.Timestamp,
+		})
+	}
+	if ctx.Stats != nil {
+		ctx.Stats.RecordReading(reading.EPC, reading.RSSI)
+	}
+	log.Printf("[INFO] Chainway tag from antenna %s port %d (%s): EPC=%s RSSI=%d",
+		ctx.AntennaID, tag.Antenna, reading.AntennaID, reading.EPC, reading.RSSI)
+	return nil
 }
 
 func handleGenericUIIData(ctx PacketContext, frame []byte) error {
