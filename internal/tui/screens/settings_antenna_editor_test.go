@@ -388,3 +388,181 @@ func antennaIDs(antennas []config.AntennaConfig) []string {
 	}
 	return ids
 }
+
+func TestAntennaEditorModel_FormProtocolSelectorOffersChainway(t *testing.T) {
+	editor := newAntennaEditorModel(testEditorAntennas())
+	editor.startAdd()
+	editor.formCursor = antennaFormFieldProtocol
+
+	editor = editor.Update(tea.KeyMsg{Type: tea.KeyRight})
+	editor = editor.Update(tea.KeyMsg{Type: tea.KeyRight})
+	require.Equal(t, config.ProtocolChainway, editor.form.protocol)
+
+	editor = editor.Update(tea.KeyMsg{Type: tea.KeyRight})
+	assert.Equal(t, config.ProtocolGeneric, editor.form.protocol, "chainway wraps forward to generic")
+
+	editor = editor.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	assert.Equal(t, config.ProtocolChainway, editor.form.protocol, "generic wraps backward to chainway")
+}
+
+func TestAntennaEditorModel_PortLocationFieldsOnlyReachableForChainway(t *testing.T) {
+	editor := newAntennaEditorModel(testEditorAntennas())
+	editor.startAdd()
+	editor.formCursor = antennaFormFieldProtocol
+
+	editor = editor.Update(tea.KeyMsg{Type: tea.KeyDown})
+	assert.Equal(t, antennaFormFieldID, editor.formCursor, "generic form wraps from protocol to id")
+
+	editor.formCursor = antennaFormFieldProtocol
+	editor.form.protocol = config.ProtocolChainway
+	editor = editor.Update(tea.KeyMsg{Type: tea.KeyDown})
+	assert.Equal(t, antennaFormFieldPort1Location, editor.formCursor)
+
+	editor.formCursor = antennaFormFieldPort4Location
+	editor = editor.Update(tea.KeyMsg{Type: tea.KeyDown})
+	assert.Equal(t, antennaFormFieldID, editor.formCursor, "chainway form wraps from port 4 location to id")
+
+	editor = editor.Update(tea.KeyMsg{Type: tea.KeyUp})
+	assert.Equal(t, antennaFormFieldPort4Location, editor.formCursor)
+}
+
+func TestAntennaEditorModel_ChainwayPortLocationsSaveToDraft(t *testing.T) {
+	editor := newAntennaEditorModel(testEditorAntennas())
+	editor.startAdd()
+	editor.form = antennaForm{id: "ur4", ip: "192.168.99.202", port: "8888", enabled: true, protocol: config.ProtocolChainway}
+
+	editor.formCursor = antennaFormFieldPort1Location
+	editor = typeEditorText(editor, "entrada-x")
+	editor.formCursor = antennaFormFieldPort2Location
+	editor = typeEditorText(editor, "salida-x")
+	editor.formCursor = antennaFormFieldPort3Location
+	editor = typeEditorText(editor, "tmp")
+	editor = editor.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	editor = editor.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	editor = editor.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	editor.formCursor = antennaFormFieldPort4Location
+	editor = typeEditorText(editor, "   ")
+
+	editor = editor.Update(tea.KeyMsg{Type: tea.KeyEnter})
+
+	require.Empty(t, editor.err)
+	require.Equal(t, antennaEditorModeList, editor.mode)
+	saved := editor.draft[len(editor.draft)-1]
+	assert.Equal(t, map[int]string{1: "entrada-x", 2: "salida-x"}, saved.PortLocations, "empty or blank ports stay unmapped")
+}
+
+func TestAntennaEditorModel_EditLoadsExistingPortLocations(t *testing.T) {
+	antennas := append(testEditorAntennas(), config.AntennaConfig{
+		ID: "ur4", IP: "192.168.99.202", Port: 8888, Enabled: true, Protocol: config.ProtocolChainway,
+		PortLocations: map[int]string{1: "entrada-x", 4: "salida-x"},
+	})
+	editor := newAntennaEditorModel(antennas)
+	editor.cursor = 2
+	editor.startEdit()
+
+	assert.Equal(t, "entrada-x", editor.form.locations[0])
+	assert.Equal(t, "", editor.form.locations[1])
+	assert.Equal(t, "salida-x", editor.form.locations[3])
+
+	editor = editor.commitForm()
+	require.Empty(t, editor.err)
+	assert.Equal(t, map[int]string{1: "entrada-x", 4: "salida-x"}, editor.draft[2].PortLocations)
+}
+
+func TestAntennaEditorModel_SwitchingAwayFromChainwayClearsPortLocations(t *testing.T) {
+	antennas := append(testEditorAntennas(), config.AntennaConfig{
+		ID: "ur4", IP: "192.168.99.202", Port: 8888, Enabled: true, Protocol: config.ProtocolChainway,
+		PortLocations: map[int]string{1: "entrada-x"},
+	})
+	editor := newAntennaEditorModel(antennas)
+	editor.cursor = 2
+	editor.startEdit()
+	editor.formCursor = antennaFormFieldProtocol
+
+	editor = editor.Update(tea.KeyMsg{Type: tea.KeyRight}) // chainway -> generic
+	require.Equal(t, config.ProtocolGeneric, editor.form.protocol)
+	assert.Equal(t, [config.MaxPortLocation]string{}, editor.form.locations)
+
+	editor = editor.commitForm()
+
+	require.Empty(t, editor.err)
+	assert.Nil(t, editor.draft[2].PortLocations)
+}
+
+func TestAntennaEditorModel_PortLocationsIgnoredWhenCommittingNonChainway(t *testing.T) {
+	editor := newAntennaEditorModel(testEditorAntennas())
+	editor.startAdd()
+	editor.form = antennaForm{id: "dock2", ip: "192.168.1.30", port: "9090", enabled: true, protocol: config.ProtocolZebra}
+	editor.form.locations[0] = "stale"
+
+	editor = editor.commitForm()
+
+	require.Empty(t, editor.err)
+	assert.Nil(t, editor.draft[len(editor.draft)-1].PortLocations)
+}
+
+func TestSettingsScreen_AntennaEditorViewShowsPortLocationsOnlyForChainway(t *testing.T) {
+	m := NewSettingsScreen(&config.GatewayConfig{GatewayID: "gateway", Antennas: testEditorAntennas()})
+	m.antennaEditor.startAdd()
+	m.antennaEditor.form.protocol = config.ProtocolChainway
+	m.antennaEditor.form.locations[0] = "entrada-x"
+
+	view := m.View()
+	assert.Contains(t, view, "Port 1 location: entrada-x")
+	assert.Contains(t, view, "Port 2 location:")
+	assert.Contains(t, view, "Port 4 location:")
+	assert.Contains(t, view, "chainway")
+
+	m.antennaEditor.form.protocol = config.ProtocolGeneric
+	assert.NotContains(t, m.View(), "location:")
+}
+
+func TestSettingsScreen_AntennaEditorEditedChainwayAntennaReachesGetConfig(t *testing.T) {
+	m := NewSettingsScreen(&config.GatewayConfig{GatewayID: "gateway", Antennas: testEditorAntennas()})
+	m.cursor = requireFieldIndex(t, m, "antenna_protocol:dock")
+
+	m = updateSettingsModel(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // open edit form for dock
+	require.Equal(t, antennaEditorModeForm, m.antennaEditor.mode)
+	m.antennaEditor.formCursor = antennaFormFieldProtocol
+	m = updateSettingsModel(t, m, tea.KeyMsg{Type: tea.KeyRight}) // generic -> zebra
+	m = updateSettingsModel(t, m, tea.KeyMsg{Type: tea.KeyRight}) // zebra -> chainway
+	m.antennaEditor.formCursor = antennaFormFieldPort1Location
+	for _, r := range "entrada-x" {
+		m = updateSettingsModel(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m = updateSettingsModel(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // commit
+
+	require.Empty(t, m.antennaEditor.err)
+	require.True(t, m.HasChanges())
+	got := m.GetConfig().Antennas[0]
+	assert.Equal(t, config.ProtocolChainway, got.Protocol)
+	assert.Equal(t, map[int]string{1: "entrada-x"}, got.PortLocations)
+	assert.NoError(t, got.Validate())
+}
+
+func TestSettingsScreen_ProtocolFieldSwitchingAwayFromChainwayClearsPortLocations(t *testing.T) {
+	cfg := &config.GatewayConfig{GatewayID: "gateway", Antennas: []config.AntennaConfig{
+		{ID: "ur4", IP: "192.168.99.202", Port: 8888, Enabled: true, Protocol: config.ProtocolChainway, PortLocations: map[int]string{1: "entrada-x"}},
+	}}
+	m := NewSettingsScreen(cfg)
+	protocolField := requireFieldIndex(t, m, "antenna_protocol:ur4")
+	m.cursor = protocolField
+
+	assert.Equal(t, map[int]string{1: "entrada-x"}, m.GetConfig().Antennas[0].PortLocations, "chainway keeps its locations")
+
+	m = updateSettingsModel(t, m, tea.KeyMsg{Type: tea.KeyRight}) // chainway -> generic
+
+	require.Equal(t, "generic", m.values[protocolField])
+	got := m.GetConfig().Antennas[0]
+	assert.Equal(t, config.ProtocolGeneric, got.Protocol)
+	assert.Nil(t, got.PortLocations)
+	assert.NoError(t, got.Validate())
+	assert.Equal(t, map[int]string{1: "entrada-x"}, cfg.Antennas[0].PortLocations, "source config is not mutated")
+}
+
+func typeEditorText(editor antennaEditorModel, text string) antennaEditorModel {
+	for _, r := range text {
+		editor = editor.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	return editor
+}
