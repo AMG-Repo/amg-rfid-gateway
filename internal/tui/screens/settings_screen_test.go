@@ -690,9 +690,11 @@ func TestSettingsScreen_ProtocolSelectorCyclesSupportedValues(t *testing.T) {
 	}{
 		{name: "space cycles generic forward to zebra", start: config.ProtocolGeneric, key: tea.KeyMsg{Type: tea.KeySpace}, wantValue: "zebra"},
 		{name: "right cycles generic forward to zebra", start: config.ProtocolGeneric, key: tea.KeyMsg{Type: tea.KeyRight}, wantValue: "zebra"},
-		{name: "left cycles generic backward to zebra", start: config.ProtocolGeneric, key: tea.KeyMsg{Type: tea.KeyLeft}, wantValue: "zebra"},
-		{name: "right wraps zebra forward to generic", start: config.ProtocolZebra, key: tea.KeyMsg{Type: tea.KeyRight}, wantValue: "generic"},
+		{name: "left cycles generic backward to chainway", start: config.ProtocolGeneric, key: tea.KeyMsg{Type: tea.KeyLeft}, wantValue: "chainway"},
+		{name: "right cycles zebra forward to chainway", start: config.ProtocolZebra, key: tea.KeyMsg{Type: tea.KeyRight}, wantValue: "chainway"},
 		{name: "left wraps zebra backward to generic", start: config.ProtocolZebra, key: tea.KeyMsg{Type: tea.KeyLeft}, wantValue: "generic"},
+		{name: "right wraps chainway forward to generic", start: config.ProtocolChainway, key: tea.KeyMsg{Type: tea.KeyRight}, wantValue: "generic"},
+		{name: "left cycles chainway backward to zebra", start: config.ProtocolChainway, key: tea.KeyMsg{Type: tea.KeyLeft}, wantValue: "zebra"},
 	}
 
 	for _, tt := range tests {

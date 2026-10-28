@@ -27,6 +27,7 @@ data_path: "/opt/amg-rfid-gateway/data"
 # Protocol field: "generic" is the supported default for current packet handling.
 # "zebra" is accepted by configuration for future Zebra-specific handlers, but
 # do not enable Zebra runtime deployments until protocol handler support is added.
+# "chainway" is the Chainway UR4 fixed reader (see the example below).
 # Zone field: "entrada" (entry), "salida" (exit), or "" (empty for auto-detect)
 antennas:
   # Example: Entrance antenna (raw TCP)
@@ -52,6 +53,21 @@ antennas:
   #   enabled: false
   #   zone: ""  # Empty string = auto-detect based on location/verifier rules
   #   protocol: "zebra"
+
+  # Example: Chainway UR4 fixed reader (Ethernet command mode)
+  # WARNING: never enable this against a UR4 without an antenna or a 50-ohm
+  # terminator attached; the gateway sends start-inventory (RF on) on connect.
+  # port_locations (ports 1-4, chainway only) names each reader port; that name
+  # becomes the reading's antenna ID. Unmapped ports use this antenna's id.
+  # - id: "UR4-001"
+  #   ip: "192.168.99.202"
+  #   port: 8888
+  #   enabled: false
+  #   zone: ""
+  #   protocol: "chainway"
+  #   port_locations:
+  #     1: "entrada-x"
+  #     2: "salida-x"
 
 # Web UI Configuration (Local Verification Frontend)
 # Enable the built-in web interface for manual tag confirmation

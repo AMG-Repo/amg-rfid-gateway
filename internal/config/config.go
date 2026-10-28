@@ -3,12 +3,14 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,6 +43,12 @@ var supportedAntennaProtocols = map[AntennaProtocol]struct{}{
 	ProtocolZebra:    {},
 	ProtocolChainway: {},
 }
+
+// Chainway UR4 reader ports that PortLocations can map.
+const (
+	MinPortLocation = 1
+	MaxPortLocation = 4
+)
 
 // IsSupportedAntennaProtocol reports whether protocol is accepted by config validation.
 func IsSupportedAntennaProtocol(protocol AntennaProtocol) bool {
@@ -252,7 +260,36 @@ func (a *AntennaConfig) Validate() error {
 		return fmt.Errorf("unsupported antenna protocol %q", a.Protocol)
 	}
 
+	if err := a.validatePortLocations(protocol); err != nil {
+		return err
+	}
+
 	// HAPPY PATH: All validations passed
+	return nil
+}
+
+// validatePortLocations checks the optional Chainway port-to-location mapping.
+func (a *AntennaConfig) validatePortLocations(protocol AntennaProtocol) error {
+	if len(a.PortLocations) == 0 {
+		return nil
+	}
+
+	// NEGATIVE: only multi-port Chainway readers map ports to locations
+	if protocol != ProtocolChainway {
+		return errors.New("antenna port_locations is only supported with protocol chainway")
+	}
+
+	for _, port := range slices.Sorted(maps.Keys(a.PortLocations)) {
+		// NEGATIVE: the UR4 has ports 1..4
+		if port < MinPortLocation || port > MaxPortLocation {
+			return fmt.Errorf("antenna port_locations port %d must be between %d and %d", port, MinPortLocation, MaxPortLocation)
+		}
+		// NEGATIVE: a mapped port needs a location (omit the port to leave it unmapped)
+		if strings.TrimSpace(a.PortLocations[port]) == "" {
+			return fmt.Errorf("antenna port_locations port %d location cannot be empty", port)
+		}
+	}
+
 	return nil
 }
 

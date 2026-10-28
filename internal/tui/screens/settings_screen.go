@@ -52,6 +52,11 @@ const (
 	antennaFormFieldEnabled
 	antennaFormFieldZone
 	antennaFormFieldProtocol
+	// Port location fields are only shown and reachable for the chainway protocol.
+	antennaFormFieldPort1Location
+	antennaFormFieldPort2Location
+	antennaFormFieldPort3Location
+	antennaFormFieldPort4Location
 	antennaFormFieldCount
 )
 
@@ -62,6 +67,8 @@ type antennaForm struct {
 	enabled  bool
 	zone     string
 	protocol config.AntennaProtocol
+	// locations holds the chainway location for ports 1..4 (index = port-1); empty means unmapped.
+	locations [config.MaxPortLocation]string
 }
 
 type antennaEditorModel struct {
@@ -162,18 +169,18 @@ func (m antennaEditorModel) updateForm(msg tea.KeyMsg) antennaEditorModel {
 		m.mode = antennaEditorModeList
 		m.err = ""
 	case tea.KeyUp:
-		m.formCursor = antennaFormField(moveCursor(int(m.formCursor), int(antennaFormFieldCount), -1))
+		m.formCursor = antennaFormField(moveCursor(int(m.formCursor), m.formFieldCount(), -1))
 	case tea.KeyDown, tea.KeyTab:
-		m.formCursor = antennaFormField(moveCursor(int(m.formCursor), int(antennaFormFieldCount), 1))
+		m.formCursor = antennaFormField(moveCursor(int(m.formCursor), m.formFieldCount(), 1))
 	case tea.KeyLeft:
 		if m.formCursor == antennaFormFieldProtocol {
-			m.form.protocol = cycleAntennaProtocol(m.form.protocol, -1)
+			m.form.cycleProtocol(-1)
 		}
 	case tea.KeyRight, tea.KeySpace:
 		if m.formCursor == antennaFormFieldEnabled {
 			m.form.enabled = !m.form.enabled
 		} else if m.formCursor == antennaFormFieldProtocol {
-			m.form.protocol = cycleAntennaProtocol(m.form.protocol, 1)
+			m.form.cycleProtocol(1)
 		}
 	case tea.KeyEnter:
 		if m.formCursor == antennaFormFieldEnabled {
@@ -181,7 +188,7 @@ func (m antennaEditorModel) updateForm(msg tea.KeyMsg) antennaEditorModel {
 			return m
 		}
 		if m.formCursor == antennaFormFieldProtocol {
-			m.form.protocol = cycleAntennaProtocol(m.form.protocol, 1)
+			m.form.cycleProtocol(1)
 			return m
 		}
 		return m.commitForm()
@@ -190,14 +197,32 @@ func (m antennaEditorModel) updateForm(msg tea.KeyMsg) antennaEditorModel {
 	case tea.KeyRunes:
 		switch string(msg.Runes) {
 		case "j":
-			m.formCursor = antennaFormField(moveCursor(int(m.formCursor), int(antennaFormFieldCount), 1))
+			m.formCursor = antennaFormField(moveCursor(int(m.formCursor), m.formFieldCount(), 1))
 		case "k":
-			m.formCursor = antennaFormField(moveCursor(int(m.formCursor), int(antennaFormFieldCount), -1))
+			m.formCursor = antennaFormField(moveCursor(int(m.formCursor), m.formFieldCount(), -1))
 		default:
 			m.appendCurrentFormField(string(msg.Runes))
 		}
 	}
 	return m
+}
+
+// formFieldCount returns how many form fields are reachable; the port
+// location fields only exist for chainway.
+func (m antennaEditorModel) formFieldCount() int {
+	if m.form.protocol == config.ProtocolChainway {
+		return int(antennaFormFieldCount)
+	}
+	return int(antennaFormFieldProtocol) + 1
+}
+
+// cycleProtocol moves the protocol selector and drops the port locations
+// when the protocol is no longer chainway.
+func (f *antennaForm) cycleProtocol(delta int) {
+	f.protocol = cycleAntennaProtocol(f.protocol, delta)
+	if f.protocol != config.ProtocolChainway {
+		f.locations = [config.MaxPortLocation]string{}
+	}
 }
 
 func (m *antennaEditorModel) startAdd() {
@@ -218,6 +243,11 @@ func (m *antennaEditorModel) startEdit() {
 	m.editingIdx = m.cursor
 	m.err = ""
 	m.form = antennaForm{id: ant.ID, ip: ant.IP, port: strconv.Itoa(ant.Port), enabled: ant.Enabled, zone: ant.Zone, protocol: effectiveAntennaProtocol(ant.Protocol)}
+	for port, location := range ant.PortLocations {
+		if port >= config.MinPortLocation && port <= config.MaxPortLocation {
+			m.form.locations[port-config.MinPortLocation] = location
+		}
+	}
 }
 
 func (m antennaEditorModel) commitForm() antennaEditorModel {
@@ -255,7 +285,17 @@ func (f antennaForm) toAntennaConfig() (config.AntennaConfig, error) {
 	}
 	ant := config.AntennaConfig{ID: id, IP: ip, Port: port, Enabled: f.enabled, Zone: zone, Protocol: effectiveAntennaProtocol(f.protocol)}
 	if !config.IsSupportedAntennaProtocol(ant.Protocol) {
-		return config.AntennaConfig{}, errors.New("antenna protocol must be: generic, zebra")
+		return config.AntennaConfig{}, errors.New("antenna protocol must be: generic, zebra, chainway")
+	}
+	if ant.Protocol == config.ProtocolChainway {
+		for i, location := range f.locations {
+			if location = strings.TrimSpace(location); location != "" {
+				if ant.PortLocations == nil {
+					ant.PortLocations = make(map[int]string, config.MaxPortLocation)
+				}
+				ant.PortLocations[i+config.MinPortLocation] = location
+			}
+		}
 	}
 	if err := ant.Validate(); err != nil {
 		return config.AntennaConfig{}, err
@@ -273,6 +313,8 @@ func (m *antennaEditorModel) appendCurrentFormField(value string) {
 		m.form.port += value
 	case antennaFormFieldZone:
 		m.form.zone += value
+	case antennaFormFieldPort1Location, antennaFormFieldPort2Location, antennaFormFieldPort3Location, antennaFormFieldPort4Location:
+		m.form.locations[m.formCursor-antennaFormFieldPort1Location] += value
 	}
 }
 
@@ -292,11 +334,14 @@ func (m *antennaEditorModel) trimCurrentFormField() {
 		m.form.port = trim(m.form.port)
 	case antennaFormFieldZone:
 		m.form.zone = trim(m.form.zone)
+	case antennaFormFieldPort1Location, antennaFormFieldPort2Location, antennaFormFieldPort3Location, antennaFormFieldPort4Location:
+		idx := m.formCursor - antennaFormFieldPort1Location
+		m.form.locations[idx] = trim(m.form.locations[idx])
 	}
 }
 
 func cycleAntennaProtocol(current config.AntennaProtocol, delta int) config.AntennaProtocol {
-	protocols := []config.AntennaProtocol{config.ProtocolGeneric, config.ProtocolZebra}
+	protocols := []config.AntennaProtocol{config.ProtocolGeneric, config.ProtocolZebra, config.ProtocolChainway}
 	idx := 0
 	for i, protocol := range protocols {
 		if effectiveAntennaProtocol(current) == protocol {
@@ -689,6 +734,7 @@ func (m SettingsScreenModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !before && m.antennaEditor.hasChanges {
 				m.hasChanges = true
 			}
+			m.syncProtocolFieldsFromDraft()
 			return m, nil
 		}
 
@@ -841,6 +887,11 @@ func (m SettingsScreenModel) renderAntennaEditor() string {
 		section += m.renderAntennaFormField(antennaFormFieldEnabled, "Enabled", strconv.FormatBool(form.enabled))
 		section += m.renderAntennaFormField(antennaFormFieldZone, "Zone", form.zone)
 		section += m.renderAntennaFormField(antennaFormFieldProtocol, "Protocol", string(effectiveAntennaProtocol(form.protocol)))
+		if form.protocol == config.ProtocolChainway {
+			for i, location := range form.locations {
+				section += m.renderAntennaFormField(antennaFormFieldPort1Location+antennaFormField(i), fmt.Sprintf("Port %d location", i+config.MinPortLocation), location)
+			}
+		}
 		if m.antennaEditor.err != "" {
 			section += m.styles.FieldError.Render("  "+m.antennaEditor.err) + "\n"
 		}
@@ -906,7 +957,7 @@ func (m *SettingsScreenModel) cycleCurrentAntennaProtocol(delta int) {
 		return
 	}
 
-	protocols := []string{string(config.ProtocolGeneric), string(config.ProtocolZebra)}
+	protocols := []string{string(config.ProtocolGeneric), string(config.ProtocolZebra), string(config.ProtocolChainway)}
 	current := strings.ToLower(strings.TrimSpace(m.values[m.cursor]))
 	currentIndex := 0
 	for i, protocol := range protocols {
@@ -920,6 +971,42 @@ func (m *SettingsScreenModel) cycleCurrentAntennaProtocol(delta int) {
 	if m.values[m.cursor] != protocols[next] {
 		m.values[m.cursor] = protocols[next]
 		m.hasChanges = true
+		m.setDraftProtocol(m.fields[m.cursor].key, config.AntennaProtocol(protocols[next]))
+	}
+}
+
+// setDraftProtocol writes a protocol selected in the settings list through to
+// the staged antenna, clearing its port locations unless it is chainway.
+func (m *SettingsScreenModel) setDraftProtocol(fieldKey string, protocol config.AntennaProtocol) {
+	antennaID, ok := strings.CutPrefix(fieldKey, "antenna_protocol:")
+	if !ok {
+		return
+	}
+	for i := range m.antennaEditor.draft {
+		if m.antennaEditor.draft[i].ID == antennaID {
+			m.antennaEditor.draft[i].Protocol = protocol
+			if protocol != config.ProtocolChainway {
+				m.antennaEditor.draft[i].PortLocations = nil
+			}
+			return
+		}
+	}
+}
+
+// syncProtocolFieldsFromDraft refreshes the per-antenna protocol fields after
+// the antenna editor staged a change, so GetConfig does not revert it.
+func (m *SettingsScreenModel) syncProtocolFieldsFromDraft() {
+	for i, field := range m.fields {
+		antennaID, ok := strings.CutPrefix(field.key, "antenna_protocol:")
+		if !ok {
+			continue
+		}
+		for _, ant := range m.antennaEditor.draft {
+			if ant.ID == antennaID {
+				m.values[i] = string(effectiveAntennaProtocol(ant.Protocol))
+				break
+			}
+		}
 	}
 }
 
@@ -1178,7 +1265,7 @@ func validateAntennaProtocol(value string) error {
 	if config.IsSupportedAntennaProtocol(protocol) {
 		return nil
 	}
-	return errors.New("must be: generic, zebra")
+	return errors.New("must be: generic, zebra, chainway")
 }
 
 func antennaProtocolFieldKey(antennaID string) string {

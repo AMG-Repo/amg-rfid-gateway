@@ -105,14 +105,14 @@ Interactive terminal interface using Bubbletea with splash screen and multiple s
 - **Settings**: Full TUI-based configuration editor with field validation
   - Gateway ID, Company ID, Cloud URL, Log Level
   - Queue Cap, Warning Threshold
-  - View antenna configurations and edit each antenna protocol with a constrained `generic`/`zebra` selector
+  - View antenna configurations and edit each antenna protocol with a constrained `generic`/`zebra`/`chainway` selector (plus per-port locations for `chainway`)
   - Save changes explicitly with `s`, then confirm with `y`
   - Leaving Settings with unsaved changes prompts to save, discard, or stay
 
 **Navigation:**
 - Arrow keys or `j/k` to navigate; navigable lists wrap at the first/last item
 - Enter to select/edit
-- In Settings protocol fields, `←/→`, Space, or Enter cycles supported values (`generic`, `zebra`)
+- In Settings protocol fields, `←/→`, Space, or Enter cycles supported values (`generic`, `zebra`, `chainway`)
 - In Settings, `s` opens save confirmation; `y` persists changes
 - `q` or `Ctrl+C` to quit
 - `Esc` to go back
@@ -371,10 +371,33 @@ Each antenna supports a `protocol` field:
 |----------|--------|----------|
 | `generic` | Supported default | The antenna speaks the current generic RFID TCP packet format |
 | `zebra` | Configurable, explicit runtime unsupported | Preparing configuration for a future Zebra-specific handler |
+| `chainway` | Supported | The antenna is a Chainway UR4 fixed reader (see [Chainway UR4](#chainway-ur4-protocol-chainway)) |
 
 Existing configs without `protocol` are treated as `generic`. Unsupported protocol values fail configuration validation so the gateway does not accidentally parse another reader type as generic.
 
-You can edit antenna protocol values from the Settings TUI using the constrained selector (`generic`/`zebra`). At runtime, non-generic protocols are routed through the protocol handler boundary; until a Zebra handler exists, `zebra` fails explicitly instead of being parsed as generic.
+You can edit antenna protocol values from the Settings TUI using the constrained selector (`generic`/`zebra`/`chainway`). At runtime, non-generic protocols are routed through the protocol handler boundary; until a Zebra handler exists, `zebra` fails explicitly instead of being parsed as generic.
+
+### Chainway UR4 (protocol: chainway)
+
+The `chainway` protocol reads tags from a Chainway UR4 fixed UHF reader over Ethernet in command work mode. The gateway dials the reader, sends start-inventory, and consumes its tag notifications; no vendor library is needed.
+
+- Default address: `192.168.99.202:8888` (confirmed on hardware).
+- `port_locations` (optional) maps a reader port (1-4) to a location name. That name is recorded as the reading's antenna ID, so tags can be traced by location, for example port 1 = `entrada-x` and port 2 = `salida-x`. A port without a mapping falls back to the configured antenna `id`. `port_locations` is only valid with `protocol: chainway`; ports must be 1-4 and locations cannot be blank.
+- In the Settings TUI, choose `chainway` in the antenna editor to edit the location of ports 1-4 (leave one empty to keep it unmapped). Switching to another protocol clears the locations.
+
+```yaml
+antennas:
+  - id: "UR4-001"
+    ip: "192.168.99.202"
+    port: 8888
+    enabled: true
+    protocol: "chainway"
+    port_locations:
+      1: "entrada-x"
+      2: "salida-x"
+```
+
+> **Warning:** never run a `chainway` antenna against a UR4 without an antenna or a 50-ohm terminator attached to its RF port. The gateway sends start-inventory (RF on) as soon as it connects, and transmitting into an open port can damage the reader.
 
 ## Usage
 
