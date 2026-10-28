@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/amg-rfid/amg-rfid-gateway/internal/chainway"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
@@ -67,6 +68,9 @@ type AntennaManager struct {
 	wg       sync.WaitGroup
 	doneCh   chan struct{}
 	doneOnce sync.Once
+
+	// sessionStopOnce guards the protocol stop command sent on shutdown.
+	sessionStopOnce sync.Once
 }
 
 // NewAntennaManager creates a new antenna manager.
@@ -125,6 +129,16 @@ func (m *AntennaManager) Start(ctx context.Context) error {
 	// Mark as running
 	m.isRunning = true
 
+	if m.config.Protocol == config.ProtocolChainway {
+		// The UR4 accepts only stop-inventory while inventory runs, so the
+		// generic ReadUII loop and heartbeat must not run.
+		m.wg.Add(3)
+		go m.chainwayStartInventory()
+		go m.chainwayDataReader()
+		go m.monitorContext(ctx)
+		return nil
+	}
+
 	// Start goroutines
 	m.wg.Add(4)
 	go m.intelligentReadLoop()
@@ -151,10 +165,12 @@ func (m *AntennaManager) monitorContext(parentCtx context.Context) {
 				}
 			}
 			m.mu.Unlock()
+			m.stopSession()
 			m.closeDoneOnce()
 			return
 		case <-m.ctx.Done():
 			// Child context cancelled (e.g., by Stop())
+			m.stopSession()
 			m.closeDoneOnce()
 			return
 		case <-time.After(100 * time.Millisecond):
@@ -189,12 +205,47 @@ func (m *AntennaManager) Stop() error {
 
 	select {
 	case <-done:
+		m.stopSession()
 		m.closeDoneOnce()
 		return nil
 	case <-time.After(5 * time.Second):
+		m.stopSession()
 		m.closeDoneOnce()
 		return errors.New("timeout waiting for antenna manager to stop")
 	}
+}
+
+// chainwayStartInventory starts UR4 inventory; a write error ends the session.
+func (m *AntennaManager) chainwayStartInventory() {
+	defer m.wg.Done()
+	if err := m.client.SendCommand(chainway.StartInventoryFrame()); err != nil {
+		log.Printf("[WARN] Antenna %s: start-inventory failed: %v", m.config.ID, err)
+		m.cancel()
+		return
+	}
+	log.Printf("[INFO] Antenna %s: Chainway inventory started", m.config.ID)
+}
+
+// chainwayDataReader reads frames and ends the session when the connection
+// closes, since there is no heartbeat write to detect it.
+func (m *AntennaManager) chainwayDataReader() {
+	m.dataReader(m.ctx, m.conn)
+	m.cancel()
+}
+
+// stopSession sends the protocol stop command once before Done is closed, so
+// it reaches the reader before the caller disconnects. Best effort.
+func (m *AntennaManager) stopSession() {
+	if m.config.Protocol != config.ProtocolChainway {
+		return
+	}
+	m.sessionStopOnce.Do(func() {
+		if err := m.client.SendCommand(chainway.StopInventoryFrame()); err != nil {
+			log.Printf("[WARN] Antenna %s: stop-inventory failed: %v", m.config.ID, err)
+			return
+		}
+		log.Printf("[INFO] Antenna %s: Chainway inventory stopped", m.config.ID)
+	})
 }
 
 // closeDoneOnce closes doneCh exactly once, safe for concurrent calls.
