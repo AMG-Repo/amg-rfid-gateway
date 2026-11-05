@@ -169,6 +169,9 @@ func TestChainwaySilentConnectionEndsSession(t *testing.T) {
 func TestChainwayReplyKeepsSessionAlive(t *testing.T) {
 	manager, _ := newChainwayLifecycleManager(t)
 	fastChainwayWatchdog(manager)
+	// Wide dead threshold: replies every 30ms must never look like silence,
+	// even on a loaded -race run.
+	manager.chainwayDeadAfter = time.Second
 	local, remote := net.Pipe()
 	defer remote.Close()
 	manager.SetConn(local)
