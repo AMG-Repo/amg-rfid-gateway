@@ -71,6 +71,7 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 | **Multi-Antenna** | Supports multiple antennas via goroutines |
 | **Protocol Config** | Per-antenna protocol selection with backward-compatible `generic` default |
 | **Web UI** | Built-in verification interface on port 9090 |
+| **Kanban Tags** | Cached kanban catalog, unassigned-tag inbox and online-only assignment (see [Kanban Tags and Unassigned Tags](#kanban-tags-and-unassigned-tags)) |
 | **Settings TUI** | Full configuration editing with explicit save confirmation and unsaved-exit protection |
 
 ### TUI Configurator
@@ -527,6 +528,76 @@ The gateway communicates with the cloud backend using these endpoints:
 
 **Authentication:** JWT Bearer token with `gateway_id` and `company_id` claims.
 
+## Kanban Tags and Unassigned Tags
+
+Operators recognize **kanban cards**, not EPCs. The kanban catalog and the tag-to-kanban
+assignments are maintained on the VPS; the gateway keeps a read-only copy and never edits
+kanban data.
+
+- **Assigned tag**: its UII (EPC) is linked to a kanban. Reads carry the kanban fields
+  (`code`, `description`, `standard_pack`, `unit`, `zones`, `extrusora`, `position`, `area`,
+  `customer`, `card_type`, `sku`).
+- **Unassigned tag**: a read whose UII has no active kanban link. It is listed in the local
+  unassigned inbox (EPC, antenna, first/last seen, read count) until it is assigned. Unassigned
+  reads never create movements. Employee badges (a synced user `rfid_tag`) are not listed.
+- **Assigning requires the VPS online.** There is no offline assignment queue: if the VPS is
+  unreachable the request fails with `503` and nothing is stored locally.
+- **Movements only for assigned tags.** `POST /api/confirm` rejects a UII without a kanban link.
+
+### Local web API
+
+All routes are served by the web UI (`web_port`). Reads have no auth; writes (`POST`) require
+the bearer token when `web_access_mode: lan`.
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/unassigned-tags` | GET | none | `[{epc, antenna_id, first_seen, last_seen, read_count}]`, most recent first |
+| `/api/kanbans` | GET | none | Cached kanban catalog (picker source), ordered by `code` |
+| `/api/tags/assign` | POST | write auth | Assign a tag to a kanban (online only) |
+| `/api/confirm` | POST | write auth | Confirm entrada/salida (assigned tags only) |
+| `/events` | GET (SSE) | none | `tag_detected` events, see below |
+
+**`POST /api/tags/assign`** body `{"uii": "...", "kanban_code": "...", "antenna_id": "..."}`
+(`antenna_id` optional, used for audit; defaults to the antenna that read the tag, else `manual`).
+The request is forwarded to the VPS (`POST /api/v1/gateway/tags/assign`); the kanban code is not
+checked against the local catalog because the VPS is authoritative (the cached catalog can be stale).
+
+| Status | `code` | Meaning |
+|--------|--------|---------|
+| 200 | | `{success, message, uii, kanban}`. The local cache is updated, the tag leaves the inbox and an immediate sync is requested (no 1 h wait) |
+| 400 | `invalid_request` | Invalid body, blank `uii`/`kanban_code`, or rejected by the VPS |
+| 404 | `kanban_not_found` | The kanban does not exist on the VPS |
+| 409 | `uii_assigned` | The tag belongs to another kanban; the body includes `current_kanban` |
+| 502 | `vps_error` | The VPS answered with an unexpected error |
+| 503 | `vps_offline` | VPS unreachable or timed out: "Sin conexión con el VPS: la asignación requiere estar en línea." |
+
+Error bodies are `{"error": "<mensaje>", "code": "<code>"}`. Assigning the same tag to the same
+kanban again is idempotent.
+
+**`POST /api/confirm`** is unchanged for assigned tags. A UII with no active kanban link answers
+`422 {"success": false, "message": "No se puede registrar un movimiento hasta asignar la tag a un kanban.", "code": "tag_not_assigned"}`
+and nothing is sent or queued. If the assignment cannot be verified (local store error) it answers `500`.
+
+**SSE `tag_detected`** keeps its fields (`epc`, `rssi`, `antenna_id`, `timestamp`,
+`suggested_action`, `suggested_reason`) and adds, additively: a `kanban` object for assigned
+tags, or `"unassigned": true` for tags with no active link.
+
+### Cloud contract and local storage
+
+The gateway expects these (additive) VPS changes; a VPS without them keeps working as before:
+
+- `GET /api/v1/gateway/sync-data` items may carry `kanban` (object or `null`) and `active: false`.
+  Items must carry `active: true` explicitly to keep a link. `active: false` or `kanban: null`
+  clears the local link on the next sync (stale links never survive).
+- `GET /api/v1/gateway/kanbans?company_id=` returns `{"status":"OK","kanbans":[...]}`; it is
+  fetched on every sync (best effort: a failure is logged and does not fail the sync).
+- `POST /api/v1/gateway/tags/assign` with `{company_id, uii, kanban_code, antenna_id}` returns
+  `200 {uii, kanban}`, `404 {error: kanban_not_found}`, `409 {error: uii_assigned, current_kanban}` or `400`.
+
+On startup the SQLite cache gains three tables (`kanbans`, `tag_kanban_links`, `unassigned_tags`)
+through an idempotent migration. `tool_tags` and `pending_confirmations` are not modified, so
+queued confirmations survive the upgrade; the kanban tables are rebuilt from the next sync.
+
 ## Shared Module (amg-rfid-shared-go)
 
 The project includes a shared Go module for common types and protocol definitions:
@@ -590,6 +661,13 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 # Check cache status
 curl http://localhost:8080/health
 ```
+
+### Confirm answers "No se puede registrar un movimiento hasta asignar la tag a un kanban."
+
+The tag has no active kanban link in the local cache. Check `GET /api/unassigned-tags`, assign
+it with `POST /api/tags/assign` (needs the VPS online), or verify that the VPS sync returns
+`kanban` and `active: true` for the tag. If the VPS has not been updated with kanban support yet,
+no tag can be confirmed.
 
 ### Update failures
 
