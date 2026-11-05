@@ -57,7 +57,7 @@ func TestRunAntenna_ChainwayStoresMappedReading(t *testing.T) {
 	if len(cache.stored) != 1 {
 		t.Fatalf("stored %d readings, want 1: %+v", len(cache.stored), cache.stored)
 	}
-	if r := cache.stored[0]; r.EPC != "ABCD" || r.AntennaID != "salida-x" || r.RSSI != -93 {
+	if r := cache.stored[0]; r.EPC != "ABCD" || r.AntennaID != "salida-x" || r.RSSI != 93 {
 		t.Fatalf("reading = %+v", r)
 	}
 }

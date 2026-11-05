@@ -64,11 +64,14 @@ func TestHandlePacket_ChainwayTagStoresReading(t *testing.T) {
 				t.Fatalf("stored %d readings, want 1", len(cache.stored))
 			}
 			r := cache.stored[0]
-			if r.EPC != "E2000017220A0123456789AB" || r.RSSI != -93 || r.AntennaID != tt.wantAntennaID || r.GatewayID != "gw-test-001" {
+			if r.EPC != "E2000017220A0123456789AB" || r.RSSI != 93 || r.AntennaID != tt.wantAntennaID || r.GatewayID != "gw-test-001" {
 				t.Fatalf("reading = %+v", r)
 			}
+			if err := r.Validate(); err != nil {
+				t.Fatalf("stored reading violates the shared contract: %v", err)
+			}
 			status := manager.GetStatus()
-			if status.ReadingCount != 1 || status.LastTagRSSI != -93 {
+			if status.ReadingCount != 1 || status.LastTagRSSI != 93 {
 				t.Fatalf("stats = count %d rssi %d", status.ReadingCount, status.LastTagRSSI)
 			}
 		})
