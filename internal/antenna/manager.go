@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/chainway"
@@ -71,7 +72,20 @@ type AntennaManager struct {
 
 	// sessionStopOnce guards the protocol stop command sent on shutdown.
 	sessionStopOnce sync.Once
+
+	// Chainway watchdog: a pulled cable gives no EOF, so after
+	// chainwayProbeAfter of silence the reader is probed, and after
+	// chainwayDeadAfter of silence the session ends. lastRxNano is the
+	// UnixNano time of the last bytes read.
+	chainwayProbeAfter time.Duration
+	chainwayDeadAfter  time.Duration
+	lastRxNano         atomic.Int64
 }
+
+const (
+	defaultChainwayProbeAfter = 5 * time.Second
+	defaultChainwayDeadAfter  = 10 * time.Second
+)
 
 // NewAntennaManager creates a new antenna manager.
 func NewAntennaManager(
@@ -87,6 +101,9 @@ func NewAntennaManager(
 		cache:          cache,
 		lastPacketTime: time.Now(),
 		doneCh:         make(chan struct{}),
+
+		chainwayProbeAfter: defaultChainwayProbeAfter,
+		chainwayDeadAfter:  defaultChainwayDeadAfter,
 	}
 }
 
@@ -132,9 +149,11 @@ func (m *AntennaManager) Start(ctx context.Context) error {
 	if m.config.Protocol == config.ProtocolChainway {
 		// The UR4 accepts only stop-inventory while inventory runs, so the
 		// generic ReadUII loop and heartbeat must not run.
-		m.wg.Add(3)
+		m.lastRxNano.Store(time.Now().UnixNano())
+		m.wg.Add(4)
 		go m.chainwayStartInventory()
 		go m.chainwayDataReader()
+		go m.chainwayWatchdog()
 		go m.monitorContext(ctx)
 		return nil
 	}
@@ -231,6 +250,40 @@ func (m *AntennaManager) chainwayStartInventory() {
 func (m *AntennaManager) chainwayDataReader() {
 	m.dataReader(m.ctx, m.conn)
 	m.cancel()
+}
+
+// chainwayWatchdog ends the session when the reader stays silent. A write to
+// a pulled cable still succeeds (kernel buffer), so only silence decides.
+func (m *AntennaManager) chainwayWatchdog() {
+	defer m.wg.Done()
+	tick := m.chainwayProbeAfter / 5
+	ticker := time.NewTicker(tick)
+	defer ticker.Stop()
+
+	probedAt := int64(0)
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		last := m.lastRxNano.Load()
+		silence := time.Since(time.Unix(0, last))
+		switch {
+		case silence >= m.chainwayDeadAfter:
+			log.Printf("[WARN] Antenna %s: no data for %s, assuming dead connection", m.config.ID, silence.Round(time.Second))
+			m.cancel()
+			return
+		case silence >= m.chainwayProbeAfter && probedAt != last:
+			probedAt = last
+			if err := m.client.SendCommand(chainway.ReadPowerFrame()); err != nil {
+				log.Printf("[WARN] Antenna %s: liveness probe failed: %v", m.config.ID, err)
+				m.cancel()
+				return
+			}
+		}
+	}
 }
 
 // stopSession sends the protocol stop command once before Done is closed, so
@@ -533,6 +586,7 @@ func (m *AntennaManager) dataReader(ctx context.Context, conn net.Conn) {
 		if n == 0 {
 			continue
 		}
+		m.lastRxNano.Store(time.Now().UnixNano())
 
 		frames := extractor.Append(buf[:n])
 		for _, frame := range frames {

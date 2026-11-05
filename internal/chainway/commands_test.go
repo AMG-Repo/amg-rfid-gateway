@@ -188,3 +188,10 @@ func TestRealUR4TagFrame(t *testing.T) {
 		t.Fatalf("RSSI = (%v, %v), want ~-66 dBm", tag.RSSI, tag.RSSIValid)
 	}
 }
+
+func TestReadPowerFrameMatchesCapturedLiteral(t *testing.T) {
+	want := []byte{0xA5, 0x5A, 0x00, 0x08, 0x12, 0x1A, 0x0D, 0x0A}
+	if got := ReadPowerFrame(); !bytes.Equal(got, want) {
+		t.Fatalf("ReadPowerFrame = % X, want % X", got, want)
+	}
+}
