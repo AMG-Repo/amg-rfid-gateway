@@ -160,8 +160,8 @@ func TestChainwaySilentConnectionEndsSession(t *testing.T) {
 	waitDone(t, manager)
 	_ = manager.Stop()
 
-	if countFrame(sentCommands(client), chainway.ReadPowerFrame()) == 0 {
-		t.Fatalf("commands = % X, want a read-power probe before giving up", sentCommands(client))
+	if n := countFrame(sentCommands(client), chainway.ReadPowerFrame()); n != 1 {
+		t.Fatalf("commands = % X, want exactly one read-power probe before giving up, got %d", sentCommands(client), n)
 	}
 }
 
@@ -191,4 +191,62 @@ func TestChainwayReplyKeepsSessionAlive(t *testing.T) {
 	default:
 	}
 	_ = manager.Stop()
+}
+
+// indexOfFrame returns the position of the first frame equal to want, or -1.
+func indexOfFrame(cmds [][]byte, want []byte) int {
+	for i, c := range cmds {
+		if bytes.Equal(c, want) {
+			return i
+		}
+	}
+	return -1
+}
+
+// An immediate Stop while start-inventory is still being written must not let
+// the start land after the stop and leave RF on.
+func TestChainwayStopWaitsForDelayedStart(t *testing.T) {
+	manager, client := newChainwayLifecycleManager(t)
+	startFrame := chainway.StartInventoryFrame()
+	inFlight := make(chan struct{})
+	client.beforeSend = func(data []byte) {
+		if bytes.Equal(data, startFrame) {
+			close(inFlight)
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-inFlight
+
+	if err := manager.Stop(); err != nil {
+		t.Fatal(err)
+	}
+
+	cmds := sentCommands(client)
+	start := indexOfFrame(cmds, startFrame)
+	stop := indexOfFrame(cmds, chainway.StopInventoryFrame())
+	if stop < 0 || (start >= 0 && start > stop) {
+		t.Fatalf("commands = % X, want stop-inventory never before start-inventory and sent last", cmds)
+	}
+	if !bytes.Equal(cmds[len(cmds)-1], chainway.StopInventoryFrame()) {
+		t.Fatalf("commands = % X, want stop-inventory last", cmds)
+	}
+}
+
+// A session whose context is already done must not turn RF on.
+func TestChainwayStartSkippedWhenContextAlreadyDone(t *testing.T) {
+	manager, client := newChainwayLifecycleManager(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, manager)
+	_ = manager.Stop()
+
+	if n := countFrame(sentCommands(client), chainway.StartInventoryFrame()); n != 0 {
+		t.Fatalf("commands = % X, want no start-inventory on a cancelled session", sentCommands(client))
+	}
 }

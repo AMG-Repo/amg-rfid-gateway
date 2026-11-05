@@ -73,6 +73,11 @@ type AntennaManager struct {
 	// sessionStopOnce guards the protocol stop command sent on shutdown.
 	sessionStopOnce sync.Once
 
+	// startDone is closed when the chainway start attempt finishes, so
+	// stopSession cannot send stop-inventory ahead of a delayed start. Nil for
+	// other protocols (no wait). Set in Start before the goroutines launch.
+	startDone chan struct{}
+
 	// Chainway watchdog: a pulled cable gives no EOF, so after
 	// chainwayProbeAfter of silence the reader is probed, and after
 	// chainwayDeadAfter of silence the session ends. lastRxNano is the
@@ -150,6 +155,7 @@ func (m *AntennaManager) Start(ctx context.Context) error {
 		// The UR4 accepts only stop-inventory while inventory runs, so the
 		// generic ReadUII loop and heartbeat must not run.
 		m.lastRxNano.Store(time.Now().UnixNano())
+		m.startDone = make(chan struct{})
 		m.wg.Add(4)
 		go m.chainwayStartInventory()
 		go m.chainwayDataReader()
@@ -237,6 +243,11 @@ func (m *AntennaManager) Stop() error {
 // chainwayStartInventory starts UR4 inventory; a write error ends the session.
 func (m *AntennaManager) chainwayStartInventory() {
 	defer m.wg.Done()
+	defer close(m.startDone)
+	// A session that is already ending must not turn RF on.
+	if m.ctx.Err() != nil {
+		return
+	}
 	if err := m.client.SendCommand(chainway.StartInventoryFrame()); err != nil {
 		log.Printf("[WARN] Antenna %s: start-inventory failed: %v", m.config.ID, err)
 		m.cancel()
@@ -293,6 +304,10 @@ func (m *AntennaManager) stopSession() {
 		return
 	}
 	m.sessionStopOnce.Do(func() {
+		// Writes are bounded by the client, so the start attempt always ends.
+		if m.startDone != nil {
+			<-m.startDone
+		}
 		if err := m.client.SendCommand(chainway.StopInventoryFrame()); err != nil {
 			log.Printf("[WARN] Antenna %s: stop-inventory failed: %v", m.config.ID, err)
 			return

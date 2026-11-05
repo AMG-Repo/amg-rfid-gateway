@@ -312,3 +312,39 @@ func TestClient_SatisfiesCommandSenderInterface(t *testing.T) {
 	_ = client.SetLastActivity
 	_ = client.IsConnected
 }
+
+// TestClient_SendCommand_WriteTimeout verifies a peer that never reads cannot
+// block SendCommand (and the mutex it holds) forever.
+func TestClient_SendCommand_WriteTimeout(t *testing.T) {
+	local, remote := net.Pipe()
+	defer remote.Close()
+	defer local.Close()
+
+	client := NewClient("127.0.0.1", 0)
+	client.conn = local
+	client.writeTimeout = 50 * time.Millisecond
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- client.SendCommand([]byte{0x01, 0x02}) }()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected a write timeout error, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SendCommand blocked on a peer that never reads")
+	}
+
+	// The mutex must be free again for later callers.
+	lockFree := make(chan struct{})
+	go func() {
+		client.IsConnected()
+		close(lockFree)
+	}()
+	select {
+	case <-lockFree:
+	case <-time.After(time.Second):
+		t.Fatal("client mutex still held after the write timed out")
+	}
+}
