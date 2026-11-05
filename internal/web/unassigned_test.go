@@ -3,6 +3,7 @@ package web
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,7 @@ type kanbanTestEnv struct {
 	server *Server
 	store  *localstore.LocalStore
 	bus    *events.EventBus
+	db     *sql.DB
 }
 
 func newKanbanTestEnv(t *testing.T, cfg *config.GatewayConfig) *kanbanTestEnv {
@@ -40,7 +42,7 @@ func newKanbanTestEnv(t *testing.T, cfg *config.GatewayConfig) *kanbanTestEnv {
 
 	srv := NewServerWithConfig("127.0.0.1", 0, bus, store, verifier, nil, "test-company", cfg)
 	srv.unassignedFlushInterval = 10 * time.Millisecond
-	return &kanbanTestEnv{server: srv, store: store, bus: bus}
+	return &kanbanTestEnv{server: srv, store: store, bus: bus, db: c.GetDB()}
 }
 
 // emptyToolStore is a verifier ToolStore that knows no tools.

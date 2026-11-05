@@ -5,9 +5,15 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
+)
+
+const (
+	msgConfirmNotAssigned = "No se puede registrar un movimiento hasta asignar la tag a un kanban."
+	msgConfirmNoVerify    = "No se pudo verificar la asignación de la tag."
 )
 
 // TagInfo represents tag information for API responses.
@@ -32,6 +38,8 @@ type ConfirmResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
 	Mode    string `json:"mode"` // "online" or "offline"
+	// Code is set only on rejections, e.g. "tag_not_assigned".
+	Code string `json:"code,omitempty"`
 }
 
 // StatusResponse represents the system status.
@@ -126,6 +134,34 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Movements are only registered for tags assigned to a kanban. Checked before
+	// anything is sent or queued, online or offline, and fail closed if the
+	// assignment cannot be verified.
+	if strings.TrimSpace(req.UII) == "" {
+		s.jsonError(w, "uii is required", http.StatusBadRequest)
+		return
+	}
+	if s.store == nil {
+		s.jsonError(w, msgConfirmNoVerify, http.StatusInternalServerError)
+		return
+	}
+	kanban, err := s.store.GetKanbanByUII(req.UII)
+	if err != nil {
+		log.Printf("[Web] Failed to verify kanban assignment for %s: %v", req.UII, err)
+		s.jsonError(w, msgConfirmNoVerify, http.StatusInternalServerError)
+		return
+	}
+	if kanban == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		json.NewEncoder(w).Encode(ConfirmResponse{
+			Success: false,
+			Message: msgConfirmNotAssigned,
+			Code:    "tag_not_assigned",
+		})
+		return
+	}
+
 	// Try VPS first (online mode)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -173,7 +209,7 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		maxPending = *s.config.MaxPendingConfirmations
 	}
 
-	_, err := s.store.CreateConfirmation(req.UII, req.Action, antennaID, time.Now(), maxPending)
+	_, err = s.store.CreateConfirmation(req.UII, req.Action, antennaID, time.Now(), maxPending)
 	if err != nil {
 		log.Printf("[Web] Failed to create local confirmation: %v", err)
 		s.jsonResponse(w, ConfirmResponse{
