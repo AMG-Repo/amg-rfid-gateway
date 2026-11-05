@@ -993,7 +993,7 @@ func TestKanbanTables_CreatedOnNewDatabase(t *testing.T) {
 	}
 	defer c.Close()
 
-	for _, name := range []string{"kanbans", "tag_kanban_links"} {
+	for _, name := range []string{"kanbans", "tag_kanban_links", "unassigned_tags"} {
 		if !tableExists(t, c.GetDB(), name) {
 			t.Errorf("expected table %s to exist on a new database", name)
 		}
@@ -1020,7 +1020,7 @@ func TestKanbanTables_MigrationOnExistingDatabaseKeepsPendingConfirmations(t *te
 		t.Fatalf("failed to seed tool tag: %v", err)
 	}
 	// Simulate a database from before this feature.
-	if _, err := db.Exec(`DROP TABLE kanbans; DROP TABLE tag_kanban_links;`); err != nil {
+	if _, err := db.Exec(`DROP TABLE kanbans; DROP TABLE tag_kanban_links; DROP TABLE unassigned_tags;`); err != nil {
 		t.Fatalf("failed to drop kanban tables: %v", err)
 	}
 	first.Close()
@@ -1031,7 +1031,7 @@ func TestKanbanTables_MigrationOnExistingDatabaseKeepsPendingConfirmations(t *te
 		if err != nil {
 			t.Fatalf("reopen %d failed: %v", i, err)
 		}
-		for _, name := range []string{"kanbans", "tag_kanban_links"} {
+		for _, name := range []string{"kanbans", "tag_kanban_links", "unassigned_tags"} {
 			if !tableExists(t, c.GetDB(), name) {
 				t.Errorf("reopen %d: expected table %s after migration", i, name)
 			}

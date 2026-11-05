@@ -33,6 +33,10 @@ type Server struct {
 	config     *config.GatewayConfig
 	sseClients map[chan events.TagDetected]struct{}
 	mu         sync.RWMutex
+
+	// unassigned tags inbox recorder (see unassigned.go)
+	unassignedFlushInterval time.Duration
+	recorderCancel          context.CancelFunc
 }
 
 // NewServer creates a new web server.
@@ -86,8 +90,8 @@ func (s *staticFileServer) Open(name string) (http.File, error) {
 	return s.fs.Open("static" + name)
 }
 
-// Start initializes routes and starts the HTTP server.
-func (s *Server) Start(ctx context.Context) error {
+// routes builds the HTTP routes served by the web server.
+func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
 	// Static files - strip the static/ prefix by using a custom wrapper
@@ -100,8 +104,19 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/confirm", s.requireWriteAuth(s.handleConfirm))
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/auth-mode", s.handleAuthMode)
+	mux.HandleFunc("/api/unassigned-tags", s.handleUnassignedTags)
 
-	s.httpServer.Handler = mux
+	return mux
+}
+
+// Start initializes routes and starts the HTTP server.
+func (s *Server) Start(ctx context.Context) error {
+	s.httpServer.Handler = s.routes()
+
+	// Keep the unassigned tags inbox fed even when no SSE client is connected
+	recorderCtx, recorderCancel := context.WithCancel(ctx)
+	s.recorderCancel = recorderCancel
+	s.startUnassignedRecorder(recorderCtx)
 
 	// Start server in goroutine
 	go func() {
@@ -164,6 +179,10 @@ func (s *Server) hasValidBearerToken(authHeader string) bool {
 // Stop gracefully shuts down the HTTP server.
 func (s *Server) Stop(ctx context.Context) error {
 	log.Printf("[Web] Shutting down server...")
+
+	if s.recorderCancel != nil {
+		s.recorderCancel()
+	}
 
 	// Close all SSE clients
 	s.mu.Lock()

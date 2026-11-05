@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 )
 
 // EnrichedTagDetected extends TagDetected with suggestion fields.
@@ -15,6 +16,10 @@ type EnrichedTagDetected struct {
 	events.TagDetected
 	SuggestedAction string `json:"suggested_action"`
 	SuggestedReason string `json:"suggested_reason"`
+	// Kanban is set for tags assigned to a kanban; Unassigned is true for tags
+	// with no active kanban link. Both are omitted when unknown (no store).
+	Kanban     *localstore.Kanban `json:"kanban,omitempty"`
+	Unassigned bool               `json:"unassigned,omitempty"`
 }
 
 // SSEHandler handles Server-Sent Events for real-time tag detection.
@@ -79,6 +84,19 @@ func (s *Server) SSEHandler(w http.ResponseWriter, r *http.Request) {
 				suggestion := s.verifier.SuggestAction(event.EPC, event.AntennaID)
 				enriched.SuggestedAction = string(suggestion.Action)
 				enriched.SuggestedReason = suggestion.Reason
+			}
+
+			// Attach the kanban identity, or flag the tag as unassigned
+			if s.store != nil {
+				kanban, err := s.store.GetKanbanByUII(event.EPC)
+				switch {
+				case err != nil:
+					log.Printf("[Web] Failed to look up kanban for %s: %v", event.EPC, err)
+				case kanban != nil:
+					enriched.Kanban = kanban
+				default:
+					enriched.Unassigned = true
+				}
 			}
 
 			// Serialize enriched event to JSON

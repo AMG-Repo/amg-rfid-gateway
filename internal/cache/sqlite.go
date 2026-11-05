@@ -557,7 +557,8 @@ func migrateNullableFields(db *sql.DB) error {
 // migrateKanbanTables creates the kanban cache tables. They are additive and
 // independent from tool_tags, so databases created before kanbans existed
 // upgrade in place without touching tool_tags or pending_confirmations.
-// Both tables are a read-only copy of VPS data and are rebuilt on every sync.
+// kanbans and tag_kanban_links are a read-only copy of VPS data rebuilt on
+// every sync; unassigned_tags is the local inbox of reads with no kanban.
 // It is idempotent - safe to run multiple times.
 func migrateKanbanTables(db *sql.DB) error {
 	_, err := db.Exec(`
@@ -583,6 +584,14 @@ func migrateKanbanTables(db *sql.DB) error {
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_tag_kanban_links_code ON tag_kanban_links(kanban_code);
+
+		CREATE TABLE IF NOT EXISTS unassigned_tags (
+			epc TEXT PRIMARY KEY,
+			antenna_id TEXT,
+			first_seen DATETIME NOT NULL,
+			last_seen DATETIME NOT NULL,
+			read_count INTEGER NOT NULL DEFAULT 0
+		);
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to create kanban tables: %w", err)
