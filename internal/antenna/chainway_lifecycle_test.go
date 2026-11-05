@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -251,5 +254,35 @@ func TestChainwayStartSkippedWhenContextAlreadyDone(t *testing.T) {
 
 	if n := countFrame(sentCommands(client), chainway.StartInventoryFrame()); n != 0 {
 		t.Fatalf("commands = % X, want no start-inventory on a cancelled session", sentCommands(client))
+	}
+}
+
+// On a link the watchdog declared dead, the stop write only reaches the
+// kernel buffer, so the log must not claim inventory stopped.
+func TestChainwayDeadLinkStopIsNotReportedAsStopped(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	defer log.SetOutput(os.Stderr)
+
+	manager, client := newChainwayLifecycleManager(t)
+	fastChainwayWatchdog(manager)
+	local, remote := net.Pipe()
+	defer remote.Close()
+	manager.SetConn(local)
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, manager)
+	_ = manager.Stop()
+
+	if countFrame(sentCommands(client), chainway.StopInventoryFrame()) != 1 {
+		t.Fatalf("commands = % X, want stop-inventory still sent once", sentCommands(client))
+	}
+	out := logs.String()
+	if strings.Contains(out, "Chainway inventory stopped") {
+		t.Fatalf("log claims inventory stopped on a dead link:\n%s", out)
+	}
+	if !strings.Contains(out, "stop-inventory unconfirmed") {
+		t.Fatalf("log does not say the stop is unconfirmed:\n%s", out)
 	}
 }

@@ -85,6 +85,8 @@ type AntennaManager struct {
 	chainwayProbeAfter time.Duration
 	chainwayDeadAfter  time.Duration
 	lastRxNano         atomic.Int64
+	// linkDead is set when the watchdog gives up on a silent connection.
+	linkDead atomic.Bool
 }
 
 const (
@@ -284,12 +286,14 @@ func (m *AntennaManager) chainwayWatchdog() {
 		switch {
 		case silence >= m.chainwayDeadAfter:
 			log.Printf("[WARN] Antenna %s: no data for %s, assuming dead connection", m.config.ID, silence.Round(time.Second))
+			m.linkDead.Store(true)
 			m.cancel()
 			return
 		case silence >= m.chainwayProbeAfter && probedAt != last:
 			probedAt = last
 			if err := m.client.SendCommand(chainway.ReadPowerFrame()); err != nil {
 				log.Printf("[WARN] Antenna %s: liveness probe failed: %v", m.config.ID, err)
+				m.linkDead.Store(true)
 				m.cancel()
 				return
 			}
@@ -310,6 +314,12 @@ func (m *AntennaManager) stopSession() {
 		}
 		if err := m.client.SendCommand(chainway.StopInventoryFrame()); err != nil {
 			log.Printf("[WARN] Antenna %s: stop-inventory failed: %v", m.config.ID, err)
+			return
+		}
+		if m.linkDead.Load() {
+			// The write only reached the kernel buffer; the reader may still
+			// have RF on until it drops the connection.
+			log.Printf("[WARN] Antenna %s: stop-inventory unconfirmed, connection presumed dead", m.config.ID)
 			return
 		}
 		log.Printf("[INFO] Antenna %s: Chainway inventory stopped", m.config.ID)
