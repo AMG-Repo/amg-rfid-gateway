@@ -243,6 +243,58 @@ func (c *VPSClient) FetchSyncData(companyID string) (*sync.SyncDataResponse, err
 	return &syncResp, nil
 }
 
+// kanbansResponse is the response of the gateway kanban catalog endpoint.
+type kanbansResponse struct {
+	Status  string              `json:"status"`
+	Kanbans []localstore.Kanban `json:"kanbans"`
+}
+
+// Ensure the client satisfies the optional kanban catalog interface of the sync package.
+var _ sync.KanbanFetcher = (*VPSClient)(nil)
+
+// FetchKanbans retrieves the kanban catalog (read-only copy used by the assignment picker).
+// Calls GET /api/v1/gateway/kanbans?company_id={company_id}
+// This endpoint requires GatewayAuth (JWT token).
+func (c *VPSClient) FetchKanbans(companyID string) ([]localstore.Kanban, error) {
+	url := fmt.Sprintf("%s/api/v1/gateway/kanbans?company_id=%s", c.baseURL, companyID)
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/json")
+	if c.jwtToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var kanbansResp kanbansResponse
+	if err := json.Unmarshal(body, &kanbansResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if kanbansResp.Status != "OK" {
+		return nil, fmt.Errorf("unexpected response status: %s", kanbansResp.Status)
+	}
+
+	return kanbansResp.Kanbans, nil
+}
+
 // GatewayConfirmResponse is the response from the gateway confirm endpoint.
 type GatewayConfirmResponse struct {
 	Status    string `json:"status"`

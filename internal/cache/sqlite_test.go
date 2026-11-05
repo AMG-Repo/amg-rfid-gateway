@@ -976,3 +976,81 @@ func TestNormalizedSchema_Idempotent(t *testing.T) {
 		t.Errorf("expected tools table to exist after second migration, got %d", toolsCount)
 	}
 }
+
+func tableExists(t *testing.T, db *sql.DB, name string) bool {
+	t.Helper()
+	var exists bool
+	if err := db.QueryRow(`SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&exists); err != nil {
+		t.Fatalf("failed to check table %s: %v", name, err)
+	}
+	return exists
+}
+
+func TestKanbanTables_CreatedOnNewDatabase(t *testing.T) {
+	c, err := NewSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	defer c.Close()
+
+	for _, name := range []string{"kanbans", "tag_kanban_links"} {
+		if !tableExists(t, c.GetDB(), name) {
+			t.Errorf("expected table %s to exist on a new database", name)
+		}
+	}
+}
+
+// An existing gateway DB (created before kanbans existed) must gain the kanban
+// tables on upgrade without touching tool_tags or the offline confirmation queue.
+func TestKanbanTables_MigrationOnExistingDatabaseKeepsPendingConfirmations(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	first, err := NewSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	db := first.GetDB()
+	if _, err := db.Exec(`INSERT INTO pending_confirmations (uii, action, antenna_id, synced, retry_count) VALUES ('EPC-OLD', 'salida', 'ant-1', 0, 3)`); err != nil {
+		t.Fatalf("failed to seed pending confirmation: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO tools (id, company_id, sku, name) VALUES (1, 'c', 'SKU', 'Tool')`); err != nil {
+		t.Fatalf("failed to seed tool: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO tool_tags (id, tool_id, uii, status, active) VALUES (1, 1, 'EPC-OLD', 'active', 1)`); err != nil {
+		t.Fatalf("failed to seed tool tag: %v", err)
+	}
+	// Simulate a database from before this feature.
+	if _, err := db.Exec(`DROP TABLE kanbans; DROP TABLE tag_kanban_links;`); err != nil {
+		t.Fatalf("failed to drop kanban tables: %v", err)
+	}
+	first.Close()
+
+	// Upgrade twice: migration must be idempotent.
+	for i := 0; i < 2; i++ {
+		c, err := NewSQLite(dbPath)
+		if err != nil {
+			t.Fatalf("reopen %d failed: %v", i, err)
+		}
+		for _, name := range []string{"kanbans", "tag_kanban_links"} {
+			if !tableExists(t, c.GetDB(), name) {
+				t.Errorf("reopen %d: expected table %s after migration", i, name)
+			}
+		}
+
+		var uii, action, antenna string
+		var retry int
+		err = c.GetDB().QueryRow(`SELECT uii, action, antenna_id, retry_count FROM pending_confirmations`).Scan(&uii, &action, &antenna, &retry)
+		if err != nil {
+			t.Fatalf("reopen %d: pending confirmation lost: %v", i, err)
+		}
+		if uii != "EPC-OLD" || action != "salida" || antenna != "ant-1" || retry != 3 {
+			t.Errorf("reopen %d: pending confirmation altered: %s %s %s %d", i, uii, action, antenna, retry)
+		}
+
+		var tags int
+		if err := c.GetDB().QueryRow(`SELECT COUNT(*) FROM tool_tags`).Scan(&tags); err != nil || tags != 1 {
+			t.Errorf("reopen %d: expected tool_tags untouched, got (%d, %v)", i, tags, err)
+		}
+		c.Close()
+	}
+}

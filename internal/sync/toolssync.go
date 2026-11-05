@@ -16,9 +16,9 @@ const MaxRetries = 10
 
 // SyncDataResponse represents the response from the gateway sync endpoint
 type SyncDataResponse struct {
-	Status    string             `json:"status"`
+	Status    string                    `json:"status"`
 	Tools     []localstore.SyncDataItem `json:"tools"`
-	Timestamp time.Time          `json:"timestamp"`
+	Timestamp time.Time                 `json:"timestamp"`
 }
 
 // VPSClient defines the interface for VPS API operations
@@ -38,6 +38,19 @@ type LocalStore interface {
 	GetUnsyncedConfirmations(limit int) ([]localstore.PendingConfirmation, error)
 	MarkConfirmationSynced(id int64) error
 	IncrementRetryCount(id int64) error
+}
+
+// KanbanFetcher is implemented by VPS clients that can fetch the kanban catalog.
+// It is optional so VPS clients without kanban support keep working unchanged.
+type KanbanFetcher interface {
+	FetchKanbans(companyID string) ([]localstore.Kanban, error)
+}
+
+// KanbanStore is implemented by local stores that cache kanban links and the
+// kanban catalog. It is optional so stores without kanban support keep working.
+type KanbanStore interface {
+	ApplyKanbanLinks(items []localstore.SyncDataItem) error
+	ReplaceKanbanCatalog(kanbans []localstore.Kanban) error
 }
 
 // ToolsSync manages synchronization of tools/users with VPS and handles
@@ -239,16 +252,69 @@ func (t *ToolsSync) performSync() {
 		}
 	}
 
+	// Mirror kanban links (clears stale ones) now that tags are stored.
+	// A failure here must not block users or mark the VPS offline.
+	t.applyKanbanLinks(syncResp.Tools, toolTagRecords)
+
 	// Upsert users
 	if err := t.store.UpsertUsers(users); err != nil {
 		log.Printf("[ToolsSync] Failed to upsert users: %v", err)
 		return
 	}
 
+	// Refresh the kanban catalog used by the assignment picker (best effort).
+	t.refreshKanbanCatalog()
+
 	// Mark VPS as online after successful sync
 	t.setVPSOnline(true)
 
 	log.Printf("[ToolsSync] Synced %d tools, %d tool_tags, and %d users", len(toolRecords), len(toolTagRecords), len(users))
+}
+
+// applyKanbanLinks mirrors the kanban link of the synced items that were stored
+// as tool tags. Items skipped for an empty SKU are excluded.
+func (t *ToolsSync) applyKanbanLinks(items []localstore.SyncDataItem, stored []localstore.ToolTagRecord) {
+	ks, ok := t.store.(KanbanStore)
+	if !ok || len(stored) == 0 {
+		return
+	}
+
+	storedUII := make(map[string]struct{}, len(stored))
+	for _, tag := range stored {
+		storedUII[tag.UII] = struct{}{}
+	}
+	linkItems := make([]localstore.SyncDataItem, 0, len(stored))
+	for _, item := range items {
+		if _, ok := storedUII[item.UII]; ok {
+			linkItems = append(linkItems, item)
+		}
+	}
+
+	if err := ks.ApplyKanbanLinks(linkItems); err != nil {
+		log.Printf("[ToolsSync] Failed to cache kanban links: %v", err)
+	}
+}
+
+// refreshKanbanCatalog fetches and caches the kanban catalog. Failures (for
+// example a VPS that does not expose the endpoint yet) are logged only.
+func (t *ToolsSync) refreshKanbanCatalog() {
+	fetcher, ok := t.vpsClient.(KanbanFetcher)
+	if !ok {
+		return
+	}
+	ks, ok := t.store.(KanbanStore)
+	if !ok {
+		return
+	}
+
+	kanbans, err := fetcher.FetchKanbans(t.companyID)
+	if err != nil {
+		log.Printf("[ToolsSync] Failed to fetch kanban catalog: %v", err)
+		return
+	}
+	if err := ks.ReplaceKanbanCatalog(kanbans); err != nil {
+		log.Printf("[ToolsSync] Failed to cache kanban catalog: %v", err)
+	}
 }
 
 // flushPendingConfirmations periodically tries to send pending confirmations to VPS.

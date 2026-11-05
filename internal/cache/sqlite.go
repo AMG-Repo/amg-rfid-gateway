@@ -92,6 +92,12 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 		return nil, fmt.Errorf("failed to migrate nullable fields: %w", err)
 	}
 
+	// Kanban catalog + tag links (additive tables, rebuilt from sync)
+	if err := migrateKanbanTables(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate kanban tables: %w", err)
+	}
+
 	// HAPPY PATH: Create cache instance with buffered channel
 	cache := &SQLite{
 		db:       db,
@@ -546,6 +552,42 @@ func migrateNullableFields(db *sql.DB) error {
 	}
 
 	return tx.Commit()
+}
+
+// migrateKanbanTables creates the kanban cache tables. They are additive and
+// independent from tool_tags, so databases created before kanbans existed
+// upgrade in place without touching tool_tags or pending_confirmations.
+// Both tables are a read-only copy of VPS data and are rebuilt on every sync.
+// It is idempotent - safe to run multiple times.
+func migrateKanbanTables(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS kanbans (
+			code TEXT PRIMARY KEY,
+			description TEXT,
+			standard_pack REAL,
+			unit TEXT,
+			zones TEXT,
+			extrusora TEXT,
+			position TEXT,
+			area TEXT,
+			customer TEXT,
+			card_type TEXT,
+			sku TEXT,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS tag_kanban_links (
+			uii TEXT PRIMARY KEY,
+			kanban_code TEXT NOT NULL,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_tag_kanban_links_code ON tag_kanban_links(kanban_code);
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create kanban tables: %w", err)
+	}
+	return nil
 }
 
 // Store adds a reading to the cache.

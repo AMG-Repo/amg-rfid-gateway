@@ -66,6 +66,9 @@ type SyncDataItem struct {
 	Active          bool    `json:"active"`
 	KanbanZone      *string `json:"kanban_zone,omitempty"`
 	ToolDestination *string `json:"tool_destination,omitempty"`
+	// Kanban is the kanban the tag is assigned to (nil when unassigned or when
+	// the VPS predates kanbans). Optional: old payloads without it keep working.
+	Kanban *Kanban `json:"kanban,omitempty"`
 }
 
 // User represents a user from VPS cached locally.
@@ -249,8 +252,8 @@ func (s *LocalStore) UpsertTools(tools []Tool) error {
 
 		// Insert/update tool tag record
 		_, err = tagStmt.Exec(
-			tool.ID,    // Use same ID for tag
-			tool.ID,    // tool_id references tools.id
+			tool.ID, // Use same ID for tag
+			tool.ID, // tool_id references tools.id
 			tool.UII,
 			tool.Status,
 			tool.Location,
@@ -344,8 +347,8 @@ func (s *LocalStore) UpsertToolsFromSync(rows []SyncDataItem) error {
 		}
 
 		_, err = tagStmt.Exec(
-			row.ID,        // tag id
-			row.ToolID,    // references tools.id
+			row.ID,     // tag id
+			row.ToolID, // references tools.id
 			row.UII,
 			toNullString(row.UnitNumber),
 			row.Status,
