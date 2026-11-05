@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/cache"
 )
@@ -246,5 +247,64 @@ func TestReplaceKanbanCatalog_KeepsKanbanStillLinkedToATag(t *testing.T) {
 	got, _ := store.GetKanbanByUII("A0000001")
 	if got == nil || got.Code != k.Code {
 		t.Errorf("expected linked kanban to survive catalog replace, got %+v", got)
+	}
+}
+
+func TestAssignKanban_LinksTagStoresKanbanAndLeavesTheInbox(t *testing.T) {
+	store := setupKanbanStore(t)
+	k := fordKanban()
+	store.UpsertUnassignedTag("A0000001", "ant-1", time.Now(), 3)
+	store.UpsertUnassignedTag("A0000002", "ant-1", time.Now(), 1)
+
+	if err := store.AssignKanban("A0000001", k); err != nil {
+		t.Fatalf("AssignKanban failed: %v", err)
+	}
+
+	got, err := store.GetKanbanByUII("A0000001")
+	if err != nil || got == nil || !reflect.DeepEqual(*got, k) {
+		t.Errorf("expected tag linked to kanban, got (%+v, %v)", got, err)
+	}
+	pending, _ := store.ListUnassignedTags()
+	if len(pending) != 1 || pending[0].EPC != "A0000002" {
+		t.Errorf("expected only A0000002 left in the inbox, got %+v", pending)
+	}
+	var rows int
+	store.db.QueryRow(`SELECT COUNT(*) FROM unassigned_tags WHERE epc = 'A0000001'`).Scan(&rows)
+	if rows != 0 {
+		t.Errorf("expected the assigned EPC deleted from unassigned_tags, still %d row(s)", rows)
+	}
+}
+
+func TestAssignKanban_IsIdempotentAndCanRelink(t *testing.T) {
+	store := setupKanbanStore(t)
+	k := fordKanban()
+
+	for i := 0; i < 2; i++ {
+		if err := store.AssignKanban("A0000001", k); err != nil {
+			t.Fatalf("assign %d failed: %v", i, err)
+		}
+	}
+	list, _ := store.ListKanbans()
+	if len(list) != 1 {
+		t.Errorf("expected a single kanban row after repeated assign, got %d", len(list))
+	}
+
+	other := Kanban{Code: "TOY-001", Description: "Sello"}
+	if err := store.AssignKanban("A0000001", other); err != nil {
+		t.Fatalf("relink failed: %v", err)
+	}
+	got, _ := store.GetKanbanByUII("A0000001")
+	if got == nil || got.Code != "TOY-001" {
+		t.Errorf("expected relinked to TOY-001, got %+v", got)
+	}
+}
+
+func TestAssignKanban_RejectsBlankInput(t *testing.T) {
+	store := setupKanbanStore(t)
+	if err := store.AssignKanban("", fordKanban()); err == nil {
+		t.Error("expected error for empty UII")
+	}
+	if err := store.AssignKanban("A1", Kanban{Code: " "}); err == nil {
+		t.Error("expected error for blank kanban code")
 	}
 }

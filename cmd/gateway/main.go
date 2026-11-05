@@ -125,6 +125,8 @@ func main() {
 			cfg.CompanyID,
 			cfg,
 		)
+		// A successful tag assignment refreshes tools/kanbans right away
+		webServer.SetSyncTrigger(toolsSync)
 		log.Printf("Web server initialized on %s:%d", cfg.WebListenAddr, cfg.WebPort)
 	}
 
@@ -265,6 +267,13 @@ func main() {
 
 	log.Println("Gateway stopped")
 }
+
+// The tools sync reaches the kanban cache through optional interfaces; these
+// assertions make sure the production types really provide them.
+var (
+	_ syncpkg.KanbanStore   = (*localstore.LocalStore)(nil)
+	_ syncpkg.KanbanFetcher = (*httpclient.VPSClient)(nil)
+)
 
 // toolStoreAdapter wraps localstore to implement verify.ToolStore interface
 // Maps normalized schema data (tool_tags JOIN tools) to verify.Tool.

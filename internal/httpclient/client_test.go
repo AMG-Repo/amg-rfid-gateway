@@ -1,7 +1,9 @@
 package httpclient
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -943,5 +945,110 @@ func TestFetchKanbans_Errors(t *testing.T) {
 				t.Errorf("expected error, got kanbans %+v", kanbans)
 			}
 		})
+	}
+}
+
+func assignServer(t *testing.T, status int, body string, gotBody *map[string]any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/api/v1/gateway/tags/assign" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Errorf("expected bearer token, got %q", got)
+		}
+		if gotBody != nil {
+			json.NewDecoder(r.Body).Decode(gotBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		w.Write([]byte(body))
+	}))
+}
+
+func TestAssignTag_Success(t *testing.T) {
+	var sent map[string]any
+	server := assignServer(t, http.StatusOK, `{"uii":"A0000001","kanban":{"code":"EXP758SF M16","description":"Burlete","standard_pack":250,"unit":"PZ","zones":["C"]}}`, &sent)
+	defer server.Close()
+
+	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	kanban, err := client.AssignTag(context.Background(), "comp-1", "A0000001", "EXP758SF M16", "ant-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sent["company_id"] != "comp-1" || sent["uii"] != "A0000001" || sent["kanban_code"] != "EXP758SF M16" || sent["antenna_id"] != "ant-1" {
+		t.Errorf("unexpected request body: %+v", sent)
+	}
+	if kanban == nil || kanban.Code != "EXP758SF M16" || kanban.Unit != "PZ" || kanban.StandardPack != 250 {
+		t.Errorf("unexpected kanban: %+v", kanban)
+	}
+}
+
+func TestAssignTag_MapsVPSErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		body        string
+		wantStatus  int
+		wantCode    string
+		wantCurrent string
+	}{
+		{"kanban not found", http.StatusNotFound, `{"error":"kanban_not_found"}`, 404, "kanban_not_found", ""},
+		{"uii assigned elsewhere", http.StatusConflict, `{"error":"uii_assigned","current_kanban":"TOY-001"}`, 409, "uii_assigned", "TOY-001"},
+		{"bad request", http.StatusBadRequest, `{"error":"invalid uii"}`, 400, "invalid uii", ""},
+		{"server error", http.StatusInternalServerError, `boom`, 500, "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := assignServer(t, tt.status, tt.body, nil)
+			defer server.Close()
+
+			client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+			_, err := client.AssignTag(context.Background(), "comp-1", "A1", "K1", "")
+			var assignErr *AssignError
+			if !errors.As(err, &assignErr) {
+				t.Fatalf("expected *AssignError, got %v", err)
+			}
+			if assignErr.StatusCode != tt.wantStatus || assignErr.Code != tt.wantCode || assignErr.CurrentKanban != tt.wantCurrent {
+				t.Errorf("unexpected error: %+v", assignErr)
+			}
+			if errors.Is(err, ErrVPSUnavailable) {
+				t.Error("a VPS answer must not be reported as unavailable")
+			}
+		})
+	}
+}
+
+func TestAssignTag_UnreachableAndTimeoutAreUnavailable(t *testing.T) {
+	// Connection refused
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+	client := NewVPSClient(closed.URL, 500*time.Millisecond, "test-token")
+	if _, err := client.AssignTag(context.Background(), "c", "A1", "K1", ""); !errors.Is(err, ErrVPSUnavailable) {
+		t.Errorf("connection refused: expected ErrVPSUnavailable, got %v", err)
+	}
+
+	// Timeout
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+	}))
+	defer slow.Close()
+	client = NewVPSClient(slow.URL, 50*time.Millisecond, "test-token")
+	if _, err := client.AssignTag(context.Background(), "c", "A1", "K1", ""); !errors.Is(err, ErrVPSUnavailable) {
+		t.Errorf("timeout: expected ErrVPSUnavailable, got %v", err)
+	}
+}
+
+func TestAssignTag_SuccessWithoutKanbanBodyStillSucceeds(t *testing.T) {
+	server := assignServer(t, http.StatusOK, `{"uii":"A1"}`, nil)
+	defer server.Close()
+
+	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	kanban, err := client.AssignTag(context.Background(), "c", "A1", "K1", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if kanban != nil {
+		t.Errorf("expected nil kanban when the VPS omits it, got %+v", kanban)
 	}
 }

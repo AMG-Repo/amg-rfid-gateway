@@ -3,6 +3,7 @@ package localstore
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 )
@@ -113,15 +114,49 @@ func (s *LocalStore) ApplyKanbanLinks(items []SyncDataItem) error {
 		if err := upsertKanbanTx(tx, *item.Kanban, now); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`
-			INSERT INTO tag_kanban_links (uii, kanban_code, last_synced_at)
-			VALUES (?, ?, ?)
-			ON CONFLICT(uii) DO UPDATE SET
-				kanban_code = excluded.kanban_code,
-				last_synced_at = excluded.last_synced_at
-		`, item.UII, item.Kanban.Code, now); err != nil {
+		if err := upsertLinkTx(tx, item.UII, item.Kanban.Code, now); err != nil {
 			return err
 		}
+	}
+
+	return tx.Commit()
+}
+
+// upsertLinkTx links a tag to a kanban code.
+func upsertLinkTx(tx *sql.Tx, uii, kanbanCode string, now time.Time) error {
+	_, err := tx.Exec(`
+		INSERT INTO tag_kanban_links (uii, kanban_code, last_synced_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(uii) DO UPDATE SET
+			kanban_code = excluded.kanban_code,
+			last_synced_at = excluded.last_synced_at
+	`, uii, kanbanCode, now)
+	return err
+}
+
+// AssignKanban records, in the local cache, an assignment the VPS has already
+// accepted: it stores the kanban returned by the VPS, links the tag and removes
+// it from the unassigned inbox. It never decides an assignment by itself.
+func (s *LocalStore) AssignKanban(uii string, kanban Kanban) error {
+	if strings.TrimSpace(uii) == "" || strings.TrimSpace(kanban.Code) == "" {
+		return errors.New("uii and kanban code are required")
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	now := time.Now()
+	if err := upsertKanbanTx(tx, kanban, now); err != nil {
+		return err
+	}
+	if err := upsertLinkTx(tx, uii, kanban.Code, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM unassigned_tags WHERE epc = ?`, uii); err != nil {
+		return err
 	}
 
 	return tx.Commit()

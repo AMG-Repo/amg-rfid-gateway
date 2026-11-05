@@ -63,6 +63,7 @@ type ToolsSync struct {
 	retryInterval time.Duration
 	vpsOnline     bool
 	mu            sync.RWMutex
+	syncNow       chan struct{}
 
 	// Lifecycle
 	ctx    context.Context
@@ -85,6 +86,18 @@ func NewToolsSync(
 		syncInterval:  syncInterval,
 		retryInterval: retryInterval,
 		vpsOnline:     false,
+		syncNow:       make(chan struct{}, 1),
+	}
+}
+
+// RequestSync asks the sync loop to run a tools/users/kanban sync right away
+// instead of waiting for the next interval. It never blocks; requests made
+// while one is already pending are coalesced. Without a running loop the
+// request is held until the loop starts.
+func (t *ToolsSync) RequestSync() {
+	select {
+	case t.syncNow <- struct{}{}:
+	default:
 	}
 }
 
@@ -171,6 +184,8 @@ func (t *ToolsSync) syncToolsUsersLoop() {
 		case <-t.ctx.Done():
 			return
 		case <-ticker.C:
+			t.performSync()
+		case <-t.syncNow:
 			t.performSync()
 		}
 	}

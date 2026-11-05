@@ -195,3 +195,42 @@ func TestToolsSync_LinkFailureDoesNotMarkVPSOfflineOrSkipUsers(t *testing.T) {
 		t.Error("expected users upserted even if kanban links failed")
 	}
 }
+
+func TestToolsSync_RequestSyncTriggersImmediateSync(t *testing.T) {
+	vps := &mockVPSClient{}
+	ts := NewToolsSync(vps, &mockLocalStore{}, "company123", 1*time.Hour, 1*time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := ts.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer ts.Stop()
+
+	waitFor(t, "initial sync", ts.IsVPSOnline)
+	before := vps.callCount.Load()
+
+	ts.RequestSync()
+
+	// One sync = FetchSyncData + FetchUsers; the 1h ticker cannot be the cause.
+	waitFor(t, "immediate sync after RequestSync", func() bool { return vps.callCount.Load() >= before+2 })
+}
+
+func TestToolsSync_RequestSyncNeverBlocks(t *testing.T) {
+	ts := NewToolsSync(&mockVPSClient{}, &mockLocalStore{}, "company123", 1*time.Hour, 1*time.Hour)
+
+	done := make(chan struct{})
+	go func() {
+		// Not started and called repeatedly: requests coalesce instead of blocking.
+		for i := 0; i < 100; i++ {
+			ts.RequestSync()
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RequestSync blocked")
+	}
+}

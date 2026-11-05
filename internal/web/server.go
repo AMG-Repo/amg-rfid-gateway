@@ -37,6 +37,9 @@ type Server struct {
 	// unassigned tags inbox recorder (see unassigned.go)
 	unassignedFlushInterval time.Duration
 	recorderCancel          context.CancelFunc
+
+	// refreshed right after a successful tag assignment (optional)
+	syncTrigger SyncTrigger
 }
 
 // NewServer creates a new web server.
@@ -105,6 +108,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/auth-mode", s.handleAuthMode)
 	mux.HandleFunc("/api/unassigned-tags", s.handleUnassignedTags)
+	mux.HandleFunc("/api/kanbans", s.handleKanbans)
+	mux.HandleFunc("/api/tags/assign", s.requireWriteAuth(s.handleAssignTag))
 
 	return mux
 }
