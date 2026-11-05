@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	CmdReadPower         byte = 0x12
 	CmdStartInventory    byte = 0x82
 	CmdTagNotification   byte = 0x83
 	CmdStopInventory     byte = 0x8C
@@ -39,6 +40,12 @@ type Tag struct {
 // StartInventoryFrame returns the start-inventory command frame.
 func StartInventoryFrame() []byte {
 	return mustEncode(CmdStartInventory, []byte{0x00, 0x00})
+}
+
+// ReadPowerFrame returns the read-power command frame. The UR4 answers it
+// (0x13) even while inventory runs, so it doubles as a liveness probe.
+func ReadPowerFrame() []byte {
+	return mustEncode(CmdReadPower, nil)
 }
 
 // StopInventoryFrame returns the stop-inventory command frame.

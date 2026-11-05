@@ -3,6 +3,7 @@ package chainway
 import (
 	"bytes"
 	"errors"
+	"math"
 	"testing"
 )
 
@@ -153,5 +154,44 @@ func TestRealUR4StopResponse(t *testing.T) {
 	ok, err := ParseStopResponse(f)
 	if err != nil || !ok {
 		t.Fatalf("ParseStopResponse = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+// TestRealUR4TagFrame pins a tag notification captured from a physical UR4
+// (port 1, 20 dBm, 2026-11-05).
+func TestRealUR4TagFrame(t *testing.T) {
+	captured := []byte{
+		0xA5, 0x5A, 0x00, 0x19, 0x83, 0x30, 0x00,
+		0xE2, 0x80, 0x69, 0x15, 0x00, 0x00, 0x40, 0x21, 0xBB, 0xE1, 0xEA, 0x2C,
+		0xFD, 0x6D, 0x01, 0xD8, 0x0D, 0x0A,
+	}
+
+	frames := NewStreamExtractor().Append(captured)
+	if len(frames) != 1 {
+		t.Fatalf("got %d frames, want 1", len(frames))
+	}
+	f, err := Decode(frames[0])
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if f.Cmd != CmdTagNotification {
+		t.Fatalf("cmd = %#x, want %#x", f.Cmd, CmdTagNotification)
+	}
+	tag, err := ParseTag(f.Data)
+	if err != nil {
+		t.Fatalf("ParseTag: %v", err)
+	}
+	if tag.EPC != "E280691500004021BBE1EA2C" || tag.TID != "" || tag.Antenna != 1 {
+		t.Fatalf("tag = %+v", tag)
+	}
+	if !tag.RSSIValid || math.Round(tag.RSSI) != -66 {
+		t.Fatalf("RSSI = (%v, %v), want ~-66 dBm", tag.RSSI, tag.RSSIValid)
+	}
+}
+
+func TestReadPowerFrameMatchesCapturedLiteral(t *testing.T) {
+	want := []byte{0xA5, 0x5A, 0x00, 0x08, 0x12, 0x1A, 0x0D, 0x0A}
+	if got := ReadPowerFrame(); !bytes.Equal(got, want) {
+		t.Fatalf("ReadPowerFrame = % X, want % X", got, want)
 	}
 }

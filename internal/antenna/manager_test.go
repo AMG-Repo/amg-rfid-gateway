@@ -31,9 +31,18 @@ type mockClient struct {
 	lastActivity time.Time
 	connected    bool
 	writeError   error
+	// beforeSend, when set, runs before each command is recorded, without
+	// the lock held, so tests can delay or observe a send in flight.
+	beforeSend func(data []byte)
 }
 
 func (m *mockClient) SendCommand(data []byte) error {
+	m.mu.Lock()
+	hook := m.beforeSend
+	m.mu.Unlock()
+	if hook != nil {
+		hook(data)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.writeError != nil {

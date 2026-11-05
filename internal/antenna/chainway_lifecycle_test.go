@@ -139,3 +139,117 @@ func TestGenericStopSendsNoChainwayFrames(t *testing.T) {
 		t.Fatalf("generic sent chainway frames: % X", cmds)
 	}
 }
+
+func fastChainwayWatchdog(m *AntennaManager) {
+	m.chainwayProbeAfter = 50 * time.Millisecond
+	m.chainwayDeadAfter = 150 * time.Millisecond
+}
+
+// A pulled cable delivers no EOF: silence must probe the reader, then end the
+// session so the reconnect loop takes over.
+func TestChainwaySilentConnectionEndsSession(t *testing.T) {
+	manager, client := newChainwayLifecycleManager(t)
+	fastChainwayWatchdog(manager)
+	local, remote := net.Pipe()
+	defer remote.Close()
+	manager.SetConn(local)
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	waitDone(t, manager)
+	_ = manager.Stop()
+
+	if n := countFrame(sentCommands(client), chainway.ReadPowerFrame()); n != 1 {
+		t.Fatalf("commands = % X, want exactly one read-power probe before giving up, got %d", sentCommands(client), n)
+	}
+}
+
+// Any frame from the reader, including a probe reply, keeps the session alive.
+func TestChainwayReplyKeepsSessionAlive(t *testing.T) {
+	manager, _ := newChainwayLifecycleManager(t)
+	fastChainwayWatchdog(manager)
+	// Wide dead threshold: replies every 30ms must never look like silence,
+	// even on a loaded -race run.
+	manager.chainwayDeadAfter = time.Second
+	local, remote := net.Pipe()
+	defer remote.Close()
+	manager.SetConn(local)
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	reply := []byte{0xA5, 0x5A, 0x00, 0x0A, 0x13, 0x00, 0xF1, 0xE8, 0x0D, 0x0A}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if _, err := remote.Write(reply); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+
+	select {
+	case <-manager.Done():
+		t.Fatal("session ended while the reader kept answering")
+	default:
+	}
+	_ = manager.Stop()
+}
+
+// indexOfFrame returns the position of the first frame equal to want, or -1.
+func indexOfFrame(cmds [][]byte, want []byte) int {
+	for i, c := range cmds {
+		if bytes.Equal(c, want) {
+			return i
+		}
+	}
+	return -1
+}
+
+// An immediate Stop while start-inventory is still being written must not let
+// the start land after the stop and leave RF on.
+func TestChainwayStopWaitsForDelayedStart(t *testing.T) {
+	manager, client := newChainwayLifecycleManager(t)
+	startFrame := chainway.StartInventoryFrame()
+	inFlight := make(chan struct{})
+	client.beforeSend = func(data []byte) {
+		if bytes.Equal(data, startFrame) {
+			close(inFlight)
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-inFlight
+
+	if err := manager.Stop(); err != nil {
+		t.Fatal(err)
+	}
+
+	cmds := sentCommands(client)
+	start := indexOfFrame(cmds, startFrame)
+	stop := indexOfFrame(cmds, chainway.StopInventoryFrame())
+	if stop < 0 || (start >= 0 && start > stop) {
+		t.Fatalf("commands = % X, want stop-inventory never before start-inventory and sent last", cmds)
+	}
+	if !bytes.Equal(cmds[len(cmds)-1], chainway.StopInventoryFrame()) {
+		t.Fatalf("commands = % X, want stop-inventory last", cmds)
+	}
+}
+
+// A session whose context is already done must not turn RF on.
+func TestChainwayStartSkippedWhenContextAlreadyDone(t *testing.T) {
+	manager, client := newChainwayLifecycleManager(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, manager)
+	_ = manager.Stop()
+
+	if n := countFrame(sentCommands(client), chainway.StartInventoryFrame()); n != 0 {
+		t.Fatalf("commands = % X, want no start-inventory on a cancelled session", sentCommands(client))
+	}
+}

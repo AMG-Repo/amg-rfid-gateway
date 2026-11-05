@@ -53,7 +53,14 @@ type Client struct {
 	mu           sync.RWMutex
 	reader       *bufio.Reader
 	lastActivity time.Time
+
+	// writeTimeout bounds each command write; zero means commandWriteTimeout.
+	writeTimeout time.Duration
 }
+
+// commandWriteTimeout bounds SendCommand so a stalled peer cannot hold the
+// client mutex (and the callers waiting on it) forever.
+const commandWriteTimeout = 2 * time.Second
 
 // NewClient creates a new TCP client for an antenna
 func NewClient(ip string, port int) *Client {
@@ -125,6 +132,15 @@ func (c *Client) SendCommand(data []byte) error {
 
 	if c.conn == nil {
 		return errors.New("not connected")
+	}
+
+	timeout := c.writeTimeout
+	if timeout <= 0 {
+		timeout = commandWriteTimeout
+	}
+	// Every write sets its own deadline, so none needs clearing afterwards.
+	if err := c.conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		return fmt.Errorf("failed to set write deadline: %w", err)
 	}
 
 	_, err := c.conn.Write(data)
