@@ -30,7 +30,7 @@ Status: planned only (session 2026-10-27). Implementation starts next session at
 - T3 (S1, S8, S9) — `ProtocolChainway` constant/validation, `port_locations` config field, `ChainwayProtocolHandler` and per-protocol frame extractor selection in both read paths (`internal/antenna/manager.go` dataReader and `internal/rawtcp/client.go` RunAntenna); generic regression tests. Route: inline. Status: done (see L13). Branch: `feat/chainway-ur4-handler` (PR3). Commit: see L13
 - T4 (S6) — Per-protocol session hooks: send start on connect/reconnect, stop on shutdown; keep generic heartbeat/ReadUII unchanged. Route: inline. Status: done (see L14). Branch: `feat/chainway-ur4-lifecycle` (PR4). Commit: see L14
 - T5 (S7, S8) — Config: TUI protocol option and per-port location editor, port-location validation, `configs/config.example.yaml`, README section. Route: inline. Status: done (see L19). Branch: `feat/chainway-ur4-config-tui`. Commit: see L19
-- T6 (S1–S8) — End-to-end check against the physical UR4 on the Raspberry Pi: tags reach cache/backend, reconnect resumes inventory, shutdown sends stop. Route: inline + `gentle-ai-verify` only if risk escalates. Commit: —
+- T6 (S1–S8) — End-to-end check against the physical UR4 on the Raspberry Pi: tags reach cache/backend, reconnect resumes inventory, shutdown sends stop. Route: inline + `gentle-ai-verify` only if risk escalates. Status: done (L20–L23). Commits: 3e70add, c0c23eb, 49eacec, 409131b. PR: #117.
 
 Delivery: chained PRs on `main` (see L10). PR1 = T1 (`feat/chainway-ur4-protocol`); each next task branches from the previous PR branch and targets it, retargeting to `main` as earlier PRs merge.
 
