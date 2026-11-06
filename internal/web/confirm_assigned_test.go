@@ -168,7 +168,7 @@ func TestHandleConfirm_AssignedTagConfirmsOnlineAsBefore(t *testing.T) {
 	}
 	var resp ConfirmResponse
 	json.Unmarshal(rec.Body.Bytes(), &resp)
-	if !resp.Success || resp.Mode != "online" || resp.Message != "Confirmation sent to VPS" || resp.Code != "" {
+	if !resp.Success || resp.Mode != "online" || resp.Message != "Confirmación enviada al VPS" || resp.Code != "" {
 		t.Errorf("response changed: %+v", resp)
 	}
 	sent, _ := vps.last.Load().(map[string]any)
@@ -193,7 +193,7 @@ func TestHandleConfirm_AssignedTagIsQueuedOfflineAsBefore(t *testing.T) {
 	}
 	var resp ConfirmResponse
 	json.Unmarshal(rec.Body.Bytes(), &resp)
-	if !resp.Success || resp.Mode != "offline" || resp.Message != "Confirmation queued locally (offline mode)" {
+	if !resp.Success || resp.Mode != "offline" || resp.Message != "Confirmación guardada localmente (modo sin conexión)" {
 		t.Errorf("response changed: %+v", resp)
 	}
 	queue := env.pendingConfirmations(t)
@@ -243,4 +243,141 @@ func TestHandleConfirm_FailsClosedWhenAssignmentCannotBeVerified(t *testing.T) {
 			t.Errorf("expected nothing queued, got %d", n)
 		}
 	})
+}
+
+type storedConfirmation struct {
+	UII, Action, Antenna string
+	Synced               bool
+	SyncedAt             *time.Time
+}
+
+func (e *kanbanTestEnv) allConfirmations(t *testing.T) []storedConfirmation {
+	t.Helper()
+	rows, err := e.db.Query(`SELECT uii, action, antenna_id, synced, synced_at FROM pending_confirmations ORDER BY id`)
+	if err != nil {
+		t.Fatalf("failed to read confirmations: %v", err)
+	}
+	defer rows.Close()
+	var list []storedConfirmation
+	for rows.Next() {
+		var c storedConfirmation
+		if err := rows.Scan(&c.UII, &c.Action, &c.Antenna, &c.Synced, &c.SyncedAt); err != nil {
+			t.Fatalf("scan failed: %v", err)
+		}
+		list = append(list, c)
+	}
+	return list
+}
+
+// Every confirmation is recorded locally: an online success is kept as synced
+// with the send time, and is never queued for a second send.
+func TestHandleConfirm_OnlineSuccessIsRecordedAsSynced(t *testing.T) {
+	env := newKanbanTestEnv(t, nil)
+	vps := newFakeConfirmVPS(t)
+	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, "tok")
+	env.linkKanban(t, "A0000001", testKanban())
+	before := time.Now().UTC().Add(-time.Second)
+
+	rec := postConfirm(env.server, `{"uii":"A0000001","action":"salida","antenna_id":"ant-2"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	all := env.allConfirmations(t)
+	if len(all) != 1 {
+		t.Fatalf("expected 1 stored confirmation, got %+v", all)
+	}
+	got := all[0]
+	if got.UII != "A0000001" || got.Action != "salida" || got.Antenna != "ant-2" || !got.Synced || got.SyncedAt == nil {
+		t.Fatalf("unexpected stored confirmation: %+v", got)
+	}
+	if got.SyncedAt.Before(before.Truncate(time.Second)) || got.SyncedAt.After(time.Now().Add(time.Second)) {
+		t.Errorf("synced_at %v is not the send time", *got.SyncedAt)
+	}
+	if n := len(env.pendingConfirmations(t)); n != 0 {
+		t.Errorf("online confirmation must not be pending, got %d", n)
+	}
+	if vps.confirms.Load() != 1 {
+		t.Errorf("the VPS must receive exactly one confirmation, got %d", vps.confirms.Load())
+	}
+}
+
+// Offline confirmations stay pending (not synced, no synced_at).
+func TestHandleConfirm_OfflineStaysPendingWithoutSyncedAt(t *testing.T) {
+	env := newKanbanTestEnv(t, nil)
+	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+	env.linkKanban(t, "A0000001", testKanban())
+
+	postConfirm(env.server, `{"uii":"A0000001","action":"entrada"}`)
+
+	all := env.allConfirmations(t)
+	if len(all) != 1 || all[0].Synced || all[0].SyncedAt != nil {
+		t.Errorf("expected one pending row without synced_at, got %+v", all)
+	}
+}
+
+// A local record failure must not turn a confirmation the VPS already accepted into an error.
+func TestHandleConfirm_OnlineSuccessSurvivesLocalRecordFailure(t *testing.T) {
+	env := newKanbanTestEnv(t, nil)
+	vps := newFakeConfirmVPS(t)
+	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, "tok")
+	env.linkKanban(t, "A0000001", testKanban())
+	if _, err := env.db.Exec(`DROP TABLE pending_confirmations`); err != nil {
+		t.Fatalf("drop failed: %v", err)
+	}
+
+	rec := postConfirm(env.server, `{"uii":"A0000001","action":"entrada"}`)
+
+	var resp ConfirmResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if rec.Code != http.StatusOK || !resp.Success || resp.Mode != "online" {
+		t.Errorf("VPS-accepted confirmation must still succeed: %d %+v", rec.Code, resp)
+	}
+}
+
+// The panel shows these messages to operators, so even failures are Spanish.
+func TestHandleConfirm_QueueFailureMessageIsSpanish(t *testing.T) {
+	env := newKanbanTestEnv(t, nil)
+	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+	env.linkKanban(t, "A0000001", testKanban())
+	if _, err := env.db.Exec(`DROP TABLE pending_confirmations`); err != nil {
+		t.Fatalf("drop failed: %v", err)
+	}
+
+	rec := postConfirm(env.server, `{"uii":"A0000001","action":"entrada"}`)
+
+	var resp ConfirmResponse
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Success || resp.Mode != "offline" || resp.Message != "No se pudo guardar la confirmación en el gateway." {
+		t.Errorf("unexpected failure response: %+v", resp)
+	}
+}
+
+func TestHandleConfirm_ValidationErrorsAreSpanish(t *testing.T) {
+	env := newKanbanTestEnv(t, nil)
+	cases := []struct {
+		name, body, want string
+	}{
+		{"malformed body", `{"uii":`, "Solicitud inválida."},
+		{"invalid action", `{"uii":"E2806995000040104CF4558B","action":"bogus"}`, "Movimiento inválido: debe ser entrada o salida."},
+		{"missing uii", `{"uii":"  ","action":"entrada"}`, "Falta el código de la tag (uii)."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := postConfirm(env.server, tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d", rec.Code)
+			}
+			var body map[string]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("invalid JSON: %v", err)
+			}
+			if body["error"] != tc.want {
+				t.Errorf("error = %q, want %q", body["error"], tc.want)
+			}
+			if got := env.pendingConfirmations(t); len(got) != 0 {
+				t.Errorf("rejected input must not queue anything, got %d", len(got))
+			}
+		})
+	}
 }

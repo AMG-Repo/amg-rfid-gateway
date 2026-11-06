@@ -14,6 +14,13 @@ import (
 const (
 	msgConfirmNotAssigned = "No se puede registrar un movimiento hasta asignar la tag a un kanban."
 	msgConfirmNoVerify    = "No se pudo verificar la asignación de la tag."
+	msgConfirmSent        = "Confirmación enviada al VPS"
+	msgConfirmQueued      = "Confirmación guardada localmente (modo sin conexión)"
+	msgConfirmNoStore     = "No hay almacén local disponible"
+	msgConfirmQueueFailed = "No se pudo guardar la confirmación en el gateway."
+	msgConfirmBadBody     = "Solicitud inválida."
+	msgConfirmBadAction   = "Movimiento inválido: debe ser entrada o salida."
+	msgConfirmNoUII       = "Falta el código de la tag (uii)."
 )
 
 // TagInfo represents tag information for API responses.
@@ -48,6 +55,12 @@ type StatusResponse struct {
 	PendingCount   int  `json:"pending_count"`
 	ToolsCount     int  `json:"tools_count"`
 	PendingWarning bool `json:"pending_warning"`
+	// OldestPendingAt is when the oldest pending confirmation was queued (null when none).
+	OldestPendingAt *time.Time `json:"oldest_pending_at"`
+	// PendingWarningThreshold is the configured queue size that raises pending_warning.
+	PendingWarningThreshold int `json:"pending_warning_threshold"`
+	// LastSyncAt is when the last confirmation reached the VPS (null when none is recorded).
+	LastSyncAt *time.Time `json:"last_sync_at"`
 }
 
 // AuthModeResponse indicates whether UI write calls require a bearer token.
@@ -124,13 +137,13 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	// Parse request body
 	var req ConfirmRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.jsonError(w, "Invalid request body", http.StatusBadRequest)
+		s.jsonError(w, msgConfirmBadBody, http.StatusBadRequest)
 		return
 	}
 
 	// Validate action
 	if err := s.verifier.ValidateAction(req.Action); err != nil {
-		s.jsonError(w, err.Error(), http.StatusBadRequest)
+		s.jsonError(w, msgConfirmBadAction, http.StatusBadRequest)
 		return
 	}
 
@@ -138,7 +151,7 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	// anything is sent or queued, online or offline, and fail closed if the
 	// assignment cannot be verified.
 	if strings.TrimSpace(req.UII) == "" {
-		s.jsonError(w, "uii is required", http.StatusBadRequest)
+		s.jsonError(w, msgConfirmNoUII, http.StatusBadRequest)
 		return
 	}
 	if s.store == nil {
@@ -175,11 +188,17 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		if antennaID == "" {
 			antennaID = "manual"
 		}
+		sentAt := time.Now()
 		err := s.vpsClient.SendConfirmationV2(s.companyID, req.UII, req.Action, antennaID)
 		if err == nil {
+			// Keep a local record as already synced. The VPS has the confirmation,
+			// so a failure here is logged and never fails the request.
+			if err := s.store.RecordSyncedConfirmation(req.UII, req.Action, antennaID, sentAt); err != nil {
+				log.Printf("[Web] Failed to record synced confirmation for %s: %v", req.UII, err)
+			}
 			s.jsonResponse(w, ConfirmResponse{
 				Success: true,
-				Message: "Confirmation sent to VPS",
+				Message: msgConfirmSent,
 				Mode:    "online",
 			})
 			return
@@ -191,7 +210,7 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		s.jsonResponse(w, ConfirmResponse{
 			Success: false,
-			Message: "No local store available",
+			Message: msgConfirmNoStore,
 			Mode:    "offline",
 		})
 		return
@@ -214,7 +233,7 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[Web] Failed to create local confirmation: %v", err)
 		s.jsonResponse(w, ConfirmResponse{
 			Success: false,
-			Message: "Failed to queue confirmation: " + err.Error(),
+			Message: msgConfirmQueueFailed,
 			Mode:    "offline",
 		})
 		return
@@ -222,7 +241,7 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 
 	s.jsonResponse(w, ConfirmResponse{
 		Success: true,
-		Message: "Confirmation queued locally (offline mode)",
+		Message: msgConfirmQueued,
 		Mode:    "offline",
 	})
 }
@@ -262,25 +281,35 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Calculate pending warning based on threshold
-	pendingWarning := false
-	if s.config != nil && s.config.PendingWarningThreshold != nil {
-		threshold := *s.config.PendingWarningThreshold
-		if threshold > 0 && pendingCount >= threshold {
-			pendingWarning = true
+	// Queue detail for the panel: oldest pending and last successful send.
+	var oldestPendingAt, lastSyncAt *time.Time
+	if s.store != nil {
+		var err error
+		if oldestPendingAt, err = s.store.GetOldestPendingAt(); err != nil {
+			log.Printf("[Web] Failed to get oldest pending confirmation: %v", err)
+			oldestPendingAt = nil
 		}
-	} else {
-		// Default threshold is 1000
-		if pendingCount >= 1000 {
-			pendingWarning = true
+		if lastSyncAt, err = s.store.GetLastSyncedAt(); err != nil {
+			log.Printf("[Web] Failed to get last sync time: %v", err)
+			lastSyncAt = nil
 		}
 	}
 
+	// Calculate pending warning based on threshold (default 1000, 0 = never warn)
+	threshold := 1000
+	if s.config != nil && s.config.PendingWarningThreshold != nil {
+		threshold = *s.config.PendingWarningThreshold
+	}
+	pendingWarning := threshold > 0 && pendingCount >= threshold
+
 	s.jsonResponse(w, StatusResponse{
-		VPSOnline:      vpsOnline,
-		PendingCount:   pendingCount,
-		ToolsCount:     toolsCount,
-		PendingWarning: pendingWarning,
+		VPSOnline:               vpsOnline,
+		PendingCount:            pendingCount,
+		ToolsCount:              toolsCount,
+		PendingWarning:          pendingWarning,
+		OldestPendingAt:         oldestPendingAt,
+		PendingWarningThreshold: threshold,
+		LastSyncAt:              lastSyncAt,
 	})
 }
 

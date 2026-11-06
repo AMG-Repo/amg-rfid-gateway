@@ -60,7 +60,7 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 ### Core Features
 
 | Feature | Description |
-|---------|-------------|
+| --------- | ------------- |
 | **Splash Screen** | ASCII art logo with RFID waves, version, and VPS connection status |
 | **Auto-Detect Config** | Binary searches config automatically in standard locations |
 | **SQLite Cache** | Thread-safe local storage with WAL mode for durability |
@@ -87,19 +87,24 @@ Interactive terminal interface using Bubbletea with splash screen and multiple s
 ```
 
 **Flow:**
+
 1. **Splash Screen** (2 seconds): ASCII logo + version + VPS connection status
 2. **Main Menu**: Navigate to Antennas, Network, System, Settings, or Quit
 
 #### Splash Screen
+
 ![Splash Screen](docs/screenshots/splash.svg)
 
 #### Main Menu
+
 ![Main Menu](docs/screenshots/main-menu.svg)
 
 #### Settings
+
 ![Settings](docs/screenshots/settings.svg)
 
 **Screens:**
+
 - **Antennas**: View all connected antennas, their status, reading counts, and last tag EPC/RSSI
 - **Network**: Connection state to cloud backend and VPS API
 - **System**: Gateway ID, company ID, version, backend/gateway uptime, cache size, sync status
@@ -111,6 +116,7 @@ Interactive terminal interface using Bubbletea with splash screen and multiple s
   - Leaving Settings with unsaved changes prompts to save, discard, or stay
 
 **Navigation:**
+
 - Arrow keys or `j/k` to navigate; navigable lists wrap at the first/last item
 - Enter to select/edit
 - In Settings protocol fields, `←/→`, Space, or Enter cycles supported values (`generic`, `zebra`, `chainway`)
@@ -339,7 +345,7 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 ### Configuration Fields Reference
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| ------- | ------ | --------- | ------------- |
 | `gateway_id` | string | required | Unique gateway identifier |
 | `company_id` | string | required | Company UUID for authentication |
 | `cloud_url` | string | required | WebSocket URL (wss://) for cloud sync |
@@ -369,7 +375,7 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 Each antenna supports a `protocol` field:
 
 | Protocol | Status | Use when |
-|----------|--------|----------|
+| ---------- | -------- | ---------- |
 | `generic` | Supported default | The antenna speaks the current generic RFID TCP packet format |
 | `zebra` | Configurable, explicit runtime unsupported | Preparing configuration for a future Zebra-specific handler |
 | `chainway` | Supported | The antenna is a Chainway UR4 fixed reader (see [Chainway UR4](#chainway-ur4-protocol-chainway)) |
@@ -492,6 +498,7 @@ http://gateway-ip:9090
 ```
 
 Features:
+
 - Manual tag confirmation interface
 - Real-time reading display
 - Tool verification status
@@ -519,7 +526,7 @@ go test ./test/e2e/... -v --tags=e2e
 The gateway communicates with the cloud backend using these endpoints:
 
 | Endpoint | Method | Description |
-|----------|--------|-------------|
+| ---------- | -------- | ------------- |
 | `/api/v1/rfid/sync` | POST | Send batch of readings |
 | `/api/v1/rfid/pending` | GET | Get pending confirmations |
 | `/api/v1/health/gateways` | GET | Health check |
@@ -551,10 +558,12 @@ All routes are served by the web UI (`web_port`). Reads have no auth; writes (`P
 the bearer token when `web_access_mode: lan`.
 
 | Endpoint | Method | Auth | Description |
-|----------|--------|------|-------------|
+| ---------- | -------- | ------ | ------------- |
 | `/api/unassigned-tags` | GET | none | `[{epc, antenna_id, first_seen, last_seen, read_count}]`, most recent first |
 | `/api/kanbans` | GET | none | Cached kanban catalog (picker source), ordered by `code` |
 | `/api/antennas` | GET | none | `[{id, zone, state, last_read_at}]` per configured antenna; `state` is `reading`, `reconnecting` or `stopped` (disabled); `zone` is `entrada`, `salida` or `""`; `last_read_at` is `null` until the first tag read |
+| `/api/status` | GET | none | `{vps_online, pending_count, tools_count, pending_warning, oldest_pending_at, pending_warning_threshold, last_sync_at}`; `oldest_pending_at` is when the oldest pending confirmation was queued (`null` when none), `pending_warning_threshold` is the configured threshold (default 1000, `0` = never warn), `last_sync_at` is the last time a confirmation reached the VPS (online confirm or worker flush; `null` when none is recorded) |
+| `/api/history` | GET | none | Today's confirmations (gateway local day), newest first: `[{uii, kanban_code, description, quantity, unit, action, antenna_id, time, synced}]`. `quantity` is the kanban `standard_pack`; the four kanban fields are `null` when the tag has no active kanban link; `synced` is `false` while the confirmation is still queued for the VPS |
 | `/api/tags/assign` | POST | write auth | Assign a tag to a kanban (online only) |
 | `/api/confirm` | POST | write auth | Confirm entrada/salida (assigned tags only) |
 | `/events` | GET (SSE) | none | `tag_detected` events, see below |
@@ -565,7 +574,7 @@ The request is forwarded to the VPS (`POST /api/v1/gateway/tags/assign`); the ka
 checked against the local catalog because the VPS is authoritative (the cached catalog can be stale).
 
 | Status | `code` | Meaning |
-|--------|--------|---------|
+| -------- | -------- | --------- |
 | 200 | | `{success, message, uii, kanban}`. The local cache is updated, the tag leaves the inbox and an immediate sync is requested (no 1 h wait) |
 | 400 | `invalid_request` | Invalid body, blank `uii`/`kanban_code`, or rejected by the VPS |
 | 404 | `kanban_not_found` | The kanban does not exist on the VPS |
@@ -576,7 +585,15 @@ checked against the local catalog because the VPS is authoritative (the cached c
 Error bodies are `{"error": "<mensaje>", "code": "<code>"}`. Assigning the same tag to the same
 kanban again is idempotent.
 
-**`POST /api/confirm`** is unchanged for assigned tags. A UII with no active kanban link answers
+**`POST /api/confirm`** keeps its request and response shape; `message` is in Spanish
+(`Confirmación enviada al VPS` online, `Confirmación guardada localmente (modo sin conexión)`
+offline) while `mode` stays `online`/`offline`. Validation errors are Spanish too (400
+`{"error": "Solicitud inválida."}`, `"Movimiento inválido: debe ser entrada o salida."`,
+`"Falta el código de la tag (uii)."`), and a local storage failure answers
+`No se pudo guardar la confirmación en el gateway.` without leaking the database error. Every confirmation is also recorded locally: an
+online success is stored as synced with the send time (`synced_at`), an offline one stays pending
+until the sync worker sends it. Synced confirmations older than 30 days are deleted (by
+`synced_at`), except the most recent one, which keeps `last_sync_at`; pending ones are never purged. A UII with no active kanban link answers
 `422 {"success": false, "message": "No se puede registrar un movimiento hasta asignar la tag a un kanban.", "code": "tag_not_assigned"}`
 and nothing is sent or queued. If the assignment cannot be verified (local store error) it answers `500`.
 
@@ -597,8 +614,9 @@ The gateway expects these (additive) VPS changes; a VPS without them keeps worki
   `200 {uii, kanban}`, `404 {error: kanban_not_found}`, `409 {error: uii_assigned, current_kanban}` or `400`.
 
 On startup the SQLite cache gains three tables (`kanbans`, `tag_kanban_links`, `unassigned_tags`)
-through an idempotent migration. `tool_tags` and `pending_confirmations` are not modified, so
-queued confirmations survive the upgrade; the kanban tables are rebuilt from the next sync.
+through an idempotent migration. `pending_confirmations` only gains a nullable `synced_at`
+column (idempotent), so queued confirmations survive the upgrade; the kanban tables are rebuilt
+from the next sync.
 
 ## Shared Module (amg-rfid-shared-go)
 
@@ -757,7 +775,7 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Support
 
-- Email: support@amg-rfid.com
+- Email: <support@amg-rfid.com>
 - Discord: [AMG-RFID Community](https://discord.gg/amg-rfid)
 - Issues: [GitHub Issues](https://github.com/AMG-Repo/amg-rfid-gateway/issues)
 

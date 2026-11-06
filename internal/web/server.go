@@ -107,6 +107,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/unassigned-tags", s.handleUnassignedTags)
 	mux.HandleFunc("/api/kanbans", s.handleKanbans)
 	mux.HandleFunc("/api/antennas", s.handleAntennas)
+	mux.HandleFunc("/api/history", s.handleHistory)
 	mux.HandleFunc("/api/tags/assign", s.requireWriteAuth(s.handleAssignTag))
 
 	return mux
