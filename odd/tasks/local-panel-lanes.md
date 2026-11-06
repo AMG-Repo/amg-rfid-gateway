@@ -38,7 +38,7 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - [x] T5 S6 — Spanish confirm messages — inline — commit: dfc2056
 - [x] T6 S7 — queue-full policy: reject queue_full, stuck count — inline — commit: da5ede5
 - [x] T8 S9 — sync worker skips stuck rows in the query (no starvation) — inline — commit: 721e7fa
-- [ ] T9 S10 — tool-tag upsert by id (renormalized UIIs) — inline — commit:
+- [x] T9 S10 — tool-tag upsert by id (renormalized UIIs) — inline — commit: efdd26c
 - [x] T7 S8 — panel 09 frontend — worker (no commit, rules forbid) — commit: 90d166d
 
 ## Log
