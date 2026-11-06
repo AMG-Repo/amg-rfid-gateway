@@ -32,7 +32,7 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - [x] T3 S2 — queue detail in /api/status (oldest, threshold, last sync) — inline — commit: e08256c dfc2056
 - [x] T4 S4 — today's history endpoint — inline — commit: dfc2056
 - [x] T5 S6 — Spanish confirm messages — inline — commit: dfc2056
-- [ ] T6 S7 — queue-full policy: reject queue_full, stuck count — inline — commit:
+- [x] T6 S7 — queue-full policy: reject queue_full, stuck count — inline — commit: da5ede5
 - [ ] T7 S8 — panel 09 frontend — inline — commit:
 
 ## Log
@@ -45,3 +45,4 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - L6 (evidence): T2–T5 by worker (no commits, rules forbid). Independent verify: S3, S4, S5 PASS (migration on HEAD schema preserved rows; purge never touches pending; local-day history in 3 timezones). S2 FAIL (last_sync_at lost after purge) and S6 FAIL (English validation errors, raw DB error). Fixed inline test-first: purge keeps the latest synced row (COALESCE guard for legacy NULL synced_at), Spanish 400 messages, queue failure without DB text. go test ./... green except pre-existing homebrew. Commits e08256c (store), dfc2056 (web). Slice note: branch is stacked on feat/kanban-unassigned-tags; split into chained PRs at delivery.
 - L7 (evidence): second independent verify on e08256c/dfc2056: S2–S6 PASS (purge matrix: latest kept, legacy NULL purged, pending preserved, empty table; a05a2b1 schema reopen preserves rows; Spanish 400s write nothing; no DB text leak). Known limit: online local-record failure only logs (VPS already accepted). Live VPS/hardware unverified.
 - L8 (user, 2026-11-06): "dale vamos con eso" — accepts L5: never lose, warn from threshold, reject with `queue_full` at the hard cap; also surface confirmations stuck after max retries (example given: VPS-rejected UIIs accumulate forever).
+- L9 (evidence): independent verify of da5ede5: S7 PASS. Differential vs parent: parent answered 200 and deleted the oldest queued row; da5ede5 answers 507 queue_full and keeps it. Pre-existing defect found (not introduced): the sync worker reads only the oldest 100 pending rows and skips stuck ones (toolssync.go:388,403; store.go:482-489), so 100+ stuck rows at the front starve newer retryable confirmations.

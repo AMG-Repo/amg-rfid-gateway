@@ -34,8 +34,8 @@ antennas:
   - id: "ANT-001"
     ip: "192.168.1.100"
     port: 49153
-    enabled: false  # Set to true to enable
-    zone: "entrada"  # Fixed zone: entrada, salida, or "" for auto
+    enabled: false # Set to true to enable
+    zone: "entrada" # Fixed zone: entrada, salida, or "" for auto
     protocol: "generic"
 
   # Example: Exit antenna
@@ -43,7 +43,7 @@ antennas:
     ip: "192.168.1.101"
     port: 49153
     enabled: false
-    zone: "salida"  # Fixed zone: entrada, salida, or "" for auto
+    zone: "salida" # Fixed zone: entrada, salida, or "" for auto
     protocol: "generic"
 
   # Example: Zebra antenna (configuration accepted; runtime handler not implemented yet)
@@ -71,19 +71,19 @@ antennas:
 
 # Web UI Configuration (Local Verification Frontend)
 # Enable the built-in web interface for manual tag confirmation
-web_enabled: true              # Enable/disable the web UI
-web_port: 9090                 # Port for the web server to listen on
-web_access_mode: "local"       # local = 127.0.0.1 only (safe default), lan = explicit network access
-web_listen_addr: "127.0.0.1"   # Bind address must match web_access_mode
-web_auth_token: ""             # REQUIRED when web_access_mode is "lan" (protects write-capable UI)
-vps_api_url: "https://api.your-domain.com"  # VPS API base URL for tool sync
-sync_tools_interval: 1h        # How often to sync tools from VPS (e.g., 1h, 30m)
-confirmation_retry_interval: 30s  # Retry interval for pending confirmations sync
+web_enabled: true # Enable/disable the web UI
+web_port: 9090 # Port for the web server to listen on
+web_access_mode: "local" # local = 127.0.0.1 only (safe default), lan = explicit network access
+web_listen_addr: "127.0.0.1" # Bind address must match web_access_mode
+web_auth_token: "" # REQUIRED when web_access_mode is "lan" (protects write-capable UI)
+vps_api_url: "https://api.your-domain.com" # VPS API base URL for tool sync
+sync_tools_interval: 1h # How often to sync tools from VPS (e.g., 1h, 30m)
+confirmation_retry_interval: 30s # Retry interval for pending confirmations sync
 
 # Queue Size Limits (Pending Confirmations)
 # Prevents unbounded growth during VPS outages
-max_pending_confirmations: 10000    # Max pending confirmations; at the cap new ones are rejected (queue_full), nothing is discarded (0 = unlimited)
-pending_warning_threshold: 1000     # Show warning when pending count exceeds this (0 = never warn)
+max_pending_confirmations: 10000 # Max pending confirmations; at the cap new ones are rejected (queue_full), nothing is discarded (0 = unlimited)
+pending_warning_threshold: 1000 # Show warning when pending count exceeds this (0 = never warn)
 
 # Logging level: debug, info, warn, error
 log_level: "info"

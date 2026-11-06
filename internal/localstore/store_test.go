@@ -1305,10 +1305,10 @@ func TestUpsertToolTags_Update(t *testing.T) {
 			ToolID:      10,
 			UII:         "EPC-001",
 			UnitNumber:  strPtr("001"),
-			Status:      "in_use",           // Changed
-			Location:    strPtr("Line 1"),   // Changed
+			Status:      "in_use",               // Changed
+			Location:    strPtr("Line 1"),       // Changed
 			DisplayName: strPtr("Updated Name"), // Changed
-			Active:      false,              // Changed
+			Active:      false,                  // Changed
 		},
 	}
 
@@ -1534,11 +1534,11 @@ func TestUpsertToolsRecords_Update(t *testing.T) {
 	updatedTools := []ToolRecord{
 		{
 			ID:                 1,
-			CompanyID:          "comp-002",              // Changed
+			CompanyID:          "comp-002", // Changed
 			SKU:                "SKU-001",
-			Name:               "New Name",              // Changed
-			Description:        strPtr("New Desc"),      // Changed
-			DefaultDestination: strPtr("New Location"),  // Changed
+			Name:               "New Name",             // Changed
+			Description:        strPtr("New Desc"),     // Changed
+			DefaultDestination: strPtr("New Location"), // Changed
 		},
 	}
 
