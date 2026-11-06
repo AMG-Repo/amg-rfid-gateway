@@ -101,10 +101,12 @@ func (s *LocalStore) ApplyKanbanLinks(items []SyncDataItem) error {
 	defer tx.Rollback()
 
 	now := time.Now()
+	synced := make(map[string]struct{}, len(items))
 	for _, item := range items {
 		if item.UII == "" {
 			continue
 		}
+		synced[item.UII] = struct{}{}
 		if !item.Active || item.Kanban == nil || strings.TrimSpace(item.Kanban.Code) == "" {
 			if _, err := tx.Exec(`DELETE FROM tag_kanban_links WHERE uii = ?`, item.UII); err != nil {
 				return err
@@ -119,7 +121,42 @@ func (s *LocalStore) ApplyKanbanLinks(items []SyncDataItem) error {
 		}
 	}
 
+	// The items are the VPS snapshot: a linked UII missing from it (for example
+	// renormalized to a new UII) is no longer a tag, so its link goes too.
+	if err := dropLinksNotInTx(tx, synced); err != nil {
+		return err
+	}
+
 	return tx.Commit()
+}
+
+// dropLinksNotInTx deletes links whose UII is not in keep.
+func dropLinksNotInTx(tx *sql.Tx, keep map[string]struct{}) error {
+	rows, err := tx.Query(`SELECT uii FROM tag_kanban_links`)
+	if err != nil {
+		return err
+	}
+	var orphans []string
+	for rows.Next() {
+		var uii string
+		if err := rows.Scan(&uii); err != nil {
+			rows.Close()
+			return err
+		}
+		if _, ok := keep[uii]; !ok {
+			orphans = append(orphans, uii)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, uii := range orphans {
+		if _, err := tx.Exec(`DELETE FROM tag_kanban_links WHERE uii = ?`, uii); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // upsertLinkTx links a tag to a kanban code.

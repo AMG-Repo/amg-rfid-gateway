@@ -308,3 +308,40 @@ func TestAssignKanban_RejectsBlankInput(t *testing.T) {
 		t.Error("expected error for blank kanban code")
 	}
 }
+
+// A UII that disappears from the sync (renormalized by the VPS) must not keep
+// its link: otherwise it still resolves as assigned and pins a stale kanban in
+// the picker catalog.
+func TestApplyKanbanLinks_DropsLinksOfUIIsMissingFromTheSync(t *testing.T) {
+	store := setupKanbanStore(t)
+	stale := fordKanban()
+	stale.Code = "EX3W0AR-A"
+	current := fordKanban()
+	current.Code = "EX3W0AR"
+
+	if err := store.ApplyKanbanLinks([]SyncDataItem{syncItem(1, "003000e2806995000050104cf45e8d6952c3", true, &stale)}); err != nil {
+		t.Fatalf("first apply failed: %v", err)
+	}
+	// The VPS renormalized the UII of tag 1 and relinked it to the new code.
+	if err := store.ApplyKanbanLinks([]SyncDataItem{syncItem(1, "E2806995000050104CF45E8D", true, &current)}); err != nil {
+		t.Fatalf("second apply failed: %v", err)
+	}
+
+	if got, err := store.GetKanbanByUII("003000e2806995000050104cf45e8d6952c3"); err != nil || got != nil {
+		t.Errorf("old UII must not resolve to a kanban, got (%+v, %v)", got, err)
+	}
+	if err := store.ReplaceKanbanCatalog([]Kanban{current}); err != nil {
+		t.Fatalf("replace catalog failed: %v", err)
+	}
+	catalog, err := store.ListKanbans()
+	if err != nil {
+		t.Fatalf("list failed: %v", err)
+	}
+	var codes []string
+	for _, k := range catalog {
+		codes = append(codes, k.Code)
+	}
+	if !reflect.DeepEqual(codes, []string{"EX3W0AR"}) {
+		t.Errorf("catalog = %v, want only EX3W0AR", codes)
+	}
+}

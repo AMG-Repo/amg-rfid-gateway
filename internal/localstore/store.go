@@ -4,6 +4,7 @@ package localstore
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 )
@@ -422,6 +423,10 @@ func (s *LocalStore) UpsertUsers(users []User) error {
 	return tx.Commit()
 }
 
+// ErrDuplicateTagUII is returned by UpsertToolTags when one batch carries the
+// same UII for two tags; the batch is rejected and nothing is written.
+var ErrDuplicateTagUII = errors.New("duplicate tag UII in sync batch")
+
 // ErrQueueFull is returned by CreateConfirmation when the pending queue is at
 // its cap. Nothing stored is discarded: the new confirmation is rejected.
 var ErrQueueFull = errors.New("pending confirmation queue is full")
@@ -669,6 +674,13 @@ func (s *LocalStore) DeleteOldestUnsyncedConfirmation() (string, error) {
 func (s *LocalStore) UpsertToolTags(tags []ToolTagRecord) error {
 	if len(tags) == 0 {
 		return nil
+	}
+	seen := make(map[string]int64, len(tags))
+	for _, tag := range tags {
+		if other, dup := seen[tag.UII]; dup && other != tag.ID {
+			return fmt.Errorf("%w: %s (tags %d and %d)", ErrDuplicateTagUII, tag.UII, other, tag.ID)
+		}
+		seen[tag.UII] = tag.ID
 	}
 
 	tx, err := s.db.Begin()

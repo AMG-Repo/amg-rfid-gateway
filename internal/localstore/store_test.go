@@ -1839,3 +1839,36 @@ func TestNullability_UpsertStoresEmptyStringAsEmpty(t *testing.T) {
 		t.Errorf("expected description to be empty string, got %q", description.String)
 	}
 }
+
+// Two tags with the same UII in one batch is invalid VPS data: reject the batch
+// and write nothing instead of silently dropping one of them.
+func TestUpsertToolTags_RejectsDuplicateUIIsWithoutWriting(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	store := New(db)
+
+	now := time.Now()
+	if _, err := db.Exec(`INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at) VALUES (10, 'comp-001', 'SKU-001', 'Tool', 'D', 'W', ?)`, now); err != nil {
+		t.Fatalf("seed tool: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO tool_tags (id, tool_id, uii, status, active, last_synced_at) VALUES (1, 10, 'DUP', 'available', 1, ?)`, now); err != nil {
+		t.Fatalf("seed tag: %v", err)
+	}
+
+	err := store.UpsertToolTags([]ToolTagRecord{
+		{ID: 1, ToolID: 10, UII: "DUP", Status: "in_use", Active: true},
+		{ID: 2, ToolID: 10, UII: "DUP", Status: "in_use", Active: true},
+	})
+	if !errors.Is(err, ErrDuplicateTagUII) {
+		t.Fatalf("expected ErrDuplicateTagUII, got %v", err)
+	}
+
+	var count int
+	var status string
+	if err := db.QueryRow(`SELECT COUNT(*), MAX(status) FROM tool_tags`).Scan(&count, &status); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if count != 1 || status != "available" {
+		t.Errorf("tool_tags must stay unchanged, got count=%d status=%s", count, status)
+	}
+}
