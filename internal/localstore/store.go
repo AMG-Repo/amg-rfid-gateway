@@ -584,11 +584,19 @@ func (s *LocalStore) RequeueStuckConfirmations(minRetries int) (int64, error) {
 // (by synced_at, or created_at for rows synced before synced_at existed) and
 // returns how many were removed. Unsynced confirmations are never deleted, and
 // the most recently synced row is always kept so the last successful send to
-// the VPS (GetLastSyncedAt) survives retention.
+// the VPS (GetLastSyncedAt) survives retention. A synced row newer than a
+// still-pending one of the same tag is kept too, so the pending one never
+// becomes that tag's latest movement (ReapplyPendingMovements).
 func (s *LocalStore) PurgeSyncedConfirmations(cutoff time.Time) (int64, error) {
 	res, err := s.db.Exec(`
 		DELETE FROM pending_confirmations
 		WHERE synced = 1 AND COALESCE(synced_at, created_at) < ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM pending_confirmations older
+			WHERE older.uii = pending_confirmations.uii
+			  AND older.synced = 0
+			  AND older.id < pending_confirmations.id
+		  )
 		  AND id <> COALESCE((
 			SELECT id FROM pending_confirmations
 			WHERE synced = 1 AND synced_at IS NOT NULL

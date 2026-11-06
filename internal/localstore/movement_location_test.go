@@ -112,3 +112,50 @@ func TestReapplyPendingMovements_NewerSentMovementWins(t *testing.T) {
 		t.Errorf("location = %q, want C from the newer sent salida", got)
 	}
 }
+
+// Retention must not purge a tag's newer sent movement while an older one of
+// the same tag is still pending: the pending one would become its "latest"
+// and the next sync would roll the tag back to it.
+func TestPurgeSyncedConfirmations_KeepsSentMovementsNewerThanAPendingOne(t *testing.T) {
+	store := setupKanbanStore(t)
+	seedToolTag(t, store, 1, "A0000001")
+	if err := store.AssignKanban("A0000001", fordKanban()); err != nil { // zones C, A
+		t.Fatalf("assign: %v", err)
+	}
+	old := time.Now().Add(-40 * 24 * time.Hour)
+	if _, err := store.CreateConfirmation("A0000001", "entrada", "ant-1", old, 0); err != nil {
+		t.Fatalf("queue entrada: %v", err)
+	}
+	for _, uii := range []string{"A0000001", "C0000003"} { // C has no pending movement
+		if err := store.RecordSyncedConfirmation(uii, "salida", "ant-1", time.Now().Add(-35*24*time.Hour)); err != nil {
+			t.Fatalf("record %s: %v", uii, err)
+		}
+	}
+	if err := store.RecordSyncedConfirmation("B0000002", "entrada", "ant-1", time.Now()); err != nil {
+		t.Fatalf("record B: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE pending_confirmations SET retry_count = 10, created_at = datetime('now', '-40 days') WHERE synced = 0`); err != nil {
+		t.Fatalf("age pending: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE pending_confirmations SET created_at = synced_at WHERE synced = 1`); err != nil {
+		t.Fatalf("age synced: %v", err)
+	}
+
+	removed, err := store.PurgeSyncedConfirmations(time.Now().Add(-ConfirmationRetention))
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("removed = %d, want 1 (only C's old sent movement)", removed)
+	}
+
+	if err := store.ApplyMovementLocation("A0000001", "salida"); err != nil {
+		t.Fatalf("apply salida: %v", err)
+	}
+	if err := store.ReapplyPendingMovements(); err != nil {
+		t.Fatalf("reapply: %v", err)
+	}
+	if got := tagLocation(t, store, "A0000001"); got != "C" {
+		t.Errorf("location = %q, want C: the newer sent salida must still win after retention", got)
+	}
+}
