@@ -56,6 +56,12 @@ func setupTestDB(t *testing.T) *sql.DB {
 			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 
+		CREATE TABLE IF NOT EXISTS tag_kanban_links (
+			uii TEXT PRIMARY KEY,
+			kanban_code TEXT NOT NULL,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
 		CREATE TABLE IF NOT EXISTS pending_confirmations (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			uii TEXT NOT NULL,

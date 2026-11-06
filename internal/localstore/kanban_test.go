@@ -309,30 +309,19 @@ func TestAssignKanban_RejectsBlankInput(t *testing.T) {
 	}
 }
 
-// A UII that disappears from the sync (renormalized by the VPS) must not keep
-// its link: otherwise it still resolves as assigned and pins a stale kanban in
-// the picker catalog.
-func TestApplyKanbanLinks_DropsLinksOfUIIsMissingFromTheSync(t *testing.T) {
-	store := setupKanbanStore(t)
-	stale := fordKanban()
-	stale.Code = "EX3W0AR-A"
-	current := fordKanban()
-	current.Code = "EX3W0AR"
+// seedToolTag stores a cached tool tag so it counts as a current tag.
+func seedToolTag(t *testing.T, store *LocalStore, id int64, uii string) {
+	t.Helper()
+	if _, err := store.db.Exec(`INSERT OR IGNORE INTO tools (id, company_id, sku, name, last_synced_at) VALUES (1, 'amg', 'SKU', 'Tool', CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatalf("seed tool: %v", err)
+	}
+	if _, err := store.db.Exec(`INSERT INTO tool_tags (id, tool_id, uii, status, active, last_synced_at) VALUES (?, 1, ?, 'available', 1, CURRENT_TIMESTAMP)`, id, uii); err != nil {
+		t.Fatalf("seed tag: %v", err)
+	}
+}
 
-	if err := store.ApplyKanbanLinks([]SyncDataItem{syncItem(1, "003000e2806995000050104cf45e8d6952c3", true, &stale)}); err != nil {
-		t.Fatalf("first apply failed: %v", err)
-	}
-	// The VPS renormalized the UII of tag 1 and relinked it to the new code.
-	if err := store.ApplyKanbanLinks([]SyncDataItem{syncItem(1, "E2806995000050104CF45E8D", true, &current)}); err != nil {
-		t.Fatalf("second apply failed: %v", err)
-	}
-
-	if got, err := store.GetKanbanByUII("003000e2806995000050104cf45e8d6952c3"); err != nil || got != nil {
-		t.Errorf("old UII must not resolve to a kanban, got (%+v, %v)", got, err)
-	}
-	if err := store.ReplaceKanbanCatalog([]Kanban{current}); err != nil {
-		t.Fatalf("replace catalog failed: %v", err)
-	}
+func catalogCodes(t *testing.T, store *LocalStore) []string {
+	t.Helper()
 	catalog, err := store.ListKanbans()
 	if err != nil {
 		t.Fatalf("list failed: %v", err)
@@ -341,7 +330,54 @@ func TestApplyKanbanLinks_DropsLinksOfUIIsMissingFromTheSync(t *testing.T) {
 	for _, k := range catalog {
 		codes = append(codes, k.Code)
 	}
-	if !reflect.DeepEqual(codes, []string{"EX3W0AR"}) {
-		t.Errorf("catalog = %v, want only EX3W0AR", codes)
+	return codes
+}
+
+// When the VPS renormalizes a tag's UII (same id), the link of the old UII goes
+// away so it no longer pins its stale kanban in the picker catalog.
+func TestUpsertToolTags_RenormalizedUIIDropsOldLinkAndStaleCatalogCode(t *testing.T) {
+	store := setupKanbanStore(t)
+	stale := fordKanban()
+	stale.Code = "EX3W0AR-A"
+	current := fordKanban()
+	current.Code = "EX3W0AR"
+	oldUII := "003000e2806995000050104cf45e8d6952c3"
+	seedToolTag(t, store, 1, oldUII)
+	if err := store.ApplyKanbanLinks([]SyncDataItem{syncItem(1, oldUII, true, &stale)}); err != nil {
+		t.Fatalf("seed link: %v", err)
+	}
+
+	if err := store.UpsertToolTags([]ToolTagRecord{{ID: 1, ToolID: 1, UII: "E2806995000050104CF45E8D", Status: "available", Active: true}}); err != nil {
+		t.Fatalf("upsert failed: %v", err)
+	}
+	if got, err := store.GetKanbanByUII(oldUII); err != nil || got != nil {
+		t.Errorf("old UII must not resolve to a kanban, got (%+v, %v)", got, err)
+	}
+	if err := store.ReplaceKanbanCatalog([]Kanban{current}); err != nil {
+		t.Fatalf("replace catalog failed: %v", err)
+	}
+	if got := catalogCodes(t, store); !reflect.DeepEqual(got, []string{"EX3W0AR"}) {
+		t.Errorf("catalog = %v, want only EX3W0AR", got)
+	}
+}
+
+// A sync snapshot never deletes links of UIIs it does not carry: an assignment
+// accepted after the snapshot was fetched, or a tag skipped for an empty SKU,
+// keeps its link.
+func TestApplyKanbanLinks_KeepsLinksOfUIIsNotInTheSnapshot(t *testing.T) {
+	store := setupKanbanStore(t)
+	k := fordKanban()
+	if err := store.AssignKanban("JUST-ASSIGNED", k); err != nil {
+		t.Fatalf("assign failed: %v", err)
+	}
+
+	other := fordKanban()
+	if err := store.ApplyKanbanLinks([]SyncDataItem{syncItem(2, "OTHER-TAG", true, &other)}); err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	got, err := store.GetKanbanByUII("JUST-ASSIGNED")
+	if err != nil || got == nil || got.Code != k.Code {
+		t.Errorf("just-assigned link must survive an older snapshot, got (%+v, %v)", got, err)
 	}
 }

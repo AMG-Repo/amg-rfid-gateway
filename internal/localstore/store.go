@@ -719,8 +719,24 @@ func (s *LocalStore) UpsertToolTags(tags []ToolTagRecord) error {
 	}
 	defer releaseUII.Close()
 
+	// A tag whose UII the VPS renormalized (same id, new UII) drops the kanban
+	// link of its old UII, which no tag carries any more; the sync relinks the
+	// new UII. Links of UIIs that are not tags yet (a just-accepted assignment)
+	// are never touched here.
+	dropOldLink, err := tx.Prepare(`
+		DELETE FROM tag_kanban_links
+		WHERE uii = (SELECT uii FROM tool_tags WHERE id = ? AND uii <> ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer dropOldLink.Close()
+
 	now := time.Now()
 	for _, tag := range tags {
+		if _, err := dropOldLink.Exec(tag.ID, tag.UII); err != nil {
+			return err
+		}
 		if _, err := releaseUII.Exec(tag.UII, tag.ID); err != nil {
 			return err
 		}
