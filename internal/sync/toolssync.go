@@ -53,6 +53,12 @@ type ConfirmationRetryScheduler interface {
 	ScheduleConfirmationRetry(id int64, base time.Duration, now time.Time) error
 }
 
+// PendingMovementReapplier is optionally implemented by stores that re-apply
+// the location of confirmations not yet sent after a sync rewrote the tags.
+type PendingMovementReapplier interface {
+	ReapplyPendingMovements() error
+}
+
 // KanbanFetcher is implemented by VPS clients that can fetch the kanban catalog.
 // It is optional so VPS clients without kanban support keep working unchanged.
 type KanbanFetcher interface {
@@ -287,6 +293,14 @@ func (t *ToolsSync) performSync() {
 		if err := t.store.UpsertToolTags(toolTagRecords); err != nil {
 			log.Printf("[ToolsSync] Failed to upsert tool tags: %v", err)
 			return
+		}
+	}
+
+	// The gateway knows movements before the VPS: keep the location of
+	// confirmations still pending instead of the VPS's older view.
+	if r, ok := t.store.(PendingMovementReapplier); ok {
+		if err := r.ReapplyPendingMovements(); err != nil {
+			log.Printf("[ToolsSync] Failed to re-apply pending movements: %v", err)
 		}
 	}
 

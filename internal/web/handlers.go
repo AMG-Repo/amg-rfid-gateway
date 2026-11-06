@@ -202,6 +202,7 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			// Keep a local record as already synced. The VPS has the confirmation,
 			// so a failure here is logged and never fails the request.
+			s.applyMovementLocation(req.UII, req.Action)
 			if err := s.store.RecordSyncedConfirmation(req.UII, req.Action, antennaID, sentAt); err != nil {
 				log.Printf("[Web] Failed to record synced confirmation for %s: %v", req.UII, err)
 			}
@@ -254,6 +255,7 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.applyMovementLocation(req.UII, req.Action)
 	s.jsonResponse(w, ConfirmResponse{
 		Success: true,
 		Message: msgConfirmQueued,
@@ -337,6 +339,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		MaxPendingConfirmations: s.maxPendingConfirmations(),
 		StuckCount:              stuckCount,
 	})
+}
+
+// applyMovementLocation updates the cached tag location for an accepted
+// confirmation; a failure is logged only, the movement itself is recorded.
+func (s *Server) applyMovementLocation(uii, action string) {
+	if err := s.store.ApplyMovementLocation(uii, action); err != nil {
+		log.Printf("[Web] Failed to update cached location of %s after %s: %v", uii, action, err)
+	}
 }
 
 // maxPendingConfirmations is the enforced pending queue cap (0 = unlimited).

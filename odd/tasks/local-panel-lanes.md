@@ -32,6 +32,10 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - S12 Retry backoff: a failed send waits longer before its next attempt (per confirmation, growing from the
   retry interval, doubling, capped at 30 min) instead of 10 attempts 30 s apart, so a VPS outage of minutes
   does not leave confirmations stuck. Stuck still means max retries reached.
+- S13 The gateway learns a movement first: as soon as a confirmation is accepted (sent online or queued
+  offline) the cached tag location changes — entrada to "Almacén General", salida to the kanban's first zone
+  (empty when none) — so the next read of the same tag suggests the opposite movement, also offline. A sync
+  must not roll it back while that confirmation is still pending.
 - S8 Panel: implement artboard 09 (lanes Entradas/Salidas, movement filter, attention zone, batch confirm,
   Nox dark/light themes, status summary, history) on the endpoints above. Mock-only parts (`.dbar`, legend,
   hash shortcuts) are not ported.
@@ -48,6 +52,7 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - [x] T9 S10 — tool-tag upsert by id (renormalized UIIs) — inline — commit: efdd26c
 - [x] T10 S11 — requeue endpoint + panel Reintentar — worker — commit: 4a8561b
 - [x] T11 S12 — per-confirmation retry backoff — worker — commit: 457002a
+- [ ] T12 S13 — local location follows confirmed movements — inline — commit:
 - [x] T7 S8 — panel 09 frontend — worker (no commit, rules forbid) — commit: 90d166d
 
 ## Log
@@ -73,3 +78,5 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - L19 (evidence): verify of 668a0b8 FAIL only on swap + empty-SKU (link of the skipped UII lost). Fix: applyKanbanLinks applies links from the whole VPS snapshot (items skipped as tool tags included). Verifier matrix imported as internal/sync/toolssync_tag_identity_test.go: RED on the empty-SKU swap, GREEN after; renormalization, moves and 18 swaps green. T10/T11 committed 4a8561b/457002a.
 - L20 (evidence): final verify of b1fff46: S10 PASS; S11/S12 FAIL on one race — ScheduleConfirmationRetry read retry_count then wrote next_attempt_at unconditionally, overwriting a concurrent requeue (row left 30 min out). Fix: schedule only if retry_count is unchanged and non-zero. Verifier race tests imported (store and worker level): RED without the fix, GREEN with it, stable over -count=20. Residual outside the sync path: legacy UpsertToolsFromSync still upserts ON CONFLICT(uii).
 - L21 (evidence): independent verify of 1a8a6d2: S11 PASS, S12 PASS. All interleavings of increment/read/write with requeue keep a requeued row due; normal backoff never lost. Race tests fail on the parent, pass on 1a8a6d2, stable over -count=20. Boundary (pre-existing, not introduced): increment and scheduling are separate statements.
+- L22 (user, e2e 2026-11-06): read EX150BLA → salida (correct), confirmed (synced 23:20:43, VPS location now "E"), read again → salida again. Cause: the cached tool_tags.location is only refreshed by the next sync; SuggestAction reads it. User: "de hecho el primero en enterarse debe ser el gateway, puede pasar que una tag entre y salga en offline si no se entera el gateway y lo registra tenemos un problema".
+- L23 (evidence): T12 RED (no-op ApplyMovementLocation fails the store, sync and web tests) / GREEN; go test ./... green except pre-existing homebrew.

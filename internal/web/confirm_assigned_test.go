@@ -418,3 +418,71 @@ func TestHandleConfirm_RejectsWithQueueFullAtCapWithoutDroppingQueued(t *testing
 func queueCapConfig(maxPending int) *config.GatewayConfig {
 	return &config.GatewayConfig{MaxPendingConfirmations: &maxPending}
 }
+
+func seedAssignedTag(t *testing.T, env *kanbanTestEnv, uii, location string) {
+	t.Helper()
+	loc := location
+	if err := env.store.UpsertToolsFromSync([]localstore.SyncDataItem{
+		{ID: 1, ToolID: 1, UII: uii, SKU: "S", Name: "Kanban card", Status: "available", Location: &loc, Active: true},
+	}); err != nil {
+		t.Fatalf("seed tag: %v", err)
+	}
+	env.linkKanban(t, uii, testKanban())
+}
+
+func cachedLocation(t *testing.T, env *kanbanTestEnv, uii string) string {
+	t.Helper()
+	tool, err := env.store.GetToolByUII(uii)
+	if err != nil || tool == nil {
+		t.Fatalf("GetToolByUII = %+v, %v", tool, err)
+	}
+	return tool.Location
+}
+
+// The gateway learns the movement first: right after an accepted confirmation
+// the cached location already reflects it, online and offline.
+func TestHandleConfirm_UpdatesCachedLocationOnlineAndOffline(t *testing.T) {
+	t.Run("online salida", func(t *testing.T) {
+		env := newKanbanTestEnv(t, nil)
+		vps := newFakeConfirmVPS(t)
+		env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, "tok")
+		seedAssignedTag(t, env, "A0000001", localstore.WarehouseLocation)
+
+		rec := postConfirm(env.server, `{"uii":"A0000001","action":"salida","antenna_id":"ant-1"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := cachedLocation(t, env, "A0000001"); got == localstore.WarehouseLocation {
+			t.Errorf("after salida the cached location is still %q", got)
+		}
+	})
+	t.Run("offline entrada", func(t *testing.T) {
+		env := newKanbanTestEnv(t, nil)
+		env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+		seedAssignedTag(t, env, "A0000001", "E")
+
+		rec := postConfirm(env.server, `{"uii":"A0000001","action":"entrada","antenna_id":"ant-1"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := cachedLocation(t, env, "A0000001"); got != localstore.WarehouseLocation {
+			t.Errorf("after offline entrada location = %q, want %q", got, localstore.WarehouseLocation)
+		}
+	})
+	t.Run("rejected confirm leaves location", func(t *testing.T) {
+		env := newKanbanTestEnv(t, queueCapConfig(1))
+		env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+		seedAssignedTag(t, env, "A0000001", "E")
+		if _, err := env.store.CreateConfirmation("OTHER", "entrada", "ant-1", time.Now(), 0); err != nil {
+			t.Fatalf("fill queue: %v", err)
+		}
+
+		rec := postConfirm(env.server, `{"uii":"A0000001","action":"entrada","antenna_id":"ant-1"}`)
+		if rec.Code != http.StatusInsufficientStorage {
+			t.Fatalf("expected 507, got %d", rec.Code)
+		}
+		if got := cachedLocation(t, env, "A0000001"); got != "E" {
+			t.Errorf("rejected confirm changed location to %q", got)
+		}
+	})
+}

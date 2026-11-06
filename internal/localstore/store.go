@@ -423,6 +423,10 @@ func (s *LocalStore) UpsertUsers(users []User) error {
 	return tx.Commit()
 }
 
+// WarehouseLocation is the cached location of a tag that is in the warehouse;
+// an entrada moves the tag there.
+const WarehouseLocation = "Almacén General"
+
 // ErrDuplicateTagUII is returned by UpsertToolTags when one batch carries the
 // same UII for two tags; the batch is rejected and nothing is written.
 var ErrDuplicateTagUII = errors.New("duplicate tag UII in sync batch")
@@ -639,6 +643,62 @@ func (s *LocalStore) ScheduleConfirmationRetry(id int64, base time.Duration, now
 	// and its "due now" must not be overwritten by this stale schedule.
 	_, err := s.db.Exec(`UPDATE pending_confirmations SET next_attempt_at = ? WHERE id = ? AND retry_count = ?`, next, id, retryCount)
 	return err
+}
+
+// ApplyMovementLocation updates the cached location of a tag right after a
+// confirmation is accepted, so the gateway knows the movement before the VPS
+// does: entrada moves it to the warehouse, salida to its kanban's first zone
+// (empty when there is none). The next sync replaces it with the VPS's view.
+func (s *LocalStore) ApplyMovementLocation(uii, action string) error {
+	location := WarehouseLocation
+	if action == "salida" {
+		location = ""
+		kanban, err := s.GetKanbanByUII(uii)
+		if err != nil {
+			return err
+		}
+		if kanban != nil && len(kanban.Zones) > 0 {
+			location = kanban.Zones[0]
+		}
+	}
+	_, err := s.db.Exec(`UPDATE tool_tags SET location = ? WHERE uii = ?`, location, uii)
+	return err
+}
+
+// ReapplyPendingMovements re-applies, per tag, the latest confirmation not yet
+// sent to the VPS, so a sync carrying the VPS's older location does not roll
+// back a movement the gateway already accepted.
+func (s *LocalStore) ReapplyPendingMovements() error {
+	rows, err := s.db.Query(`
+		SELECT uii, action FROM pending_confirmations p
+		WHERE synced = 0 AND id = (
+			SELECT MAX(id) FROM pending_confirmations
+			WHERE uii = p.uii AND synced = 0
+		)
+	`)
+	if err != nil {
+		return err
+	}
+	type movement struct{ uii, action string }
+	var pending []movement
+	for rows.Next() {
+		var m movement
+		if err := rows.Scan(&m.uii, &m.action); err != nil {
+			rows.Close()
+			return err
+		}
+		pending = append(pending, m)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, m := range pending {
+		if err := s.ApplyMovementLocation(m.uii, m.action); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetToolsCount returns count of cached tool tags (individual RFID instances).

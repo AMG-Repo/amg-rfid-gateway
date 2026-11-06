@@ -606,6 +606,9 @@ until the sync worker sends it. Synced confirmations older than 30 days are dele
 `synced_at`), except the most recent one, which keeps `last_sync_at`; pending ones are never purged. A UII with no active kanban link answers
 `422 {"success": false, "message": "No se puede registrar un movimiento hasta asignar la tag a un kanban.", "code": "tag_not_assigned"}`
 and nothing is sent or queued. If the assignment cannot be verified (local store error) it answers `500`.
+An accepted confirmation (online or queued) updates the cached tag location right away (`entrada` →
+`Almacén General`, `salida` → the kanban's first zone or empty), so the next read of the same tag suggests the
+opposite movement even offline; a sync does not roll it back while the confirmation is still pending.
 When the offline queue is at `max_pending_confirmations` it answers
 `507 {"success": false, "message": "La cola del gateway está llena: no se guardó el movimiento. Revisá la conexión con el VPS.", "mode": "offline", "code": "queue_full"}`
 and nothing queued is discarded.
