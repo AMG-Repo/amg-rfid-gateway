@@ -35,7 +35,7 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - [x] T4 S4 — today's history endpoint — inline — commit: dfc2056
 - [x] T5 S6 — Spanish confirm messages — inline — commit: dfc2056
 - [x] T6 S7 — queue-full policy: reject queue_full, stuck count — inline — commit: da5ede5
-- [ ] T8 S9 — sync worker skips stuck rows in the query (no starvation) — inline — commit:
+- [x] T8 S9 — sync worker skips stuck rows in the query (no starvation) — inline — commit: 721e7fa
 - [ ] T7 S8 — panel 09 frontend — inline — commit:
 
 ## Log
@@ -50,3 +50,4 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - L8 (user, 2026-11-06): "dale vamos con eso" — accepts L5: never lose, warn from threshold, reject with `queue_full` at the hard cap; also surface confirmations stuck after max retries (example given: VPS-rejected UIIs accumulate forever).
 - L9 (evidence): independent verify of da5ede5: S7 PASS. Differential vs parent: parent answered 200 and deleted the oldest queued row; da5ede5 answers 507 queue_full and keeps it. Pre-existing defect found (not introduced): the sync worker reads only the oldest 100 pending rows and skips stuck ones (toolssync.go:388,403; store.go:482-489), so 100+ stuck rows at the front starve newer retryable confirmations.
 - L10 (user): "dale arreglalos" — fix the worker starvation defect from L9 before T7.
+- L11 (evidence): T8 RED reproduced: 150 stuck confirmations ahead, flush sent nothing; GREEN after GetRetryableConfirmations (retry_count < MaxRetries in SQL). go test ./... green except pre-existing homebrew. Commit 721e7fa.
