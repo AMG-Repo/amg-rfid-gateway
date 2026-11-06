@@ -309,24 +309,16 @@ func (t *ToolsSync) performSync() {
 	log.Printf("[ToolsSync] Synced %d tools, %d tool_tags, and %d users", len(toolRecords), len(toolTagRecords), len(users))
 }
 
-// applyKanbanLinks mirrors the kanban link of the synced items that were stored
-// as tool tags. Items skipped for an empty SKU are excluded.
+// applyKanbanLinks mirrors the kanban link of every item in the VPS snapshot,
+// including items skipped as tool tags (empty SKU): a link does not need a
+// stored tag, and skipping it would lose a legitimate assignment when tags
+// swap UIIs. Nothing to do when no tag was stored and the snapshot is empty.
 func (t *ToolsSync) applyKanbanLinks(items []localstore.SyncDataItem, stored []localstore.ToolTagRecord) {
 	ks, ok := t.store.(KanbanStore)
-	if !ok || len(stored) == 0 {
+	if !ok || (len(stored) == 0 && len(items) == 0) {
 		return
 	}
-
-	storedUII := make(map[string]struct{}, len(stored))
-	for _, tag := range stored {
-		storedUII[tag.UII] = struct{}{}
-	}
-	linkItems := make([]localstore.SyncDataItem, 0, len(stored))
-	for _, item := range items {
-		if _, ok := storedUII[item.UII]; ok {
-			linkItems = append(linkItems, item)
-		}
-	}
+	linkItems := items
 
 	if err := ks.ApplyKanbanLinks(linkItems); err != nil {
 		log.Printf("[ToolsSync] Failed to cache kanban links: %v", err)
