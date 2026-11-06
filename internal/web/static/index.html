@@ -1,335 +1,215 @@
 <!doctype html>
 <html lang="es">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>AMG RFID Gateway - Verificación Local</title>
-        <link rel="stylesheet" href="/style.css" />
-        <script
-            src="https://unpkg.com/htmx.org@2.0.4"
-            integrity="sha384-HGfztofotfshCXF+/rF7axB81T+UGvnQ9d5xgJ3fJ8aH9tbvbPw7RcvcLQPTfTZZ"
-            crossorigin="anonymous"
-        ></script>
-    </head>
-    <body>
-        <header>
-            <h1>AMG RFID Gateway</h1>
-            <div class="status-indicator" id="status-indicator">
-                <span class="status-dot" id="status-dot"></span>
-                <span id="status-text">Conectando...</span>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>AMG RFID Gateway — Verificación local</title>
+    <script>
+      // Set the theme before first paint: saved choice > system preference.
+      (function () {
+        var t = null;
+        try {
+          t = localStorage.getItem("amg-theme");
+        } catch (e) {}
+        if (t !== "light" && t !== "dark")
+          t = matchMedia("(prefers-color-scheme: light)").matches
+            ? "light"
+            : "dark";
+        document.documentElement.dataset.theme = t;
+      })();
+    </script>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>AMG RFID Gateway</h1>
+        <p>Verificación local de entradas y salidas</p>
+      </div>
+      <div class="hdr-r">
+        <div
+          class="seg theme"
+          role="group"
+          aria-label="Tema de color"
+          id="theme-hdr"
+        >
+          <button type="button" data-t="dark" aria-pressed="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+            </svg>
+            <span class="lbl">Oscuro</span>
+          </button>
+          <button type="button" data-t="light" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="4" />
+              <path
+                d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"
+              />
+            </svg>
+            <span class="lbl">Claro</span>
+          </button>
+        </div>
+        <div class="clock mono" id="clock" aria-label="Hora local"></div>
+      </div>
+    </header>
+
+    <details class="sys" id="sys">
+      <summary>
+        <span class="status-dot" id="d-sum"></span>
+        <span class="sum-lbl">Estado del sistema</span>
+        <span class="sum-val" id="v-sum">Conectando…</span>
+        <span class="sum-hint">Ver detalle</span>
+      </summary>
+      <section class="strip" aria-label="Estado del sistema">
+        <div class="cell" id="c-ant" hidden>
+          <span class="status-dot" id="d-ant"></span>
+          <div>
+            <div class="lbl">Antenas</div>
+            <div class="val" id="v-ant"></div>
+            <div class="sub" id="s-ant" hidden></div>
+          </div>
+        </div>
+        <div class="cell" id="c-vps" hidden>
+          <span class="status-dot" id="d-vps"></span>
+          <div>
+            <div class="lbl">Conexión con el VPS</div>
+            <div class="val" id="v-vps"></div>
+            <div class="sub" id="s-vps" hidden></div>
+          </div>
+        </div>
+        <div class="cell" id="c-q" hidden>
+          <span class="status-dot" id="d-q"></span>
+          <div>
+            <div class="lbl">Cola por sincronizar</div>
+            <div class="val mono" id="v-q"></div>
+            <div class="sub" id="s-q" hidden></div>
+          </div>
+        </div>
+        <div class="cell" id="c-acc" hidden>
+          <span class="status-dot" id="d-acc"></span>
+          <div>
+            <div class="lbl">Acceso</div>
+            <div class="val" id="v-acc"></div>
+            <div class="sub" id="s-acc" hidden></div>
+          </div>
+        </div>
+      </section>
+      <div class="sys-more" role="group" aria-label="Antenas y cola">
+        <section id="sec-ant" hidden>
+          <h2>Antenas</h2>
+          <ul class="ant" id="ant-list"></ul>
+        </section>
+        <section id="sec-q" hidden>
+          <h2>Cola de sincronización</h2>
+          <div class="q-count" id="q-big"></div>
+          <div class="q-sub">
+            confirmaciones guardadas en el gateway esperando al VPS
+          </div>
+          <dl class="kv" id="q-kv"></dl>
+        </section>
+      </div>
+    </details>
+
+    <main>
+      <div class="banner err" role="alert" id="b-vps" hidden>
+        <span class="ic" aria-hidden="true">⚠</span
+        ><span
+          >Sin conexión con el VPS. Las confirmaciones se guardan en este
+          gateway y se envían al reconectar.</span
+        >
+      </div>
+      <form class="token" id="token" hidden aria-label="Token de acceso LAN">
+        <label for="tok"
+          >Modo LAN: ingresa el token web para confirmar movimientos.</label
+        >
+        <input
+          id="tok"
+          type="password"
+          autocomplete="off"
+          placeholder="Token web"
+          aria-describedby="tokhelp"
+        />
+        <button type="submit" class="btn-primary">Guardar token</button>
+        <span id="tokerr" class="err t-bad" role="alert" hidden></span>
+        <span id="tokhelp" class="help"
+          >Se guarda solo en esta pestaña. Sin token puedes ver lecturas, pero
+          no confirmar.</span
+        >
+      </form>
+
+      <div class="head-row">
+        <h2>
+          Por confirmar
+          <small id="count-note">Conectando…</small>
+        </h2>
+        <div class="filter">
+          <div class="f-seg" id="f-seg-wrap">
+            <span class="f-lbl" id="f-lbl">Mostrar</span>
+            <div class="seg" role="group" aria-labelledby="f-lbl" id="f-seg">
+              <button type="button" data-f="all" aria-pressed="true">
+                <span class="lbl">Todas</span><span class="n">0</span>
+              </button>
+              <button type="button" data-f="entrada" aria-pressed="false">
+                <span class="ar ar-in" aria-hidden="true">↓</span
+                ><span class="lbl">Entradas</span><span class="n">0</span>
+              </button>
+              <button type="button" data-f="salida" aria-pressed="false">
+                <span class="ar ar-out" aria-hidden="true">↑</span
+                ><span class="lbl">Salidas</span><span class="n">0</span>
+              </button>
             </div>
-        </header>
+          </div>
+        </div>
+      </div>
+      <div class="stack" id="feed" aria-live="polite"></div>
+      <details class="hist" id="hist" hidden>
+        <summary>
+          <span class="sum-lbl">Historial de hoy</span>
+          <span class="sum-val" id="hist-count"></span>
+          <span class="sum-hint">Ver historial</span>
+        </summary>
+        <ul class="hlist" id="hist-list"></ul>
+      </details>
+      <div class="empty" id="empty" hidden>
+        <h3>Sin lecturas por confirmar</h3>
+        <p id="empty-p">
+          Cuando un kanban pase frente a una antena, aparece aquí con su código
+          y el movimiento sugerido.
+        </p>
+      </div>
+    </main>
 
-        <main>
-            <div id="queue-warning" class="queue-warning hidden">
-                <span class="warning-icon">⚠️</span>
-                <span id="warning-text">Cola de confirmaciones llena</span>
-            </div>
+    <dialog class="picker" id="picker" aria-labelledby="picker-h">
+      <form id="picker-form">
+        <h2 id="picker-h">Asignar tag a un kanban</h2>
+        <p class="p-epc mono" id="picker-epc"></p>
+        <label class="p-lbl" for="picker-q">Buscar kanban</label>
+        <input
+          id="picker-q"
+          type="search"
+          autocomplete="off"
+          placeholder="Código o descripción"
+        />
+        <p class="p-note" id="picker-note" role="status"></p>
+        <ul class="p-list" id="picker-list"></ul>
+        <p class="p-err" id="picker-err" role="alert" hidden></p>
+        <div class="p-act">
+          <button type="button" id="picker-cancel">Cancelar</button>
+          <button type="submit" class="btn-warn" id="picker-ok" disabled>
+            Asignar
+          </button>
+        </div>
+      </form>
+    </dialog>
 
-            <section class="controls">
-                <h2>Etiquetas Detectadas</h2>
-                <button
-                    type="button"
-                    onclick="refreshStatus()"
-                    class="btn-refresh"
-                >
-                    Actualizar
-                </button>
-            </section>
+    <div class="toast" id="toast" hidden>
+      <span id="toast-msg" aria-hidden="true"></span>
+      <button type="button" id="toast-go"></button>
+    </div>
+    <p class="sr" id="live" role="status" aria-live="polite"></p>
+    <footer>AMG RFID Tools</footer>
 
-            <section id="tags-list" class="tags-container">
-                <p class="loading" id="tags-empty">Esperando lecturas...</p>
-            </section>
-
-            <section class="pending-section">
-                <h2>Confirmaciones Pendientes</h2>
-                <div class="pending-info">
-                    <span id="pending-count">0</span> confirmaciones en cola
-                </div>
-                <button
-                    hx-get="/api/status"
-                    hx-target="#status-result"
-                    class="btn-status"
-                >
-                    Ver Estado
-                </button>
-                <div id="status-result"></div>
-            </section>
-        </main>
-
-        <footer>
-            <p>AMG RFID Tools &copy; 2024</p>
-        </footer>
-
-        <script>
-            // SSE Connection for real-time tag detection
-            let eventSource;
-            const statusDot = document.getElementById("status-dot");
-            const statusText = document.getElementById("status-text");
-            const tagsList = document.getElementById("tags-list");
-            const pendingCount = document.getElementById("pending-count");
-            const webTokenKey = "amgWebAuthToken";
-            let requiresBearerToken = false;
-            const authModeReady = initAuthMode();
-
-            function getStoredWebToken() {
-                return sessionStorage.getItem(webTokenKey) || "";
-            }
-
-            function setStoredWebToken(token) {
-                if (token) {
-                    sessionStorage.setItem(webTokenKey, token);
-                    return;
-                }
-                sessionStorage.removeItem(webTokenKey);
-            }
-
-            async function initAuthMode() {
-                try {
-                    const response = await fetch("/api/auth-mode");
-                    if (!response.ok) {
-                        return;
-                    }
-
-                    const data = await response.json();
-                    requiresBearerToken = Boolean(data.requires_bearer);
-                } catch (err) {
-                    console.warn("Failed to load auth mode:", err);
-                }
-            }
-
-            function ensureWebToken(forcePrompt = false) {
-                if (!forcePrompt && !requiresBearerToken) {
-                    return true;
-                }
-
-                if (getStoredWebToken()) {
-                    return true;
-                }
-
-                const token = window.prompt(
-                    "Ingresá el token web para confirmar acciones en modo LAN:",
-                );
-                if (!token) {
-                    return false;
-                }
-
-                setStoredWebToken(token.trim());
-                return Boolean(getStoredWebToken());
-            }
-
-            function connectSSE() {
-                eventSource = new EventSource("/events");
-
-                eventSource.addEventListener("connected", function (e) {
-                    console.log("SSE connected:", e.data);
-                    updateStatus(true, "Conectado");
-                });
-
-                eventSource.addEventListener("tag_detected", function (e) {
-                    let data;
-                    try {
-                        data = JSON.parse(e.data);
-                    } catch (err) {
-                        console.error("Invalid tag_detected payload:", err);
-                        return;
-                    }
-                    upsertTagCard(data);
-                });
-
-                eventSource.addEventListener("heartbeat", function (e) {
-                    updateStatus(true, "Conectado");
-                });
-
-                eventSource.onerror = function (e) {
-                    console.error("SSE error:", e);
-                    updateStatus(false, "Desconectado");
-                    // Try to reconnect after 5 seconds
-                    setTimeout(connectSSE, 5000);
-                };
-            }
-
-            function updateStatus(connected, text) {
-                statusDot.className =
-                    "status-dot " + (connected ? "online" : "offline");
-                statusText.textContent = text;
-            }
-
-            // Escape HTML entities to prevent XSS
-            function escapeHtml(text) {
-                const div = document.createElement("div");
-                div.textContent = text;
-                return div.innerHTML;
-            }
-
-            // One card per EPC: a repeated read only bumps its counter and RSSI,
-            // so the card (and the operator's radio selection) is never rebuilt.
-            function upsertTagCard(data) {
-                const existing = document.getElementById("tag-" + data.epc);
-                if (existing) {
-                    const reads = existing.querySelector(".tag-reads");
-                    reads.textContent = String(Number(reads.textContent) + 1);
-                    existing.querySelector(".tag-rssi").textContent = String(
-                        data.rssi,
-                    );
-                    return;
-                }
-                addTagCard(data);
-            }
-
-            function addTagCard(data) {
-                const empty = document.getElementById("tags-empty");
-                if (empty) {
-                    empty.remove();
-                }
-
-                const card = document.createElement("div");
-                card.className = "tag-card";
-                card.id = "tag-" + data.epc;
-
-                const actionId = "action-" + data.epc;
-                const escapedActionId = escapeHtml(actionId);
-                const escapedEPC = escapeHtml(data.epc);
-                const escapedEPCShort = escapeHtml(data.epc.substring(0, 16));
-                const escapedRSSI = escapeHtml(String(data.rssi));
-                const escapedAntennaId = escapeHtml(data.antenna_id);
-
-                // Determine which radio to check based on suggested_action
-                // Default to "entrada" if no suggestion or suggestion is "unknown"
-                let entradaChecked = "checked";
-                let salidaChecked = "";
-                if (data.suggested_action === "salida") {
-                    entradaChecked = "";
-                    salidaChecked = "checked";
-                }
-
-                // Store antenna_id for confirmTag
-                const antennaIdData = data.antenna_id
-                    ? `data-antenna-id="${escapedAntennaId}"`
-                    : "";
-
-                card.innerHTML = `
-                <div class="tag-info">
-                    <h3>${escapedEPCShort}...</h3>
-                    <p>RSSI: <span class="tag-rssi">${escapedRSSI}</span> dBm | Antena: ${escapedAntennaId} | Lecturas: <span class="tag-reads">1</span></p>
-                </div>
-                <div class="tag-actions" ${antennaIdData}>
-                    <label class="radio-label">
-                        <input type="radio" name="${escapedActionId}" value="entrada" ${entradaChecked}>
-                        <span>Entrada</span>
-                    </label>
-                    <label class="radio-label">
-                        <input type="radio" name="${escapedActionId}" value="salida" ${salidaChecked}>
-                        <span>Salida</span>
-                    </label>
-                    <button class="btn-confirm" onclick="confirmTag('${escapedEPC}', '${escapedActionId}', '${escapedAntennaId}')">
-                        Confirmar
-                    </button>
-                </div>
-                <div class="confirm-result" id="result-${escapedEPC}"></div>
-            `;
-
-                // Insert at top
-                tagsList.insertBefore(card, tagsList.firstChild);
-
-                // Limit to 20 cards
-                while (tagsList.children.length > 20) {
-                    tagsList.removeChild(tagsList.lastChild);
-                }
-            }
-
-            async function confirmTag(epc, actionId, antennaId) {
-                const action = document.querySelector(
-                    `input[name="${actionId}"]:checked`,
-                ).value;
-                const resultDiv = document.getElementById("result-" + epc);
-
-                resultDiv.innerHTML =
-                    '<span class="loading">Enviando...</span>';
-
-                try {
-                    await authModeReady;
-
-                    if (!ensureWebToken()) {
-                        resultDiv.innerHTML =
-                            '<span class="error">Se requiere token para confirmar en modo LAN.</span>';
-                        return;
-                    }
-
-                    const headers = { "Content-Type": "application/json" };
-                    const token = getStoredWebToken();
-                    if (token) {
-                        headers.Authorization = `Bearer ${token}`;
-                    }
-
-                    const response = await fetch("/api/confirm", {
-                        method: "POST",
-                        headers: headers,
-                        body: JSON.stringify({
-                            uii: epc,
-                            action: action,
-                            antenna_id: antennaId,
-                        }),
-                    });
-
-                    if (response.status === 401) {
-                        setStoredWebToken("");
-                        resultDiv.innerHTML =
-                            '<span class="error">Token LAN inválido o faltante. Volvé a intentar e ingresá el token correcto.</span>';
-                        requiresBearerToken = true;
-                        if (!ensureWebToken(true)) {
-                            resultDiv.innerHTML =
-                                '<span class="error">Token LAN inválido o faltante. Ingresá el token para volver a intentar.</span>';
-                        }
-                        return;
-                    }
-
-                    const data = await response.json();
-
-                    if (data.success) {
-                        resultDiv.innerHTML = `<span class="success">${data.message} (${data.mode})</span>`;
-                        // Refresh pending count
-                        refreshStatus();
-                    } else {
-                        resultDiv.innerHTML = `<span class="error">${data.message}</span>`;
-                    }
-                } catch (err) {
-                    resultDiv.innerHTML = `<span class="error">Error: ${err.message}</span>`;
-                }
-            }
-
-            async function refreshStatus() {
-                try {
-                    const response = await fetch("/api/status");
-                    const data = await response.json();
-                    pendingCount.textContent = data.pending_count;
-
-                    if (data.vps_online) {
-                        updateStatus(true, "VPS Online");
-                    } else {
-                        updateStatus(false, "Modo Offline");
-                    }
-
-                    // Show/hide queue warning
-                    const warningDiv = document.getElementById("queue-warning");
-                    const warningText = document.getElementById("warning-text");
-                    if (data.pending_warning) {
-                        warningDiv.classList.remove("hidden");
-                        warningText.textContent = `${data.pending_count} confirmaciones pendientes`;
-                    } else {
-                        warningDiv.classList.add("hidden");
-                    }
-                } catch (err) {
-                    console.error("Failed to refresh status:", err);
-                }
-            }
-
-            // Initialize
-            connectSSE();
-            refreshStatus();
-
-            // Refresh status every 30 seconds
-            setInterval(refreshStatus, 30000);
-        </script>
-    </body>
+    <script src="/app.js"></script>
+  </body>
 </html>

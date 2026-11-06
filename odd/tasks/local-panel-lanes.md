@@ -36,7 +36,7 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - [x] T5 S6 — Spanish confirm messages — inline — commit: dfc2056
 - [x] T6 S7 — queue-full policy: reject queue_full, stuck count — inline — commit: da5ede5
 - [x] T8 S9 — sync worker skips stuck rows in the query (no starvation) — inline — commit: 721e7fa
-- [ ] T7 S8 — panel 09 frontend — inline — commit:
+- [x] T7 S8 — panel 09 frontend — worker (no commit, rules forbid) — commit: pending
 
 ## Log
 
@@ -51,3 +51,5 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - L9 (evidence): independent verify of da5ede5: S7 PASS. Differential vs parent: parent answered 200 and deleted the oldest queued row; da5ede5 answers 507 queue_full and keeps it. Pre-existing defect found (not introduced): the sync worker reads only the oldest 100 pending rows and skips stuck ones (toolssync.go:388,403; store.go:482-489), so 100+ stuck rows at the front starve newer retryable confirmations.
 - L10 (user): "dale arreglalos" — fix the worker starvation defect from L9 before T7.
 - L11 (evidence): T8 RED reproduced: 150 stuck confirmations ahead, flush sent nothing; GREEN after GetRetryableConfirmations (retry_count < MaxRetries in SQL). go test ./... green except pre-existing homebrew. Commit 721e7fa.
+- L12 (user): "dale arranca" — start T7. Decisions for gaps the artboard leaves open: "Asignar" opens a simple picker (search the cached catalog GET /api/kanbans, assign via POST /api/tags/assign, Spanish error codes); batch confirm = sequential POST /api/confirm per item with failures (incl. 507 queue_full) moved to "Requieren tu atención"; drop the htmx CDN; token via the design's inline form (sessionStorage key amgWebAuthToken kept).
+- L13 (evidence): T7 panel ported from artboard 09 into internal/web/static (index.html, style.css, app.js); htmx CDN removed; DOM built with text nodes only. Decisions beyond the artboard: a tag just assigned joins its lane as a pending card (movement from its last suggestion, default entrada); a confirmed tag read again after a 30 s gap becomes a new pending movement (a tag still at the antenna stays done); a batch stops on 401 or `queue_full` and leaves the rest pending; the group row of several unassigned tags opens its drawer ("Ver tags") instead of assigning in bulk; picker needs select-then-"Asignar a <código>" to avoid gloved mis-taps. Not ported: `.dbar`, legend, `dnote`, hash shortcuts, hardcoded data, `#f-sel`. Verified: node --check, TestPanelServesLanesDesign, Playwright Chromium against a stub gateway (32 behavior checks, dark/light at 1440 and 390, no console errors beyond the provoked 401/507), go vet, go test ./internal/web/... Live VPS/hardware unverified.
