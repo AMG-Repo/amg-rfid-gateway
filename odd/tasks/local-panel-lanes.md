@@ -25,6 +25,13 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
   are still retryable, so 100+ stuck rows (max retries reached) cannot starve newer ones (L9).
 - S10 Tool-tag sync follows the VPS by tag id: a renormalized UII (same id) or a UII moved to another id
   updates the cache instead of aborting the sync (which also blocked the kanban catalog refresh).
+- S11 Requeue stuck confirmations: `POST /api/confirmations/requeue` (write auth like /api/confirm) resets the
+  retry count of every pending confirmation that reached the max retries so the sync worker sends them again;
+  answers `{requeued: N}`. The panel's "N confirmaciones sin enviar" attention item gets a "Reintentar" button
+  that calls it and refreshes status.
+- S12 Retry backoff: a failed send waits longer before its next attempt (per confirmation, growing from the
+  retry interval, doubling, capped at 30 min) instead of 10 attempts 30 s apart, so a VPS outage of minutes
+  does not leave confirmations stuck. Stuck still means max retries reached.
 - S8 Panel: implement artboard 09 (lanes Entradas/Salidas, movement filter, attention zone, batch confirm,
   Nox dark/light themes, status summary, history) on the endpoints above. Mock-only parts (`.dbar`, legend,
   hash shortcuts) are not ported.
@@ -39,6 +46,8 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - [x] T6 S7 — queue-full policy: reject queue_full, stuck count — inline — commit: da5ede5
 - [x] T8 S9 — sync worker skips stuck rows in the query (no starvation) — inline — commit: 721e7fa
 - [x] T9 S10 — tool-tag upsert by id (renormalized UIIs) — inline — commit: efdd26c
+- [ ] T10 S11 — requeue endpoint + panel Reintentar — worker — commit:
+- [ ] T11 S12 — per-confirmation retry backoff — worker — commit:
 - [x] T7 S8 — panel 09 frontend — worker (no commit, rules forbid) — commit: 90d166d
 
 ## Log
@@ -59,3 +68,4 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - L14 (user, e2e on Pi): picker kanbans out of sync with the VPS (106 local, old suffixed codes vs 87 on VPS); assign answered "El kanban no existe en el VPS." Root cause: performSync aborted at UpsertToolTags with "UNIQUE constraint failed: tool_tags.id" after the cloud renormalized UIIs (same id, new UII), so ReplaceKanbanCatalog never ran. RED reproduced the exact error.
 - L15 (evidence): T9 independent verify: core S10 cases PASS but sign-off FAIL — duplicate UIIs in one batch silently dropped a tag; renormalized UIIs left orphan kanban links pinning stale catalog codes (EX3W0AR-A on the Pi). Fixed test-first: UpsertToolTags rejects duplicate UIIs with ErrDuplicateTagUII writing nothing; ApplyKanbanLinks drops links whose UII is missing from the VPS snapshot. Residual (not on the sync path): legacy UpsertToolsFromSync still upserts ON CONFLICT(uii).
 - L16 (evidence): re-verify of 3a8a460 FAIL — snapshot-based orphan cleanup deleted legitimate links (empty-SKU items filtered out; a just-accepted assignment wiped by an older in-flight snapshot) and skipped empty snapshots. Approach changed: ApplyKanbanLinks never deletes links of UIIs it does not carry; UpsertToolTags drops only the link of a tag's OLD UII when the VPS renormalizes it (same id, new UII). RED/GREEN on TestUpsertToolTags_RenormalizedUIIDropsOldLinkAndStaleCatalogCode; just-assigned and catalog-keep tests green.
+- L17 (user): "dale implementa" — implement requeue of stuck confirmations and retry backoff. Context: cloud 500 was movements.id empty PK (cloud fix deploying); 5 confirmations stuck on the Pi after 10 retries in ~5 min. Do not requeue on the Pi until the cloud confirms its deploy and the "Almacén General" side effect.
