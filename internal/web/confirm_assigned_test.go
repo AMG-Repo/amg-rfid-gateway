@@ -486,3 +486,23 @@ func TestHandleConfirm_UpdatesCachedLocationOnlineAndOffline(t *testing.T) {
 		}
 	})
 }
+
+// The action is matched case-insensitively by validation, so an accepted
+// "SALIDA" must move the tag out exactly like "salida".
+func TestHandleConfirm_UppercaseActionUpdatesLocationLikeLowercase(t *testing.T) {
+	env := newKanbanTestEnv(t, nil)
+	vps := newFakeConfirmVPS(t)
+	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, "tok")
+	seedAssignedTag(t, env, "A0000001", localstore.WarehouseLocation)
+
+	rec := postConfirm(env.server, `{"uii":"A0000001","action":"SALIDA","antenna_id":"ant-1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := cachedLocation(t, env, "A0000001"); got == localstore.WarehouseLocation {
+		t.Errorf("accepted SALIDA left the tag in %q", got)
+	}
+	if got := env.allConfirmations(t); len(got) != 1 || got[0].Action != "salida" {
+		t.Errorf("recorded confirmations = %+v, want one normalized salida", got)
+	}
+}

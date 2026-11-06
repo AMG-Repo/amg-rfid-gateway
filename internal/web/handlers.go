@@ -155,6 +155,8 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, msgConfirmBadAction, http.StatusBadRequest)
 		return
 	}
+	// Validation is case-insensitive; store, send and apply the canonical form.
+	req.Action = strings.ToLower(strings.TrimSpace(req.Action))
 
 	// Movements are only registered for tags assigned to a kanban. Checked before
 	// anything is sent or queued, online or offline, and fail closed if the

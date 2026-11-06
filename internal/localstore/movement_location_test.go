@@ -86,3 +86,29 @@ func TestReapplyPendingMovements_RestoresLatestPendingAction(t *testing.T) {
 		t.Errorf("B location = %q, want %q (pending entrada)", got, WarehouseLocation)
 	}
 }
+
+// A newer movement that already reached the VPS wins over an older pending
+// one for the same tag: re-applying must not roll the tag back.
+func TestReapplyPendingMovements_NewerSentMovementWins(t *testing.T) {
+	store := setupKanbanStore(t)
+	seedToolTag(t, store, 1, "A0000001")
+	if err := store.AssignKanban("A0000001", fordKanban()); err != nil { // zones C, A
+		t.Fatalf("assign: %v", err)
+	}
+	if _, err := store.CreateConfirmation("A0000001", "entrada", "ant-1", time.Now(), 0); err != nil {
+		t.Fatalf("queue entrada: %v", err)
+	}
+	if err := store.RecordSyncedConfirmation("A0000001", "salida", "ant-1", time.Now()); err != nil {
+		t.Fatalf("record online salida: %v", err)
+	}
+	if err := store.ApplyMovementLocation("A0000001", "salida"); err != nil {
+		t.Fatalf("apply salida: %v", err)
+	}
+
+	if err := store.ReapplyPendingMovements(); err != nil {
+		t.Fatalf("reapply: %v", err)
+	}
+	if got := tagLocation(t, store, "A0000001"); got != "C" {
+		t.Errorf("location = %q, want C from the newer sent salida", got)
+	}
+}

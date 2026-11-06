@@ -665,15 +665,15 @@ func (s *LocalStore) ApplyMovementLocation(uii, action string) error {
 	return err
 }
 
-// ReapplyPendingMovements re-applies, per tag, the latest confirmation not yet
-// sent to the VPS, so a sync carrying the VPS's older location does not roll
-// back a movement the gateway already accepted.
+// ReapplyPendingMovements re-applies, per tag, its latest accepted movement
+// when that one has not reached the VPS yet, so a sync carrying the VPS's older
+// location does not roll it back. When the latest movement was already sent,
+// the VPS's location wins, even if an older one is still pending.
 func (s *LocalStore) ReapplyPendingMovements() error {
 	rows, err := s.db.Query(`
 		SELECT uii, action FROM pending_confirmations p
 		WHERE synced = 0 AND id = (
-			SELECT MAX(id) FROM pending_confirmations
-			WHERE uii = p.uii AND synced = 0
+			SELECT MAX(id) FROM pending_confirmations WHERE uii = p.uii
 		)
 	`)
 	if err != nil {
