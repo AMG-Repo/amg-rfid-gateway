@@ -327,7 +327,7 @@ web_port: 9090                         # Port for the web server
 web_listen_addr: "0.0.0.0"             # Bind address (0.0.0.0 = all interfaces)
 vps_api_url: "https://api.your-domain.com"  # VPS API base URL for tool sync
 sync_tools_interval: 1h                # How often to sync tools from VPS
-confirmation_retry_interval: 30s       # Retry interval for pending confirmations
+confirmation_retry_interval: 30s       # Base retry interval for pending confirmations (doubles per failed attempt, max 30m)
 
 # Queue Size Limits (Pending Confirmations)
 max_pending_confirmations: 10000       # Max pending confirmations (0 = unlimited)
@@ -365,7 +365,7 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 | `web_listen_addr` | string | 0.0.0.0 | Web UI bind address |
 | `vps_api_url` | string | required | VPS REST API base URL |
 | `sync_tools_interval` | duration | 1h | Tool sync frequency |
-| `confirmation_retry_interval` | duration | 30s | Pending confirmation retry |
+| `confirmation_retry_interval` | duration | 30s | Base wait before resending a failed confirmation; it doubles after each failure (`interval × 2^(failures-1)`, capped at 30 min). After 10 failed sends the confirmation is stuck until requeued |
 | `max_pending_confirmations` | int | 10000 | Queue size limit (0=unlimited); at the limit new confirmations are rejected with `queue_full`, nothing queued is discarded |
 | `pending_warning_threshold` | int | 1000 | Warning threshold (0=never) |
 | `log_level` | string | info | Logging verbosity |
@@ -566,6 +566,7 @@ the bearer token when `web_access_mode: lan`.
 | `/api/history` | GET | none | Today's confirmations (gateway local day), newest first: `[{uii, kanban_code, description, quantity, unit, action, antenna_id, time, synced}]`. `quantity` is the kanban `standard_pack`; the four kanban fields are `null` when the tag has no active kanban link; `synced` is `false` while the confirmation is still queued for the VPS |
 | `/api/tags/assign` | POST | write auth | Assign a tag to a kanban (online only) |
 | `/api/confirm` | POST | write auth | Confirm entrada/salida (assigned tags only) |
+| `/api/confirmations/requeue` | POST | write auth | Resets the retry count and backoff of every pending confirmation stuck after the max retries so the sync worker sends them again; answers `200 {"requeued": N}` (`0` when none are stuck), `405` for other methods |
 | `/events` | GET (SSE) | none | `tag_detected` events, see below |
 
 **`POST /api/tags/assign`** body `{"uii": "...", "kanban_code": "...", "antenna_id": "..."}`
@@ -584,6 +585,15 @@ checked against the local catalog because the VPS is authoritative (the cached c
 
 Error bodies are `{"error": "<mensaje>", "code": "<code>"}`. Assigning the same tag to the same
 kanban again is idempotent.
+
+**Retries.** A failed send is retried with a per-confirmation backoff: the wait after the n-th
+failure is `confirmation_retry_interval × 2^(n-1)`, capped at 30 minutes, so a VPS outage of
+minutes does not exhaust the 10 attempts. Confirmations waiting out their backoff are skipped
+by the sync worker and never crowd out due ones. After 10 failed sends a confirmation is
+*stuck* (`stuck_count` in `/api/status`): it stays queued and is not sent again until
+`POST /api/confirmations/requeue` (the panel's "Reintentar" button on the "N confirmaciones sin
+enviar" item) resets it. The tick is also `confirmation_retry_interval`, so a due confirmation
+may wait for the next tick.
 
 **`POST /api/confirm`** keeps its request and response shape; `message` is in Spanish
 (`Confirmación enviada al VPS` online, `Confirmación guardada localmente (modo sin conexión)`

@@ -102,6 +102,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/events", s.SSEHandler)
 	mux.HandleFunc("/api/tags", s.handleTags)
 	mux.HandleFunc("/api/confirm", s.requireWriteAuth(s.handleConfirm))
+	mux.HandleFunc("/api/confirmations/requeue", s.requireWriteAuth(s.handleRequeue))
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/auth-mode", s.handleAuthMode)
 	mux.HandleFunc("/api/unassigned-tags", s.handleUnassignedTags)

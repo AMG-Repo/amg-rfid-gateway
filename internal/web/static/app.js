@@ -825,7 +825,42 @@
             ],
     });
   }
+  // Resets the stuck confirmations so the gateway sends them again.
+  async function requeueStuck() {
+    if (busy) return;
+    if (!(await ensureAuth())) return;
+    busy = true;
+    render();
+    var r = null;
+    try {
+      r = await post("/api/confirmations/requeue", {});
+    } catch (e) {}
+    busy = false;
+    if (r && r.status === 401) {
+      render();
+      onUnauthorized();
+      return;
+    }
+    if (r && r.ok) {
+      var n = r.data.requeued || 0;
+      say(
+        n === 1
+          ? "1 confirmación volverá a enviarse."
+          : n + " confirmaciones volverán a enviarse.",
+      );
+    } else {
+      say("No se pudo reintentar. Revisa la conexión e intenta de nuevo.");
+    }
+    loadStatus();
+  }
   function stuckRow(n) {
+    var retry = h("button", "btn-warn", "Reintentar", {
+      type: "button",
+      "data-confirm": "1",
+      "data-fk": "rq:stuck",
+      "aria-label": "Reintentar el envío de las confirmaciones sin enviar",
+    });
+    retry.addEventListener("click", requeueStuck);
     return row({
       key: "stuck",
       cls: "attn wide",
@@ -834,16 +869,17 @@
           ? "1 confirmación sin enviar"
           : n + " confirmaciones sin enviar",
       meta: ["Reintentos agotados · siguen guardadas en el gateway"],
+      acts: [retry],
       detail: [
         h(
           "p",
           "desc",
-          "El VPS no aceptó estas confirmaciones después de varios intentos. Ya no se reenvían solas.",
+          "El VPS no aceptó estas confirmaciones después de varios intentos. Ya no se reenvían solas; usa Reintentar cuando el VPS vuelva a responder.",
         ),
         h(
           "p",
           "why",
-          "No se perdió nada: siguen guardadas en este gateway. Avisa a soporte.",
+          "No se perdió nada: siguen guardadas en este gateway. Si siguen sin enviarse, avisa a soporte.",
         ),
       ],
     });

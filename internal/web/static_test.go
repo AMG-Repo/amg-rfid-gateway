@@ -90,6 +90,8 @@ func TestPanelServesLanesDesign(t *testing.T) {
 		"amgWebAuthToken",
 		"/api/confirm",
 		"/api/tags/assign",
+		"/api/confirmations/requeue",
+		"Reintentar",
 		syncPendingText,
 	} {
 		if !strings.Contains(js, want) {
