@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"strings"
@@ -85,23 +86,16 @@ func NewServerWithConfig(
 	}
 }
 
-// staticFileServer serves files from the embedded static directory
-type staticFileServer struct {
-	fs http.FileSystem
-}
-
-func (s *staticFileServer) Open(name string) (http.File, error) {
-	// Serve files from the static subdirectory
-	return s.fs.Open("static" + name)
-}
-
 // routes builds the HTTP routes served by the web server.
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// Static files - strip the static/ prefix by using a custom wrapper
-	staticHandler := http.FileServer(&staticFileServer{fs: http.FS(staticFS)})
-	mux.Handle("/", staticHandler)
+	// Static files rooted at static/, so "/" resolves to static/index.html.
+	staticRoot, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		panic(fmt.Sprintf("web: embedded static directory missing: %v", err))
+	}
+	mux.Handle("/", http.FileServer(http.FS(staticRoot)))
 
 	// API routes
 	mux.HandleFunc("/events", s.SSEHandler)

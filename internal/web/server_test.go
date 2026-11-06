@@ -91,6 +91,27 @@ func TestHandleStatus(t *testing.T) {
 	}
 }
 
+func TestRoutesServeEmbeddedDashboard(t *testing.T) {
+	eventBus := events.NewEventBus(100)
+	defer eventBus.Close()
+
+	server := NewServer("127.0.0.1", 0, eventBus, nil, nil, nil, "test-company")
+	handler := server.routes()
+
+	for _, path := range []string{"/", "/style.css"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s: expected status 200, got %d", path, rec.Code)
+		}
+		if rec.Body.Len() == 0 {
+			t.Errorf("GET %s: expected a non-empty body", path)
+		}
+	}
+}
+
 func TestHandleStatusMethodNotAllowed(t *testing.T) {
 	eventBus := events.NewEventBus(100)
 	defer eventBus.Close()
