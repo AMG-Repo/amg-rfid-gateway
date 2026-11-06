@@ -36,7 +36,9 @@ type Server struct {
 
 	// unassigned tags inbox recorder (see unassigned.go)
 	unassignedFlushInterval time.Duration
-	recorderCancel          context.CancelFunc
+	// now is the clock used for inbox expiry; nil means time.Now.
+	now            func() time.Time
+	recorderCancel context.CancelFunc
 
 	// refreshed right after a successful tag assignment (optional)
 	syncTrigger SyncTrigger

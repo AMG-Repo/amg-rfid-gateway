@@ -107,3 +107,28 @@ func TestDeleteUnassignedTag(t *testing.T) {
 		t.Errorf("expected only A2 left, got %+v", tags)
 	}
 }
+
+func TestPurgeUnassignedTagsBefore_DropsOnlyStaleRows(t *testing.T) {
+	store := setupKanbanStore(t)
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	store.UpsertUnassignedTag("A000000000000003", "ant-1", now.Add(-25*time.Hour), 1)
+	store.UpsertUnassignedTag("A000000000000004", "ant-1", now.Add(-23*time.Hour), 1)
+
+	removed, err := store.PurgeUnassignedTagsBefore(now.Add(-UnassignedTagTTL))
+	if err != nil {
+		t.Fatalf("PurgeUnassignedTagsBefore failed: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("expected 1 stale row removed, got %d", removed)
+	}
+	tags, _ := store.ListUnassignedTags()
+	if len(tags) != 1 || tags[0].EPC != "A000000000000004" {
+		t.Errorf("expected only the recent tag to remain, got %+v", tags)
+	}
+}
+
+func TestUnassignedTagTTLIs24Hours(t *testing.T) {
+	if UnassignedTagTTL != 24*time.Hour {
+		t.Errorf("UnassignedTagTTL = %v, want 24h", UnassignedTagTTL)
+	}
+}

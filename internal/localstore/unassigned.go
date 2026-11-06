@@ -2,6 +2,11 @@ package localstore
 
 import "time"
 
+// UnassignedTagTTL is how long an unassigned tag stays in the inbox without
+// being read again. Real kanban cards circulate daily, so a tag not seen for
+// a day is most likely noise; it reappears on its next read.
+const UnassignedTagTTL = 24 * time.Hour
+
 // UnassignedTag is a tag that was read but has no active kanban link.
 // It stays in the local inbox until the operator assigns it (online only).
 type UnassignedTag struct {
@@ -54,6 +59,16 @@ func (s *LocalStore) ListUnassignedTags() ([]UnassignedTag, error) {
 		tags = append(tags, tag)
 	}
 	return tags, rows.Err()
+}
+
+// PurgeUnassignedTagsBefore deletes inbox rows last seen before cutoff and
+// returns how many were removed.
+func (s *LocalStore) PurgeUnassignedTagsBefore(cutoff time.Time) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM unassigned_tags WHERE last_seen < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // DeleteUnassignedTag removes an EPC from the inbox (no-op when absent).

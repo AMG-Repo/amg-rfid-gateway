@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 )
 
 // defaultUnassignedFlushInterval is how often coalesced reads are written to the
@@ -32,6 +33,14 @@ func (s *Server) handleUnassignedTags(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		s.jsonResponse(w, []struct{}{})
 		return
+	}
+
+	now := time.Now
+	if s.now != nil {
+		now = s.now
+	}
+	if _, err := s.store.PurgeUnassignedTagsBefore(now().Add(-localstore.UnassignedTagTTL)); err != nil {
+		log.Printf("[Web] Failed to expire unassigned tags: %v", err)
 	}
 
 	tags, err := s.store.ListUnassignedTags()

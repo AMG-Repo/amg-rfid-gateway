@@ -538,8 +538,9 @@ kanban data.
   (`code`, `description`, `standard_pack`, `unit`, `zones`, `extrusora`, `position`, `area`,
   `customer`, `card_type`, `sku`).
 - **Unassigned tag**: a read whose UII has no active kanban link. It is listed in the local
-  unassigned inbox (EPC, antenna, first/last seen, read count) until it is assigned. Unassigned
-  reads never create movements. Employee badges (a synced user `rfid_tag`) are not listed.
+  unassigned inbox (EPC, antenna, first/last seen, read count) until it is assigned, or until it
+  has not been read for 24 hours (it reappears on its next read). Unassigned reads never create
+  movements. Employee badges (a synced user `rfid_tag`) are not listed.
 - **Assigning requires the VPS online.** There is no offline assignment queue: if the VPS is
   unreachable the request fails with `503` and nothing is stored locally.
 - **Movements only for assigned tags.** `POST /api/confirm` rejects a UII without a kanban link.

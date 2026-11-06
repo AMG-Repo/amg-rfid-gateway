@@ -90,6 +90,7 @@ func getUnassigned(t *testing.T, s *Server) (*httptest.ResponseRecorder, []local
 func TestHandleUnassignedTags_ListsStoredRows(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
 	seen := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	env.server.now = func() time.Time { return seen.Add(time.Hour) }
 	env.store.UpsertUnassignedTag("A000000000000003", "ant-1", seen, 4)
 
 	rec, tags := getUnassigned(t, env.server)
@@ -344,5 +345,29 @@ func TestSSE_TagDetected_WithoutStoreHasNoKanbanFlags(t *testing.T) {
 	}
 	if p["suggested_action"] != "unknown" {
 		t.Errorf("expected legacy suggestion, got %+v", p)
+	}
+}
+
+// Tags not read for 24h leave the inbox; a tag read again reappears.
+func TestHandleUnassignedTags_HidesTagsNotSeenFor24h(t *testing.T) {
+	env := newKanbanTestEnv(t, nil)
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	env.server.now = func() time.Time { return now }
+	env.store.UpsertUnassignedTag("A000000000000003", "ant-1", now.Add(-25*time.Hour), 2)
+	env.store.UpsertUnassignedTag("A000000000000004", "ant-1", now.Add(-time.Hour), 3)
+
+	rec, tags := getUnassigned(t, env.server)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if len(tags) != 1 || tags[0].EPC != "A000000000000004" {
+		t.Fatalf("expected only the tag seen within 24h, got %s", rec.Body.String())
+	}
+
+	env.store.UpsertUnassignedTag("A000000000000003", "ant-1", now, 1)
+	_, tags = getUnassigned(t, env.server)
+	if len(tags) != 2 {
+		t.Errorf("expected the re-read tag to reappear, got %d tags", len(tags))
 	}
 }
