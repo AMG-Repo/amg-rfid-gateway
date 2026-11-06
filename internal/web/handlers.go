@@ -3,12 +3,14 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
+	syncpkg "github.com/amg-rfid/amg-rfid-gateway/internal/sync"
 )
 
 const (
@@ -18,6 +20,7 @@ const (
 	msgConfirmQueued      = "Confirmación guardada localmente (modo sin conexión)"
 	msgConfirmNoStore     = "No hay almacén local disponible"
 	msgConfirmQueueFailed = "No se pudo guardar la confirmación en el gateway."
+	msgConfirmQueueFull   = "La cola del gateway está llena: no se guardó el movimiento. Revisá la conexión con el VPS."
 	msgConfirmBadBody     = "Solicitud inválida."
 	msgConfirmBadAction   = "Movimiento inválido: debe ser entrada o salida."
 	msgConfirmNoUII       = "Falta el código de la tag (uii)."
@@ -61,6 +64,12 @@ type StatusResponse struct {
 	PendingWarningThreshold int `json:"pending_warning_threshold"`
 	// LastSyncAt is when the last confirmation reached the VPS (null when none is recorded).
 	LastSyncAt *time.Time `json:"last_sync_at"`
+	// MaxPendingConfirmations is the enforced queue cap (0 = unlimited); at the cap
+	// a new confirmation is rejected with code queue_full.
+	MaxPendingConfirmations int `json:"max_pending_confirmations"`
+	// StuckCount is how many pending confirmations reached the sync worker's max
+	// retries: they stay queued but are no longer sent.
+	StuckCount int `json:"stuck_count"`
 }
 
 // AuthModeResponse indicates whether UI write calls require a bearer token.
@@ -223,12 +232,18 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get max pending confirmations from config (0 = unlimited)
-	maxPending := 0
-	if s.config != nil && s.config.MaxPendingConfirmations != nil {
-		maxPending = *s.config.MaxPendingConfirmations
+	_, err = s.store.CreateConfirmation(req.UII, req.Action, antennaID, time.Now(), s.maxPendingConfirmations())
+	if errors.Is(err, localstore.ErrQueueFull) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInsufficientStorage)
+		json.NewEncoder(w).Encode(ConfirmResponse{
+			Success: false,
+			Message: msgConfirmQueueFull,
+			Mode:    "offline",
+			Code:    "queue_full",
+		})
+		return
 	}
-
-	_, err = s.store.CreateConfirmation(req.UII, req.Action, antennaID, time.Now(), maxPending)
 	if err != nil {
 		log.Printf("[Web] Failed to create local confirmation: %v", err)
 		s.jsonResponse(w, ConfirmResponse{
@@ -295,6 +310,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	stuckCount := 0
+	if s.store != nil {
+		var err error
+		if stuckCount, err = s.store.GetStuckConfirmationsCount(syncpkg.MaxRetries); err != nil {
+			log.Printf("[Web] Failed to count stuck confirmations: %v", err)
+			stuckCount = 0
+		}
+	}
+
 	// Calculate pending warning based on threshold (default 1000, 0 = never warn)
 	threshold := 1000
 	if s.config != nil && s.config.PendingWarningThreshold != nil {
@@ -310,7 +334,17 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		OldestPendingAt:         oldestPendingAt,
 		PendingWarningThreshold: threshold,
 		LastSyncAt:              lastSyncAt,
+		MaxPendingConfirmations: s.maxPendingConfirmations(),
+		StuckCount:              stuckCount,
 	})
+}
+
+// maxPendingConfirmations is the enforced pending queue cap (0 = unlimited).
+func (s *Server) maxPendingConfirmations() int {
+	if s.config != nil && s.config.MaxPendingConfirmations != nil {
+		return *s.config.MaxPendingConfirmations
+	}
+	return 0
 }
 
 // handleAuthMode returns frontend auth requirements for write endpoints.

@@ -2,7 +2,9 @@ package localstore
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -858,40 +860,65 @@ func TestCreateConfirmation_QueueCapEnforcement(t *testing.T) {
 		t.Errorf("expected 3 confirmations, got %d", count)
 	}
 
-	// Create 4th confirmation with cap of 3 - should discard oldest (EPC-001)
-	_, err = store.CreateConfirmation("EPC-004", "salida", "ANT-02", now.Add(3*time.Second), 3)
-	if err != nil {
-		t.Fatalf("failed to create confirmation 4: %v", err)
+	// A 4th confirmation at the cap is rejected; nothing stored is discarded.
+	conf, err := store.CreateConfirmation("EPC-004", "salida", "ANT-02", now.Add(3*time.Second), 3)
+	if !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("expected ErrQueueFull at the cap, got conf=%v err=%v", conf, err)
+	}
+	if conf != nil {
+		t.Errorf("expected no confirmation on ErrQueueFull, got %+v", conf)
 	}
 
-	// Verify still 3 confirmations (oldest was discarded)
-	count, err = store.GetPendingConfirmationsCount()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if count != 3 {
-		t.Errorf("expected 3 confirmations after cap enforcement, got %d", count)
-	}
-
-	// Verify oldest was discarded - EPC-001 should not exist
 	confirmations, err := store.GetUnsyncedConfirmations(100)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	var uiis []string
+	for _, c := range confirmations {
+		uiis = append(uiis, c.UII)
+	}
+	if strings.Join(uiis, ",") != "EPC-001,EPC-002,EPC-003" {
+		t.Errorf("queue must stay EPC-001,EPC-002,EPC-003, got %v", uiis)
+	}
+}
 
-	for _, conf := range confirmations {
-		if conf.UII == "EPC-001" {
-			t.Error("EPC-001 should have been discarded due to queue cap")
+func TestCreateConfirmation_SyncedRowsDoNotCountTowardCap(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	store := New(db)
+
+	now := time.Now()
+	if err := store.RecordSyncedConfirmation("EPC-SYNCED", "entrada", "ANT-01", now); err != nil {
+		t.Fatalf("record synced: %v", err)
+	}
+	if _, err := store.CreateConfirmation("EPC-001", "entrada", "ANT-01", now, 1); err != nil {
+		t.Fatalf("first pending under cap 1 must be accepted, got %v", err)
+	}
+}
+
+func TestGetStuckConfirmationsCount(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	store := New(db)
+
+	now := time.Now()
+	stuck, _ := store.CreateConfirmation("EPC-STUCK", "entrada", "ANT-01", now, 0)
+	fresh, _ := store.CreateConfirmation("EPC-FRESH", "entrada", "ANT-01", now, 0)
+	for i := 0; i < 10; i++ {
+		if err := store.IncrementRetryCount(stuck.ID); err != nil {
+			t.Fatalf("increment: %v", err)
 		}
 	}
-
-	// Verify EPC-002, EPC-003, EPC-004 exist
-	found := make(map[string]bool)
-	for _, conf := range confirmations {
-		found[conf.UII] = true
+	if err := store.IncrementRetryCount(fresh.ID); err != nil {
+		t.Fatalf("increment: %v", err)
 	}
-	if !found["EPC-002"] || !found["EPC-003"] || !found["EPC-004"] {
-		t.Errorf("expected EPC-002, EPC-003, EPC-004 to exist, got: %v", found)
+
+	got, err := store.GetStuckConfirmationsCount(10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 1 {
+		t.Errorf("stuck count = %d, want 1", got)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/httpclient"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 )
@@ -380,4 +381,40 @@ func TestHandleConfirm_ValidationErrorsAreSpanish(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandleConfirm_RejectsWithQueueFullAtCapWithoutDroppingQueued(t *testing.T) {
+	env := newKanbanTestEnv(t, queueCapConfig(1))
+	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+	env.linkKanban(t, "A0000001", testKanban())
+	if _, err := env.store.CreateConfirmation("OLDER-EPC", "entrada", "ant-1", time.Now(), 0); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+
+	rec := postConfirm(env.server, `{"uii":"A0000001","action":"salida","antenna_id":"ant-1"}`)
+
+	if rec.Code != http.StatusInsufficientStorage {
+		t.Fatalf("expected 507, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp ConfirmResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	want := ConfirmResponse{
+		Success: false,
+		Message: "La cola del gateway está llena: no se guardó el movimiento. Revisá la conexión con el VPS.",
+		Mode:    "offline",
+		Code:    "queue_full",
+	}
+	if resp != want {
+		t.Errorf("response = %+v, want %+v", resp, want)
+	}
+	queued := env.pendingConfirmations(t)
+	if len(queued) != 1 || queued[0].UII != "OLDER-EPC" {
+		t.Errorf("queue must keep only OLDER-EPC, got %+v", queued)
+	}
+}
+
+func queueCapConfig(maxPending int) *config.GatewayConfig {
+	return &config.GatewayConfig{MaxPendingConfirmations: &maxPending}
 }

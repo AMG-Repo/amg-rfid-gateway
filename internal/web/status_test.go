@@ -134,3 +134,45 @@ func TestHandleStatus_WithoutStoreKeepsExistingFields(t *testing.T) {
 		t.Errorf("unexpected new fields: %+v", body)
 	}
 }
+
+func TestHandleStatus_ReportsStuckConfirmationsAndQueueCap(t *testing.T) {
+	env := newKanbanTestEnv(t, &config.GatewayConfig{MaxPendingConfirmations: intPtr(500)})
+	stuck, err := env.store.CreateConfirmation("STUCK-EPC", "entrada", "ant-1", time.Now(), 0)
+	if err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	if _, err := env.store.CreateConfirmation("FRESH-EPC", "entrada", "ant-1", time.Now(), 0); err != nil {
+		t.Fatalf("seed failed: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		if err := env.store.IncrementRetryCount(stuck.ID); err != nil {
+			t.Fatalf("increment failed: %v", err)
+		}
+	}
+
+	body := getStatus(t, env.server)
+
+	if v := body["stuck_count"]; v != float64(1) {
+		t.Errorf("stuck_count = %#v, want 1", v)
+	}
+	if v := body["max_pending_confirmations"]; v != float64(500) {
+		t.Errorf("max_pending_confirmations = %#v, want 500", v)
+	}
+	if v := body["pending_count"]; v != float64(2) {
+		t.Errorf("pending_count = %#v, want 2 (stuck rows stay queued)", v)
+	}
+}
+
+func TestHandleStatus_DefaultQueueCapAndNoStuck(t *testing.T) {
+	env := newKanbanTestEnv(t, nil)
+
+	body := getStatus(t, env.server)
+
+	if v := body["stuck_count"]; v != float64(0) {
+		t.Errorf("stuck_count = %#v, want 0", v)
+	}
+	// Without config nothing is enforced; 0 means unlimited, as in the config file.
+	if v := body["max_pending_confirmations"]; v != float64(0) {
+		t.Errorf("max_pending_confirmations = %#v, want 0", v)
+	}
+}

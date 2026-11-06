@@ -3,6 +3,7 @@ package localstore
 
 import (
 	"database/sql"
+	"errors"
 	"log"
 	"time"
 )
@@ -421,8 +422,13 @@ func (s *LocalStore) UpsertUsers(users []User) error {
 	return tx.Commit()
 }
 
+// ErrQueueFull is returned by CreateConfirmation when the pending queue is at
+// its cap. Nothing stored is discarded: the new confirmation is rejected.
+var ErrQueueFull = errors.New("pending confirmation queue is full")
+
 // CreateConfirmation stores a new pending confirmation.
-// If maxPending is > 0 and the count exceeds it, the oldest unsynced confirmation is deleted first.
+// If maxPending is > 0 and the unsynced count has reached it, the confirmation
+// is rejected with ErrQueueFull and the queue is left unchanged.
 func (s *LocalStore) CreateConfirmation(uii, action, antennaID string, timestamp time.Time, maxPending int) (*PendingConfirmation, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -430,28 +436,15 @@ func (s *LocalStore) CreateConfirmation(uii, action, antennaID string, timestamp
 	}
 	defer tx.Rollback()
 
-	// Check queue cap if maxPending > 0
 	if maxPending > 0 {
 		var count int
 		err := tx.QueryRow(`SELECT COUNT(*) FROM pending_confirmations WHERE synced = 0`).Scan(&count)
 		if err != nil {
 			return nil, err
 		}
-
-		// If at or over cap, delete oldest atomically
 		if count >= maxPending {
-			var deletedUII sql.NullString
-			err := tx.QueryRow(`
-				DELETE FROM pending_confirmations
-				WHERE id = (SELECT id FROM pending_confirmations WHERE synced = 0 ORDER BY created_at ASC LIMIT 1)
-				RETURNING uii
-			`).Scan(&deletedUII)
-			if err != nil && err != sql.ErrNoRows {
-				return nil, err
-			}
-			if deletedUII.Valid {
-				log.Printf("[LocalStore] Queue cap reached (%d), discarded oldest confirmation: UII=%s", maxPending, deletedUII.String)
-			}
+			log.Printf("[LocalStore] Queue cap reached (%d), rejected confirmation: UII=%s", maxPending, uii)
+			return nil, ErrQueueFull
 		}
 	}
 
@@ -538,6 +531,14 @@ func (s *LocalStore) RecordSyncedConfirmation(uii, action, antennaID string, sen
 		VALUES (?, ?, ?, ?, 1, 0, ?)
 	`, uii, action, antennaID, sentAt, sentAt.UTC().Format(sqliteTimestamp))
 	return err
+}
+
+// GetStuckConfirmationsCount counts pending confirmations that reached
+// minRetries send attempts; the sync worker keeps them queued but skips them.
+func (s *LocalStore) GetStuckConfirmationsCount(minRetries int) (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM pending_confirmations WHERE synced = 0 AND retry_count >= ?`, minRetries).Scan(&count)
+	return count, err
 }
 
 // PurgeSyncedConfirmations deletes synced confirmations older than cutoff

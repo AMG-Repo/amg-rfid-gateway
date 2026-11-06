@@ -366,7 +366,7 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 | `vps_api_url` | string | required | VPS REST API base URL |
 | `sync_tools_interval` | duration | 1h | Tool sync frequency |
 | `confirmation_retry_interval` | duration | 30s | Pending confirmation retry |
-| `max_pending_confirmations` | int | 10000 | Queue size limit (0=unlimited) |
+| `max_pending_confirmations` | int | 10000 | Queue size limit (0=unlimited); at the limit new confirmations are rejected with `queue_full`, nothing queued is discarded |
 | `pending_warning_threshold` | int | 1000 | Warning threshold (0=never) |
 | `log_level` | string | info | Logging verbosity |
 
@@ -562,7 +562,7 @@ the bearer token when `web_access_mode: lan`.
 | `/api/unassigned-tags` | GET | none | `[{epc, antenna_id, first_seen, last_seen, read_count}]`, most recent first |
 | `/api/kanbans` | GET | none | Cached kanban catalog (picker source), ordered by `code` |
 | `/api/antennas` | GET | none | `[{id, zone, state, last_read_at}]` per configured antenna; `state` is `reading`, `reconnecting` or `stopped` (disabled); `zone` is `entrada`, `salida` or `""`; `last_read_at` is `null` until the first tag read |
-| `/api/status` | GET | none | `{vps_online, pending_count, tools_count, pending_warning, oldest_pending_at, pending_warning_threshold, last_sync_at}`; `oldest_pending_at` is when the oldest pending confirmation was queued (`null` when none), `pending_warning_threshold` is the configured threshold (default 1000, `0` = never warn), `last_sync_at` is the last time a confirmation reached the VPS (online confirm or worker flush; `null` when none is recorded) |
+| `/api/status` | GET | none | `{vps_online, pending_count, tools_count, pending_warning, oldest_pending_at, pending_warning_threshold, last_sync_at, max_pending_confirmations, stuck_count}`; `max_pending_confirmations` is the enforced queue cap (`0` = unlimited), `stuck_count` counts pending confirmations that reached the sync worker's max retries (kept queued, no longer sent); `oldest_pending_at` is when the oldest pending confirmation was queued (`null` when none), `pending_warning_threshold` is the configured threshold (default 1000, `0` = never warn), `last_sync_at` is the last time a confirmation reached the VPS (online confirm or worker flush; `null` when none is recorded) |
 | `/api/history` | GET | none | Today's confirmations (gateway local day), newest first: `[{uii, kanban_code, description, quantity, unit, action, antenna_id, time, synced}]`. `quantity` is the kanban `standard_pack`; the four kanban fields are `null` when the tag has no active kanban link; `synced` is `false` while the confirmation is still queued for the VPS |
 | `/api/tags/assign` | POST | write auth | Assign a tag to a kanban (online only) |
 | `/api/confirm` | POST | write auth | Confirm entrada/salida (assigned tags only) |
@@ -596,6 +596,9 @@ until the sync worker sends it. Synced confirmations older than 30 days are dele
 `synced_at`), except the most recent one, which keeps `last_sync_at`; pending ones are never purged. A UII with no active kanban link answers
 `422 {"success": false, "message": "No se puede registrar un movimiento hasta asignar la tag a un kanban.", "code": "tag_not_assigned"}`
 and nothing is sent or queued. If the assignment cannot be verified (local store error) it answers `500`.
+When the offline queue is at `max_pending_confirmations` it answers
+`507 {"success": false, "message": "La cola del gateway está llena: no se guardó el movimiento. Revisá la conexión con el VPS.", "mode": "offline", "code": "queue_full"}`
+and nothing queued is discarded.
 
 **SSE `tag_detected`** keeps its fields (`epc`, `rssi`, `antenna_id`, `timestamp`,
 `suggested_action`, `suggested_reason`) and adds, additively: a `kanban` object for assigned

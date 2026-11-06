@@ -17,8 +17,10 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - S5 Retention: synced confirmations older than 30 days are deleted; pending ones are never deleted.
 - S6 Spanish user-facing messages on confirm (today "Confirmation sent to VPS",
   "Confirmation queued locally (offline mode)", "No local store available").
-- S7 Queue full: no confirmation is silently dropped (today the oldest pending is deleted). Pending user
-  confirmation (see L5) before implementing.
+- S7 Queue full: no confirmation is silently dropped (today the oldest pending is deleted). The panel warns
+  from the warning threshold; at the hard cap (`max_pending_confirmations`) a new confirmation is rejected
+  with code `queue_full` and nothing stored is deleted. Confirmations stuck after the max retries are counted
+  so the panel can show them.
 - S8 Panel: implement artboard 09 (lanes Entradas/Salidas, movement filter, attention zone, batch confirm,
   Nox dark/light themes, status summary, history) on the endpoints above. Mock-only parts (`.dbar`, legend,
   hash shortcuts) are not ported.
@@ -30,7 +32,7 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - [x] T3 S2 — queue detail in /api/status (oldest, threshold, last sync) — inline — commit: e08256c dfc2056
 - [x] T4 S4 — today's history endpoint — inline — commit: dfc2056
 - [x] T5 S6 — Spanish confirm messages — inline — commit: dfc2056
-- [ ] T6 S7 — queue-full policy (blocked on L5) — inline — commit:
+- [ ] T6 S7 — queue-full policy: reject queue_full, stuck count — inline — commit:
 - [ ] T7 S8 — panel 09 frontend — inline — commit:
 
 ## Log
@@ -42,3 +44,4 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - L5 (open): queue full. Engram #9987 / issue #103 principle "registration never blocks, no event lost"; auto-confirm with requires_review was designed but never implemented (separate feature). Proposed: never drop; warn at threshold; reject with code `queue_full` only at the hard cap. Awaiting user confirmation.
 - L6 (evidence): T2–T5 by worker (no commits, rules forbid). Independent verify: S3, S4, S5 PASS (migration on HEAD schema preserved rows; purge never touches pending; local-day history in 3 timezones). S2 FAIL (last_sync_at lost after purge) and S6 FAIL (English validation errors, raw DB error). Fixed inline test-first: purge keeps the latest synced row (COALESCE guard for legacy NULL synced_at), Spanish 400 messages, queue failure without DB text. go test ./... green except pre-existing homebrew. Commits e08256c (store), dfc2056 (web). Slice note: branch is stacked on feat/kanban-unassigned-tags; split into chained PRs at delivery.
 - L7 (evidence): second independent verify on e08256c/dfc2056: S2–S6 PASS (purge matrix: latest kept, legacy NULL purged, pending preserved, empty table; a05a2b1 schema reopen preserves rows; Spanish 400s write nothing; no DB text leak). Known limit: online local-record failure only logs (VPS already accepted). Live VPS/hardware unverified.
+- L8 (user, 2026-11-06): "dale vamos con eso" — accepts L5: never lose, warn from threshold, reject with `queue_full` at the hard cap; also surface confirmations stuck after max retries (example given: VPS-rejected UIIs accumulate forever).

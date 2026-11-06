@@ -82,7 +82,7 @@ confirmation_retry_interval: 30s  # Retry interval for pending confirmations syn
 
 # Queue Size Limits (Pending Confirmations)
 # Prevents unbounded growth during VPS outages
-max_pending_confirmations: 10000    # Max pending confirmations before discarding oldest (0 = unlimited)
+max_pending_confirmations: 10000    # Max pending confirmations; at the cap new ones are rejected (queue_full), nothing is discarded (0 = unlimited)
 pending_warning_threshold: 1000     # Show warning when pending count exceeds this (0 = never warn)
 
 # Logging level: debug, info, warn, error
