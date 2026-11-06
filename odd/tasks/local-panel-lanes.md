@@ -52,7 +52,7 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - [x] T9 S10 — tool-tag upsert by id (renormalized UIIs) — inline — commit: efdd26c
 - [x] T10 S11 — requeue endpoint + panel Reintentar — worker — commit: 4a8561b
 - [x] T11 S12 — per-confirmation retry backoff — worker — commit: 457002a
-- [ ] T12 S13 — local location follows confirmed movements — inline — commit:
+- [x] T12 S13 — local location follows confirmed movements — inline — commit: 96e6d4e
 - [x] T7 S8 — panel 09 frontend — worker (no commit, rules forbid) — commit: 90d166d
 
 ## Log
