@@ -1054,3 +1054,36 @@ func TestKanbanTables_MigrationOnExistingDatabaseKeepsPendingConfirmations(t *te
 		c.Close()
 	}
 }
+
+// Concurrent writers (reading cache, unassigned inbox, sync) share one file.
+// A writer that finds the database locked must wait instead of failing with
+// SQLITE_BUSY, as seen on hardware at ~95 reads/s.
+func TestNewSQLite_WaitsForLockInsteadOfFailing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache.db")
+	c, err := NewSQLite(path)
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	defer c.Close()
+	db := c.GetDB()
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO unassigned_tags (epc, antenna_id, first_seen, last_seen, read_count) VALUES ('A1', 'a', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := db.Exec(`INSERT INTO unassigned_tags (epc, antenna_id, first_seen, last_seen, read_count) VALUES ('A2', 'a', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)`)
+		done <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("second writer failed instead of waiting for the lock: %v", err)
+	}
+}

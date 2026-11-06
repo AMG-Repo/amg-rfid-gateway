@@ -42,6 +42,18 @@ type SQLite struct {
 	mu       sync.RWMutex
 }
 
+// sqliteBusyTimeoutMs is how long a connection waits for a locked database.
+const sqliteBusyTimeoutMs = 5000
+
+// sqliteDSN adds per-connection pragmas to a file path; in-memory and URI
+// paths are left as given.
+func sqliteDSN(dbPath string) string {
+	if dbPath == ":memory:" || strings.HasPrefix(dbPath, "file:") {
+		return dbPath
+	}
+	return fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)", dbPath, sqliteBusyTimeoutMs)
+}
+
 // NewSQLite creates a new SQLite cache instance.
 // Uses NEGATIVE PROGRAMMING: check what should NOT be, early returns.
 func NewSQLite(dbPath string) (*SQLite, error) {
@@ -51,8 +63,10 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	// Open database
-	db, err := sql.Open("sqlite", dbPath)
+	// Open database. busy_timeout goes in the DSN so every pooled connection
+	// waits for a held write lock instead of failing with SQLITE_BUSY: the
+	// reading cache, the unassigned inbox and the sync write concurrently.
+	db, err := sql.Open("sqlite", sqliteDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
