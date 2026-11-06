@@ -1275,6 +1275,58 @@ func TestUpsertToolTags_Insert(t *testing.T) {
 }
 
 // Test UpsertToolTags updates existing tags
+// The VPS can renormalize a tag's UII (same id, new UII) and move a UII to
+// another tag id; the cache must follow the VPS by id instead of failing.
+func TestUpsertToolTags_FollowsVPSWhenUIIChangesOrMoves(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	store := New(db)
+
+	now := time.Now()
+	if _, err := db.Exec(`INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at) VALUES (10, 'comp-001', 'SKU-001', 'Tool', 'D', 'W', ?)`, now); err != nil {
+		t.Fatalf("seed tool: %v", err)
+	}
+	for _, row := range []struct {
+		id  int
+		uii string
+	}{{1, "E2806995000040104CF4558"}, {2, "E2806995000050104CF4909B"}, {3, "KEEP-ME"}} {
+		if _, err := db.Exec(`INSERT INTO tool_tags (id, tool_id, uii, status, active, last_synced_at) VALUES (?, 10, ?, 'available', 1, ?)`, row.id, row.uii, now); err != nil {
+			t.Fatalf("seed tag %d: %v", row.id, err)
+		}
+	}
+
+	err := store.UpsertToolTags([]ToolTagRecord{
+		{ID: 1, ToolID: 10, UII: "E2806995000040104CF4558B", Status: "available", Active: true}, // truncated UII fixed
+		{ID: 4, ToolID: 10, UII: "E2806995000050104CF4909B", Status: "available", Active: true}, // UII moved from id 2
+	})
+	if err != nil {
+		t.Fatalf("upsert must follow the VPS, got %v", err)
+	}
+
+	got := map[int]string{}
+	rows, err := db.Query(`SELECT id, uii FROM tool_tags ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		var uii string
+		rows.Scan(&id, &uii)
+		got[id] = uii
+	}
+	want := map[int]string{1: "E2806995000040104CF4558B", 3: "KEEP-ME", 4: "E2806995000050104CF4909B"}
+	if len(got) != len(want) {
+		t.Fatalf("tool_tags = %v, want %v", got, want)
+	}
+	for id, uii := range want {
+		if got[id] != uii {
+			t.Errorf("tool_tags = %v, want %v", got, want)
+			break
+		}
+	}
+}
+
 func TestUpsertToolTags_Update(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()

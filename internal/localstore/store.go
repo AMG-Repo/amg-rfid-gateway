@@ -680,7 +680,8 @@ func (s *LocalStore) UpsertToolTags(tags []ToolTagRecord) error {
 	stmt, err := tx.Prepare(`
 		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, location_id, display_name, notes, active, kanban_zone, last_synced_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(uii) DO UPDATE SET
+		ON CONFLICT(id) DO UPDATE SET
+			uii = excluded.uii,
 			tool_id = excluded.tool_id,
 			unit_number = excluded.unit_number,
 			status = excluded.status,
@@ -697,8 +698,20 @@ func (s *LocalStore) UpsertToolTags(tags []ToolTagRecord) error {
 	}
 	defer stmt.Close()
 
+	// The VPS is the source of truth by tag id: its UII can be renormalized, and
+	// a UII can move to another tag. Drop any other row holding the UII first so
+	// the id upsert never hits the UNIQUE(uii) constraint.
+	releaseUII, err := tx.Prepare(`DELETE FROM tool_tags WHERE uii = ? AND id <> ?`)
+	if err != nil {
+		return err
+	}
+	defer releaseUII.Close()
+
 	now := time.Now()
 	for _, tag := range tags {
+		if _, err := releaseUII.Exec(tag.UII, tag.ID); err != nil {
+			return err
+		}
 		_, err := stmt.Exec(
 			tag.ID,
 			tag.ToolID,

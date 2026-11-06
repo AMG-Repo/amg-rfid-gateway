@@ -23,6 +23,8 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
   so the panel can show them.
 - S9 Stuck confirmations never block the queue: the sync worker sends the oldest pending confirmations that
   are still retryable, so 100+ stuck rows (max retries reached) cannot starve newer ones (L9).
+- S10 Tool-tag sync follows the VPS by tag id: a renormalized UII (same id) or a UII moved to another id
+  updates the cache instead of aborting the sync (which also blocked the kanban catalog refresh).
 - S8 Panel: implement artboard 09 (lanes Entradas/Salidas, movement filter, attention zone, batch confirm,
   Nox dark/light themes, status summary, history) on the endpoints above. Mock-only parts (`.dbar`, legend,
   hash shortcuts) are not ported.
@@ -36,6 +38,7 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - [x] T5 S6 — Spanish confirm messages — inline — commit: dfc2056
 - [x] T6 S7 — queue-full policy: reject queue_full, stuck count — inline — commit: da5ede5
 - [x] T8 S9 — sync worker skips stuck rows in the query (no starvation) — inline — commit: 721e7fa
+- [ ] T9 S10 — tool-tag upsert by id (renormalized UIIs) — inline — commit:
 - [x] T7 S8 — panel 09 frontend — worker (no commit, rules forbid) — commit: 90d166d
 
 ## Log
@@ -53,3 +56,4 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - L11 (evidence): T8 RED reproduced: 150 stuck confirmations ahead, flush sent nothing; GREEN after GetRetryableConfirmations (retry_count < MaxRetries in SQL). go test ./... green except pre-existing homebrew. Commit 721e7fa.
 - L12 (user): "dale arranca" — start T7. Decisions for gaps the artboard leaves open: "Asignar" opens a simple picker (search the cached catalog GET /api/kanbans, assign via POST /api/tags/assign, Spanish error codes); batch confirm = sequential POST /api/confirm per item with failures (incl. 507 queue_full) moved to "Requieren tu atención"; drop the htmx CDN; token via the design's inline form (sessionStorage key amgWebAuthToken kept).
 - L13 (evidence): T7 panel ported from artboard 09 into internal/web/static (index.html, style.css, app.js); htmx CDN removed; DOM built with text nodes only. Decisions beyond the artboard: a tag just assigned joins its lane as a pending card (movement from its last suggestion, default entrada); a confirmed tag read again after a 30 s gap becomes a new pending movement (a tag still at the antenna stays done); a batch stops on 401 or `queue_full` and leaves the rest pending; the group row of several unassigned tags opens its drawer ("Ver tags") instead of assigning in bulk; picker needs select-then-"Asignar a <código>" to avoid gloved mis-taps. Not ported: `.dbar`, legend, `dnote`, hash shortcuts, hardcoded data, `#f-sel`. Verified: node --check, TestPanelServesLanesDesign, Playwright Chromium against a stub gateway (32 behavior checks, dark/light at 1440 and 390, no console errors beyond the provoked 401/507), go vet, go test ./internal/web/... Live VPS/hardware unverified.
+- L14 (user, e2e on Pi): picker kanbans out of sync with the VPS (106 local, old suffixed codes vs 87 on VPS); assign answered "El kanban no existe en el VPS." Root cause: performSync aborted at UpsertToolTags with "UNIQUE constraint failed: tool_tags.id" after the cloud renormalized UIIs (same id, new UII), so ReplaceKanbanCatalog never ran. RED reproduced the exact error.
