@@ -631,8 +631,13 @@ func (s *LocalStore) ScheduleConfirmationRetry(id int64, base time.Duration, now
 	if err := s.db.QueryRow(`SELECT retry_count FROM pending_confirmations WHERE id = ?`, id).Scan(&retryCount); err != nil {
 		return err
 	}
+	if retryCount == 0 {
+		return nil // requeued meanwhile: stays due now
+	}
 	next := now.Add(RetryBackoff(base, retryCount)).UTC().Format(sqliteTimestamp)
-	_, err := s.db.Exec(`UPDATE pending_confirmations SET next_attempt_at = ? WHERE id = ?`, next, id)
+	// Only if the count is still the one read: a requeue in between reset it,
+	// and its "due now" must not be overwritten by this stale schedule.
+	_, err := s.db.Exec(`UPDATE pending_confirmations SET next_attempt_at = ? WHERE id = ? AND retry_count = ?`, next, id, retryCount)
 	return err
 }
 
