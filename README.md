@@ -554,6 +554,7 @@ the bearer token when `web_access_mode: lan`.
 |----------|--------|------|-------------|
 | `/api/unassigned-tags` | GET | none | `[{epc, antenna_id, first_seen, last_seen, read_count}]`, most recent first |
 | `/api/kanbans` | GET | none | Cached kanban catalog (picker source), ordered by `code` |
+| `/api/antennas` | GET | none | `[{id, zone, state, last_read_at}]` per configured antenna; `state` is `reading`, `reconnecting` or `stopped` (disabled); `zone` is `entrada`, `salida` or `""`; `last_read_at` is `null` until the first tag read |
 | `/api/tags/assign` | POST | write auth | Assign a tag to a kanban (online only) |
 | `/api/confirm` | POST | write auth | Confirm entrada/salida (assigned tags only) |
 | `/events` | GET (SSE) | none | `tag_detected` events, see below |

@@ -43,6 +43,7 @@ type Server struct {
 
 	// refreshed right after a successful tag assignment (optional)
 	syncTrigger SyncTrigger
+	antennas    AntennaStatusProvider
 }
 
 // NewServer creates a new web server.
@@ -105,6 +106,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/auth-mode", s.handleAuthMode)
 	mux.HandleFunc("/api/unassigned-tags", s.handleUnassignedTags)
 	mux.HandleFunc("/api/kanbans", s.handleKanbans)
+	mux.HandleFunc("/api/antennas", s.handleAntennas)
 	mux.HandleFunc("/api/tags/assign", s.requireWriteAuth(s.handleAssignTag))
 
 	return mux
