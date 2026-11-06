@@ -1087,3 +1087,59 @@ func TestNewSQLite_WaitsForLockInsteadOfFailing(t *testing.T) {
 		t.Fatalf("second writer failed instead of waiting for the lock: %v", err)
 	}
 }
+
+// A database created before synced_at existed gets the column, keeps its rows,
+// and reopening it again is a no-op.
+func TestMigratePendingConfirmations_AddsSyncedAtAndKeepsRows(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy_synced_at.db")
+
+	legacy, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	_, err = legacy.Exec(`
+		CREATE TABLE pending_confirmations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			uii TEXT NOT NULL,
+			action TEXT NOT NULL CHECK(action IN ('entrada', 'salida')),
+			antenna_id TEXT,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			synced BOOLEAN DEFAULT 0,
+			retry_count INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		INSERT INTO pending_confirmations (uii, action, synced) VALUES ('EPC-SYNCED', 'entrada', 1), ('EPC-PENDING', 'salida', 0);
+	`)
+	if err != nil {
+		t.Fatalf("failed to create legacy schema: %v", err)
+	}
+	legacy.Close()
+
+	for i := 0; i < 2; i++ {
+		c, err := NewSQLite(dbPath)
+		if err != nil {
+			t.Fatalf("open #%d failed: %v", i+1, err)
+		}
+		var cols, rows int
+		if err := c.GetDB().QueryRow(`SELECT COUNT(*) FROM pragma_table_info('pending_confirmations') WHERE name = 'synced_at'`).Scan(&cols); err != nil || cols != 1 {
+			t.Errorf("open #%d: expected one synced_at column, got %d (err %v)", i+1, cols, err)
+		}
+		if err := c.GetDB().QueryRow(`SELECT COUNT(*) FROM pending_confirmations`).Scan(&rows); err != nil || rows != 2 {
+			t.Errorf("open #%d: expected 2 rows preserved, got %d (err %v)", i+1, rows, err)
+		}
+		c.Close()
+	}
+}
+
+func TestNewSQLite_FreshDatabaseHasSyncedAt(t *testing.T) {
+	c, err := NewSQLite(filepath.Join(t.TempDir(), "fresh.db"))
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	defer c.Close()
+
+	var cols int
+	if err := c.GetDB().QueryRow(`SELECT COUNT(*) FROM pragma_table_info('pending_confirmations') WHERE name = 'synced_at'`).Scan(&cols); err != nil || cols != 1 {
+		t.Errorf("expected one synced_at column, got %d (err %v)", cols, err)
+	}
+}

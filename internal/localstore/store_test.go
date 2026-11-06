@@ -62,7 +62,8 @@ func setupTestDB(t *testing.T) *sql.DB {
 			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			synced_at DATETIME
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_tool_tags_uii ON tool_tags(uii);

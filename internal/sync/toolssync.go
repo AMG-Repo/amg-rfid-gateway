@@ -46,6 +46,16 @@ type KanbanFetcher interface {
 	FetchKanbans(companyID string) ([]localstore.Kanban, error)
 }
 
+// ConfirmationPurger is implemented by local stores that delete synced
+// confirmations past their retention. It is optional so stores without it keep
+// working unchanged.
+type ConfirmationPurger interface {
+	PurgeSyncedConfirmations(cutoff time.Time) (int64, error)
+}
+
+// confirmationPurgeInterval is how often the flush loop purges synced confirmations.
+const confirmationPurgeInterval = time.Hour
+
 // KanbanStore is implemented by local stores that cache kanban links and the
 // kanban catalog. It is optional so stores without kanban support keep working.
 type KanbanStore interface {
@@ -339,13 +349,35 @@ func (t *ToolsSync) flushPendingConfirmations() {
 	ticker := time.NewTicker(t.retryInterval)
 	defer ticker.Stop()
 
+	var lastPurge time.Time
 	for {
 		select {
 		case <-t.ctx.Done():
 			return
 		case <-ticker.C:
+			if time.Since(lastPurge) >= confirmationPurgeInterval {
+				lastPurge = time.Now()
+				t.purgeSyncedConfirmations()
+			}
 			t.performFlush()
 		}
+	}
+}
+
+// purgeSyncedConfirmations deletes synced confirmations older than the
+// retention. Failures are logged only; pending confirmations are never touched.
+func (t *ToolsSync) purgeSyncedConfirmations() {
+	purger, ok := t.store.(ConfirmationPurger)
+	if !ok {
+		return
+	}
+	removed, err := purger.PurgeSyncedConfirmations(time.Now().Add(-localstore.ConfirmationRetention))
+	if err != nil {
+		log.Printf("[ToolsSync] Failed to purge synced confirmations: %v", err)
+		return
+	}
+	if removed > 0 {
+		log.Printf("[ToolsSync] Purged %d synced confirmations older than %s", removed, localstore.ConfirmationRetention)
 	}
 }
 

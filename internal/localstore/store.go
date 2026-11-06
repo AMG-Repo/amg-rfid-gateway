@@ -83,6 +83,14 @@ type User struct {
 	LastSyncedAt time.Time `json:"last_synced_at"`
 }
 
+// ConfirmationRetention is how long synced confirmations are kept locally.
+// Pending (unsynced) confirmations are never purged.
+const ConfirmationRetention = 30 * 24 * time.Hour
+
+// sqliteTimestamp is the layout of CURRENT_TIMESTAMP, shared by created_at and
+// synced_at so retention comparisons are plain string comparisons.
+const sqliteTimestamp = "2006-01-02 15:04:05"
+
 // PendingConfirmation represents a confirmation awaiting VPS sync.
 type PendingConfirmation struct {
 	ID         int64     `json:"id"`
@@ -512,14 +520,45 @@ func (s *LocalStore) GetUnsyncedConfirmations(limit int) ([]PendingConfirmation,
 	return confirmations, rows.Err()
 }
 
-// MarkConfirmationSynced marks a confirmation as synced.
+// MarkConfirmationSynced marks a confirmation as synced, stamping synced_at.
 func (s *LocalStore) MarkConfirmationSynced(id int64) error {
 	_, err := s.db.Exec(`
 		UPDATE pending_confirmations
-		SET synced = 1
+		SET synced = 1, synced_at = CURRENT_TIMESTAMP
 		WHERE id = ?
 	`, id)
 	return err
+}
+
+// RecordSyncedConfirmation stores a confirmation the VPS already accepted, as
+// synced with the send time, so the local history has every confirmation.
+func (s *LocalStore) RecordSyncedConfirmation(uii, action, antennaID string, sentAt time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO pending_confirmations (uii, action, antenna_id, timestamp, synced, retry_count, synced_at)
+		VALUES (?, ?, ?, ?, 1, 0, ?)
+	`, uii, action, antennaID, sentAt, sentAt.UTC().Format(sqliteTimestamp))
+	return err
+}
+
+// PurgeSyncedConfirmations deletes synced confirmations older than cutoff
+// (by synced_at, or created_at for rows synced before synced_at existed) and
+// returns how many were removed. Unsynced confirmations are never deleted, and
+// the most recently synced row is always kept so the last successful send to
+// the VPS (GetLastSyncedAt) survives retention.
+func (s *LocalStore) PurgeSyncedConfirmations(cutoff time.Time) (int64, error) {
+	res, err := s.db.Exec(`
+		DELETE FROM pending_confirmations
+		WHERE synced = 1 AND COALESCE(synced_at, created_at) < ?
+		  AND id <> COALESCE((
+			SELECT id FROM pending_confirmations
+			WHERE synced = 1 AND synced_at IS NOT NULL
+			ORDER BY synced_at DESC, id DESC LIMIT 1
+		  ), -1)
+	`, cutoff.UTC().Format(sqliteTimestamp))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // IncrementRetryCount increments retry count for a confirmation.
@@ -553,6 +592,39 @@ func (s *LocalStore) GetPendingConfirmationsCount() (int, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM pending_confirmations WHERE synced = 0`).Scan(&count)
 	return count, err
+}
+
+// GetOldestPendingAt returns when the oldest unsynced confirmation was queued,
+// or nil when nothing is pending.
+func (s *LocalStore) GetOldestPendingAt() (*time.Time, error) {
+	return s.queryOptionalTime(`
+		SELECT created_at FROM pending_confirmations
+		WHERE synced = 0 AND created_at IS NOT NULL
+		ORDER BY created_at ASC LIMIT 1
+	`)
+}
+
+// GetLastSyncedAt returns when the most recent confirmation reached the VPS,
+// or nil when none has been recorded as synced yet.
+func (s *LocalStore) GetLastSyncedAt() (*time.Time, error) {
+	return s.queryOptionalTime(`
+		SELECT synced_at FROM pending_confirmations
+		WHERE synced_at IS NOT NULL
+		ORDER BY synced_at DESC LIMIT 1
+	`)
+}
+
+// queryOptionalTime runs a single-column, single-row time query; no row is nil.
+func (s *LocalStore) queryOptionalTime(query string) (*time.Time, error) {
+	var t time.Time
+	err := s.db.QueryRow(query).Scan(&t)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 // DeleteOldestUnsyncedConfirmation deletes the oldest unsynced confirmation by created_at.

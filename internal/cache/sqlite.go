@@ -187,7 +187,8 @@ func createTables(db *sql.DB) error {
 				timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 				synced BOOLEAN DEFAULT 0,
 				retry_count INTEGER DEFAULT 0,
-				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				synced_at DATETIME
 			);
 
 			CREATE INDEX IF NOT EXISTS idx_users_rfid ON users(rfid_tag);
@@ -260,7 +261,8 @@ func createTables(db *sql.DB) error {
 			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			synced_at DATETIME
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_tool_tags_uii ON tool_tags(uii);
@@ -321,6 +323,24 @@ func migratePendingConfirmations(db *sql.DB) error {
 		_, err = db.Exec(`UPDATE pending_confirmations SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL`)
 		if err != nil {
 			return fmt.Errorf("failed to update created_at values: %w", err)
+		}
+	}
+
+	// Check if synced_at column exists (when the VPS accepted the confirmation)
+	var syncedAtExists bool
+	err = db.QueryRow(`
+		SELECT COUNT(*) > 0 FROM pragma_table_info('pending_confirmations') WHERE name = 'synced_at'
+	`).Scan(&syncedAtExists)
+	if err != nil {
+		return fmt.Errorf("failed to check synced_at column: %w", err)
+	}
+
+	// Add synced_at column if missing; existing synced rows keep it NULL and
+	// are retained by created_at.
+	if !syncedAtExists {
+		_, err = db.Exec(`ALTER TABLE pending_confirmations ADD COLUMN synced_at DATETIME`)
+		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("failed to add synced_at column: %w", err)
 		}
 	}
 
