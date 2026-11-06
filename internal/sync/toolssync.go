@@ -40,6 +40,12 @@ type LocalStore interface {
 	IncrementRetryCount(id int64) error
 }
 
+// RetryableConfirmationLister is optionally implemented by stores that can list
+// only pending confirmations still under the retry limit.
+type RetryableConfirmationLister interface {
+	GetRetryableConfirmations(limit, maxRetries int) ([]localstore.PendingConfirmation, error)
+}
+
 // KanbanFetcher is implemented by VPS clients that can fetch the kanban catalog.
 // It is optional so VPS clients without kanban support keep working unchanged.
 type KanbanFetcher interface {
@@ -384,8 +390,15 @@ func (t *ToolsSync) purgeSyncedConfirmations() {
 // performFlush attempts to send all pending confirmations to VPS.
 // Confirmations exceeding MaxRetries remain queued for manual inspection (per spec).
 func (t *ToolsSync) performFlush() {
-	// Get pending confirmations
-	confirmations, err := t.store.GetUnsyncedConfirmations(100)
+	// Get pending confirmations; stores that can filter out stuck ones do it in
+	// the query so they never fill the batch and starve newer confirmations.
+	var confirmations []localstore.PendingConfirmation
+	var err error
+	if lister, ok := t.store.(RetryableConfirmationLister); ok {
+		confirmations, err = lister.GetRetryableConfirmations(100, MaxRetries)
+	} else {
+		confirmations, err = t.store.GetUnsyncedConfirmations(100)
+	}
 	if err != nil {
 		log.Printf("[ToolsSync] Failed to get unsynced confirmations: %v", err)
 		return

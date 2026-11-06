@@ -477,15 +477,27 @@ func (s *LocalStore) CreateConfirmation(uii, action, antennaID string, timestamp
 	}, nil
 }
 
+// GetRetryableConfirmations returns the oldest unsynced confirmations that have
+// fewer than maxRetries send attempts, so stuck ones never fill the batch.
+func (s *LocalStore) GetRetryableConfirmations(limit, maxRetries int) ([]PendingConfirmation, error) {
+	return s.queryUnsyncedConfirmations(`AND retry_count < ?`, limit, maxRetries)
+}
+
 // GetUnsyncedConfirmations retrieves all unsynced confirmations.
 func (s *LocalStore) GetUnsyncedConfirmations(limit int) ([]PendingConfirmation, error) {
+	return s.queryUnsyncedConfirmations("", limit)
+}
+
+// queryUnsyncedConfirmations lists unsynced confirmations oldest first, with an
+// optional extra WHERE condition whose args precede the limit.
+func (s *LocalStore) queryUnsyncedConfirmations(extraWhere string, limit int, args ...any) ([]PendingConfirmation, error) {
 	rows, err := s.db.Query(`
 		SELECT id, uii, action, antenna_id, timestamp, retry_count, created_at
 		FROM pending_confirmations
-		WHERE synced = 0
+		WHERE synced = 0 `+extraWhere+`
 		ORDER BY created_at ASC
 		LIMIT ?
-	`, limit)
+	`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}

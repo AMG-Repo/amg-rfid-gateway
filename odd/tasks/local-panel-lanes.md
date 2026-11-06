@@ -21,6 +21,8 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
   from the warning threshold; at the hard cap (`max_pending_confirmations`) a new confirmation is rejected
   with code `queue_full` and nothing stored is deleted. Confirmations stuck after the max retries are counted
   so the panel can show them.
+- S9 Stuck confirmations never block the queue: the sync worker sends the oldest pending confirmations that
+  are still retryable, so 100+ stuck rows (max retries reached) cannot starve newer ones (L9).
 - S8 Panel: implement artboard 09 (lanes Entradas/Salidas, movement filter, attention zone, batch confirm,
   Nox dark/light themes, status summary, history) on the endpoints above. Mock-only parts (`.dbar`, legend,
   hash shortcuts) are not ported.
@@ -33,6 +35,7 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - [x] T4 S4 — today's history endpoint — inline — commit: dfc2056
 - [x] T5 S6 — Spanish confirm messages — inline — commit: dfc2056
 - [x] T6 S7 — queue-full policy: reject queue_full, stuck count — inline — commit: da5ede5
+- [ ] T8 S9 — sync worker skips stuck rows in the query (no starvation) — inline — commit:
 - [ ] T7 S8 — panel 09 frontend — inline — commit:
 
 ## Log
@@ -46,3 +49,4 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - L7 (evidence): second independent verify on e08256c/dfc2056: S2–S6 PASS (purge matrix: latest kept, legacy NULL purged, pending preserved, empty table; a05a2b1 schema reopen preserves rows; Spanish 400s write nothing; no DB text leak). Known limit: online local-record failure only logs (VPS already accepted). Live VPS/hardware unverified.
 - L8 (user, 2026-11-06): "dale vamos con eso" — accepts L5: never lose, warn from threshold, reject with `queue_full` at the hard cap; also surface confirmations stuck after max retries (example given: VPS-rejected UIIs accumulate forever).
 - L9 (evidence): independent verify of da5ede5: S7 PASS. Differential vs parent: parent answered 200 and deleted the oldest queued row; da5ede5 answers 507 queue_full and keeps it. Pre-existing defect found (not introduced): the sync worker reads only the oldest 100 pending rows and skips stuck ones (toolssync.go:388,403; store.go:482-489), so 100+ stuck rows at the front starve newer retryable confirmations.
+- L10 (user): "dale arreglalos" — fix the worker starvation defect from L9 before T7.
