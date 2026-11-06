@@ -25,11 +25,11 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 
 ## Tasks
 
-- [ ] T1 S1 — antenna health endpoint + provider dedupe — inline — commit:
-- [ ] T2 S3,S5 — record online confirms as synced (synced_at) + 30-day purge — inline — commit:
-- [ ] T3 S2 — queue detail in /api/status (oldest, threshold, last sync) — inline — commit:
-- [ ] T4 S4 — today's history endpoint — inline — commit:
-- [ ] T5 S6 — Spanish confirm messages — inline — commit:
+- [x] T1 S1 — antenna health endpoint + provider dedupe — inline — commit: a05a2b1
+- [x] T2 S3,S5 — record online confirms as synced (synced_at) + 30-day purge — inline — commit: e08256c
+- [x] T3 S2 — queue detail in /api/status (oldest, threshold, last sync) — inline — commit: e08256c dfc2056
+- [x] T4 S4 — today's history endpoint — inline — commit: dfc2056
+- [x] T5 S6 — Spanish confirm messages — inline — commit: dfc2056
 - [ ] T6 S7 — queue-full policy (blocked on L5) — inline — commit:
 - [ ] T7 S8 — panel 09 frontend — inline — commit:
 
@@ -40,3 +40,4 @@ Branch `feat/local-panel-lanes` (stacked on `feat/kanban-unassigned-tags`). Impl
 - L3 (evidence): explorer maps — panel gaps: antenna health, queue age/limit/last send, history, queue-full code, picker undesigned, no batch endpoint. Online confirms are never stored locally (handlers.go:172-186); synced rows are kept forever; CreateConfirmation drops the oldest pending at the cap (store.go:426-446); antenna provider appends a manager per reconnect (main.go ~399).
 - L4 (user): "dale guardamos todas" — accepting: record every confirmation locally, purge synced > 30 days.
 - L5 (open): queue full. Engram #9987 / issue #103 principle "registration never blocks, no event lost"; auto-confirm with requires_review was designed but never implemented (separate feature). Proposed: never drop; warn at threshold; reject with code `queue_full` only at the hard cap. Awaiting user confirmation.
+- L6 (evidence): T2–T5 by worker (no commits, rules forbid). Independent verify: S3, S4, S5 PASS (migration on HEAD schema preserved rows; purge never touches pending; local-day history in 3 timezones). S2 FAIL (last_sync_at lost after purge) and S6 FAIL (English validation errors, raw DB error). Fixed inline test-first: purge keeps the latest synced row (COALESCE guard for legacy NULL synced_at), Spanish 400 messages, queue failure without DB text. go test ./... green except pre-existing homebrew. Commits e08256c (store), dfc2056 (web). Slice note: branch is stacked on feat/kanban-unassigned-tags; split into chained PRs at delivery.
