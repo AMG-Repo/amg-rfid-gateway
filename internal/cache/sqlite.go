@@ -188,7 +188,8 @@ func createTables(db *sql.DB) error {
 				synced BOOLEAN DEFAULT 0,
 				retry_count INTEGER DEFAULT 0,
 				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-				synced_at DATETIME
+				synced_at DATETIME,
+				next_attempt_at DATETIME
 			);
 
 			CREATE INDEX IF NOT EXISTS idx_users_rfid ON users(rfid_tag);
@@ -262,7 +263,8 @@ func createTables(db *sql.DB) error {
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			synced_at DATETIME
+			synced_at DATETIME,
+			next_attempt_at DATETIME
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_tool_tags_uii ON tool_tags(uii);
@@ -341,6 +343,25 @@ func migratePendingConfirmations(db *sql.DB) error {
 		_, err = db.Exec(`ALTER TABLE pending_confirmations ADD COLUMN synced_at DATETIME`)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("failed to add synced_at column: %w", err)
+		}
+	}
+
+	// Check if next_attempt_at column exists (retry backoff: when the sync worker
+	// may send a failed confirmation again)
+	var nextAttemptAtExists bool
+	err = db.QueryRow(`
+		SELECT COUNT(*) > 0 FROM pragma_table_info('pending_confirmations') WHERE name = 'next_attempt_at'
+	`).Scan(&nextAttemptAtExists)
+	if err != nil {
+		return fmt.Errorf("failed to check next_attempt_at column: %w", err)
+	}
+
+	// Add next_attempt_at column if missing; existing rows keep it NULL, which
+	// means eligible now.
+	if !nextAttemptAtExists {
+		_, err = db.Exec(`ALTER TABLE pending_confirmations ADD COLUMN next_attempt_at DATETIME`)
+		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("failed to add next_attempt_at column: %w", err)
 		}
 	}
 

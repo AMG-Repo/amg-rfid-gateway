@@ -1143,3 +1143,51 @@ func TestNewSQLite_FreshDatabaseHasSyncedAt(t *testing.T) {
 		t.Errorf("expected one synced_at column, got %d (err %v)", cols, err)
 	}
 }
+
+// TestMigratePendingConfirmations_AddsNextAttemptAt tests that the retry backoff
+// column is added to an existing table, keeps rows eligible (NULL) and is idempotent.
+func TestMigratePendingConfirmations_AddsNextAttemptAt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_migrate.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE pending_confirmations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			uii TEXT NOT NULL,
+			action TEXT NOT NULL CHECK(action IN ('entrada', 'salida')),
+			antenna_id TEXT,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			synced BOOLEAN DEFAULT 0,
+			retry_count INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			synced_at DATETIME
+		);
+		INSERT INTO pending_confirmations (uii, action, retry_count) VALUES ('EPC-OLD', 'entrada', 3);
+	`)
+	if err != nil {
+		t.Fatalf("failed to create old schema: %v", err)
+	}
+	db.Close()
+
+	for i := 0; i < 2; i++ { // the second open proves idempotency
+		c, err := NewSQLite(dbPath)
+		if err != nil {
+			t.Fatalf("open %d failed: %v", i+1, err)
+		}
+		var cols int
+		if err := c.GetDB().QueryRow(`SELECT COUNT(*) FROM pragma_table_info('pending_confirmations') WHERE name = 'next_attempt_at'`).Scan(&cols); err != nil || cols != 1 {
+			t.Errorf("open %d: next_attempt_at column count = %d (err %v), want 1", i+1, cols, err)
+		}
+		var next sql.NullString
+		var retries int
+		if err := c.GetDB().QueryRow(`SELECT next_attempt_at, retry_count FROM pending_confirmations WHERE uii = 'EPC-OLD'`).Scan(&next, &retries); err != nil {
+			t.Fatalf("open %d: read old row: %v", i+1, err)
+		}
+		if next.Valid || retries != 3 {
+			t.Errorf("open %d: old row next_attempt_at=%v retry_count=%d, want NULL and 3", i+1, next, retries)
+		}
+		c.Close()
+	}
+}

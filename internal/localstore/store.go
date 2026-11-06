@@ -483,9 +483,11 @@ func (s *LocalStore) CreateConfirmation(uii, action, antennaID string, timestamp
 }
 
 // GetRetryableConfirmations returns the oldest unsynced confirmations that have
-// fewer than maxRetries send attempts, so stuck ones never fill the batch.
+// fewer than maxRetries send attempts and are due (no backoff pending), so
+// stuck or waiting ones never fill the batch.
 func (s *LocalStore) GetRetryableConfirmations(limit, maxRetries int) ([]PendingConfirmation, error) {
-	return s.queryUnsyncedConfirmations(`AND retry_count < ?`, limit, maxRetries)
+	return s.queryUnsyncedConfirmations(`AND retry_count < ?
+		AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%d %H:%M:%S', 'now'))`, limit, maxRetries)
 }
 
 // GetUnsyncedConfirmations retrieves all unsynced confirmations.
@@ -558,6 +560,22 @@ func (s *LocalStore) GetStuckConfirmationsCount(minRetries int) (int, error) {
 	return count, err
 }
 
+// RequeueStuckConfirmations resets the retry count and the backoff of every
+// pending confirmation that reached minRetries send attempts so the sync worker
+// sends it again right away, and returns how many were reset. Synced and still-retrying rows
+// are untouched.
+func (s *LocalStore) RequeueStuckConfirmations(minRetries int) (int64, error) {
+	res, err := s.db.Exec(`
+		UPDATE pending_confirmations
+		SET retry_count = 0, next_attempt_at = NULL
+		WHERE synced = 0 AND retry_count >= ?
+	`, minRetries)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // PurgeSyncedConfirmations deletes synced confirmations older than cutoff
 // (by synced_at, or created_at for rows synced before synced_at existed) and
 // returns how many were removed. Unsynced confirmations are never deleted, and
@@ -586,6 +604,35 @@ func (s *LocalStore) IncrementRetryCount(id int64) error {
 		SET retry_count = retry_count + 1
 		WHERE id = ?
 	`, id)
+	return err
+}
+
+// MaxRetryBackoff caps the wait between two send attempts of a confirmation.
+const MaxRetryBackoff = 30 * time.Minute
+
+// RetryBackoff is the wait after the retryCount-th failed send:
+// base * 2^(retryCount-1), capped at MaxRetryBackoff.
+func RetryBackoff(base time.Duration, retryCount int) time.Duration {
+	delay := base
+	for i := 1; i < retryCount && delay < MaxRetryBackoff; i++ {
+		delay *= 2
+	}
+	if delay > MaxRetryBackoff {
+		return MaxRetryBackoff
+	}
+	return delay
+}
+
+// ScheduleConfirmationRetry sets when a confirmation whose send just failed may
+// be sent again: now + RetryBackoff(base, its retry count). Call it after
+// IncrementRetryCount so the count includes the failed attempt.
+func (s *LocalStore) ScheduleConfirmationRetry(id int64, base time.Duration, now time.Time) error {
+	var retryCount int
+	if err := s.db.QueryRow(`SELECT retry_count FROM pending_confirmations WHERE id = ?`, id).Scan(&retryCount); err != nil {
+		return err
+	}
+	next := now.Add(RetryBackoff(base, retryCount)).UTC().Format(sqliteTimestamp)
+	_, err := s.db.Exec(`UPDATE pending_confirmations SET next_attempt_at = ? WHERE id = ?`, next, id)
 	return err
 }
 

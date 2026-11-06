@@ -46,6 +46,13 @@ type RetryableConfirmationLister interface {
 	GetRetryableConfirmations(limit, maxRetries int) ([]localstore.PendingConfirmation, error)
 }
 
+// ConfirmationRetryScheduler is optionally implemented by stores that back off
+// between send attempts of a failed confirmation (retryInterval doubling per
+// failure). Stores without it retry on every flush.
+type ConfirmationRetryScheduler interface {
+	ScheduleConfirmationRetry(id int64, base time.Duration, now time.Time) error
+}
+
 // KanbanFetcher is implemented by VPS clients that can fetch the kanban catalog.
 // It is optional so VPS clients without kanban support keep working unchanged.
 type KanbanFetcher interface {
@@ -427,6 +434,11 @@ func (t *ToolsSync) performFlush() {
 			// Increment retry count
 			if err := t.store.IncrementRetryCount(conf.ID); err != nil {
 				log.Printf("[ToolsSync] Failed to increment retry count: %v", err)
+			} else if scheduler, ok := t.store.(ConfirmationRetryScheduler); ok {
+				// Wait longer after each failure instead of retrying every tick.
+				if err := scheduler.ScheduleConfirmationRetry(conf.ID, t.retryInterval, time.Now()); err != nil {
+					log.Printf("[ToolsSync] Failed to schedule retry for confirmation %d: %v", conf.ID, err)
+				}
 			}
 		} else {
 			// Mark as synced

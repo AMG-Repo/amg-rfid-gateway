@@ -78,7 +78,7 @@ web_listen_addr: "127.0.0.1" # Bind address must match web_access_mode
 web_auth_token: "" # REQUIRED when web_access_mode is "lan" (protects write-capable UI)
 vps_api_url: "https://api.your-domain.com" # VPS API base URL for tool sync
 sync_tools_interval: 1h # How often to sync tools from VPS (e.g., 1h, 30m)
-confirmation_retry_interval: 30s # Retry interval for pending confirmations sync
+confirmation_retry_interval: 30s # Base retry interval for pending confirmations; doubles after each failed send (max 30m); stuck after 10 failures until requeued from the panel
 
 # Queue Size Limits (Pending Confirmations)
 # Prevents unbounded growth during VPS outages
