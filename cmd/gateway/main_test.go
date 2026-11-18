@@ -196,7 +196,8 @@ func TestLoadConfigReturnsExistingYAMLError(t *testing.T) {
 gateway_id: "gw-1"
 company_id: "company-1"
 cloud_url: "wss://example.com/ws"
-jwt_secret: "secret"
+gateway_credential_file: /etc/amg-rfid-gateway/gateway.secret
+vps_api_url: https://vps.example.com
 web_enabled: true
 web_listen_addr: "0.0.0.0"
 antennas: []
@@ -230,7 +231,8 @@ func TestLoadConfigWarnsAboutUnknownRootKeys(t *testing.T) {
 gateway_id: "gw-1"
 company_id: "company-1"
 cloud_url: "wss://example.com/ws"
-jwt_secret: "secret"
+gateway_credential_file: /etc/amg-rfid-gateway/gateway.secret
+vps_api_url: https://vps.example.com
 antennas:
   - id: "ant-1"
     ip: "192.168.1.10"

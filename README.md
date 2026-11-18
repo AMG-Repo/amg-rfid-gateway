@@ -242,6 +242,11 @@ This means `--config` flag is now optional:
 GATEWAY_CONFIG=/path/to/config.yaml ./gateway
 ```
 
+When no config file is found, the gateway reads its settings from environment
+variables (`GATEWAY_ID`, `COMPANY_ID`, `CLOUD_URL`, ...). The device credential
+path is set with `GATEWAY_CREDENTIAL_FILE` (equivalent to `gateway_credential_file`)
+and the backend API with `VPS_API_URL` (equivalent to `vps_api_url`).
+
 ### Complete Configuration Example
 
 ```yaml
@@ -253,7 +258,8 @@ company_id: "your-company-uuid"
 
 # Cloud backend connection
 cloud_url: "wss://api.your-domain.com/ws"
-jwt_secret: "your-jwt-token-here"
+gateway_credential_file: "/etc/amg-rfid-gateway/gateway.secret"
+vps_api_url: "https://api.your-domain.com"  # Backend REST API base URL (token endpoint, tool sync)
 
 # Synchronization settings
 sync_interval: 30s
@@ -318,7 +324,6 @@ socket_path: "/tmp/amg-rfid-gateway.sock"  # Unix socket for TUI bridge
 web_enabled: true                      # Enable/disable the web UI
 web_port: 9090                         # Port for the web server
 web_listen_addr: "0.0.0.0"             # Bind address (0.0.0.0 = all interfaces)
-vps_api_url: "https://api.your-domain.com"  # VPS API base URL for tool sync
 sync_tools_interval: 1h                # How often to sync tools from VPS
 confirmation_retry_interval: 30s       # Retry interval for pending confirmations
 
@@ -342,7 +347,7 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 | `gateway_id` | string | required | Unique gateway identifier |
 | `company_id` | string | required | Company UUID for authentication |
 | `cloud_url` | string | required | WebSocket URL (wss://) for cloud sync |
-| `jwt_secret` | string | required | Authentication token |
+| `gateway_credential_file` | string | required | Path to a mode 0600 file containing the device secret issued by the backend |
 | `sync_interval` | duration | 30s | How often to sync to cloud |
 | `batch_size` | int | 100 | Readings per sync request |
 | `max_retries` | int | 5 | Max retry attempts for failed syncs |
@@ -356,7 +361,7 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 | `web_enabled` | bool | true | Enable web UI |
 | `web_port` | int | 9090 | Web UI port |
 | `web_listen_addr` | string | 0.0.0.0 | Web UI bind address |
-| `vps_api_url` | string | required | VPS REST API base URL |
+| `vps_api_url` | string | required | VPS REST API base URL (device token endpoint and tool sync). Must be `https://`; `http://` is only accepted for loopback hosts |
 | `sync_tools_interval` | duration | 1h | Tool sync frequency |
 | `confirmation_retry_interval` | duration | 30s | Pending confirmation retry |
 | `max_pending_confirmations` | int | 10000 | Queue size limit (0=unlimited) |
@@ -525,7 +530,7 @@ The gateway communicates with the cloud backend using these endpoints:
 | `/metrics` | GET | Prometheus metrics |
 | `/health` | GET | Simple health status |
 
-**Authentication:** JWT Bearer token with `gateway_id` and `company_id` claims.
+**Authentication:** The gateway exchanges its device credential (`gateway_id` + the secret in `gateway_credential_file`) at `POST /api/v1/gateway/auth/token` for a 12 h Bearer token. The token is renewed automatically at ~80% of its lifetime or after a 401; no manual token handoff is needed.
 
 ## Shared Module (amg-rfid-shared-go)
 
@@ -583,9 +588,12 @@ nc -zv 192.168.1.100 49153
 # Check network connectivity
 curl -I https://api.amg-rfid.com/health
 
-# Verify JWT token
-curl -H "Authorization: Bearer YOUR_TOKEN" \
-  https://api.amg-rfid.com/api/v1/health/gateways
+# Verify the device credential file exists, is owned by the service user
+# (gateway) and has mode 0600 (also confirm the gateway is active on the backend)
+stat -c '%a %U:%G %n' /etc/amg-rfid-gateway/gateway.secret
+# Fix ownership/mode if needed
+sudo chown gateway:gateway /etc/amg-rfid-gateway/gateway.secret
+sudo chmod 600 /etc/amg-rfid-gateway/gateway.secret
 
 # Check cache status
 curl http://localhost:8080/health

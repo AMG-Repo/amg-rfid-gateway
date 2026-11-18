@@ -8,7 +8,8 @@ company_id: "your-company-uuid"
 
 # Cloud backend connection
 cloud_url: "wss://api.your-domain.com/ws"
-jwt_secret: "your-jwt-token-here"
+# Path to a mode 0600 file holding the device secret issued by the backend CLI
+gateway_credential_file: "/etc/amg-rfid-gateway/gateway.secret"
 
 # Synchronization settings
 sync_interval: 30s

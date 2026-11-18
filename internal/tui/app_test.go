@@ -98,7 +98,7 @@ func TestApp_SettingsProtocolSelectorRegression(t *testing.T) {
 		{
 			name: "legacy missing protocol displays generic by default",
 			loadConfig: func(t *testing.T, path string) *config.GatewayConfig {
-				legacyYAML := "gateway_id: gateway-original\ncompany_id: company-original\ncloud_url: wss://example.com\njwt_secret: secret\nlog_level: info\nantennas:\n  - id: dock\n    ip: 192.168.1.10\n    port: 8080\n    enabled: true\n    zone: entrada\n"
+				legacyYAML := "gateway_id: gateway-original\ncompany_id: company-original\ncloud_url: wss://example.com\ngateway_credential_file: /etc/amg-rfid-gateway/gateway.secret\nvps_api_url: https://vps.example.com\nlog_level: info\nantennas:\n  - id: dock\n    ip: 192.168.1.10\n    port: 8080\n    enabled: true\n    zone: entrada\n"
 				require.NoError(t, os.WriteFile(path, []byte(legacyYAML), 0o644))
 				cfg, err := config.LoadFromYAML(path)
 				require.NoError(t, err)
@@ -439,7 +439,7 @@ func validTUITestConfig() *config.GatewayConfig {
 		GatewayID:               "gateway-original",
 		CompanyID:               "company-original",
 		CloudURL:                "wss://example.com",
-		JWTSecret:               "secret",
+		GatewayCredentialFile:   "/etc/amg-rfid-gateway/gateway.secret",
 		SyncInterval:            30,
 		BatchSize:               100,
 		MaxRetries:              5,

@@ -58,17 +58,17 @@ func IsSupportedAntennaProtocol(protocol AntennaProtocol) bool {
 
 // GatewayConfig holds the complete configuration for the RFID gateway.
 type GatewayConfig struct {
-	GatewayID        string          `yaml:"gateway_id"`
-	CompanyID        string          `yaml:"company_id"`
-	CloudURL         string          `yaml:"cloud_url"`
-	JWTSecret        string          `yaml:"jwt_secret"`
-	Antennas         []AntennaConfig `yaml:"antennas"`
-	SyncInterval     time.Duration   `yaml:"sync_interval"`
-	BatchSize        int             `yaml:"batch_size"`
-	MaxRetries       int             `yaml:"max_retries"`
-	HealthPort       int             `yaml:"health_port"`
-	HealthListenAddr string          `yaml:"health_listen_addr,omitempty"`
-	DataPath         string          `yaml:"data_path"`
+	GatewayID             string          `yaml:"gateway_id"`
+	CompanyID             string          `yaml:"company_id"`
+	CloudURL              string          `yaml:"cloud_url"`
+	GatewayCredentialFile string          `yaml:"gateway_credential_file"`
+	Antennas              []AntennaConfig `yaml:"antennas"`
+	SyncInterval          time.Duration   `yaml:"sync_interval"`
+	BatchSize             int             `yaml:"batch_size"`
+	MaxRetries            int             `yaml:"max_retries"`
+	HealthPort            int             `yaml:"health_port"`
+	HealthListenAddr      string          `yaml:"health_listen_addr,omitempty"`
+	DataPath              string          `yaml:"data_path"`
 
 	// Permanent listening mode configuration (REQ-A006)
 	ListenMode                string        `yaml:"listen_mode"`
@@ -138,6 +138,32 @@ type AntennaConfig struct {
 	PortLocations map[int]string `yaml:"port_locations,omitempty"`
 }
 
+// validateVPSAPIURL requires https, allowing plain http only for loopback hosts.
+func validateVPSAPIURL(raw string) error {
+	if raw == "" {
+		return errors.New("vps_api_url cannot be empty")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("vps_api_url is invalid: %w", err)
+	}
+	if u.Scheme == "https" && u.Host != "" {
+		return nil
+	}
+	if u.Scheme == "http" && isLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	return errors.New("vps_api_url must use https:// (http:// is only allowed for loopback)")
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // Validate checks the gateway configuration.
 // Uses NEGATIVE PROGRAMMING: check what should NOT be, early returns.
 func (c *GatewayConfig) Validate() error {
@@ -165,9 +191,14 @@ func (c *GatewayConfig) Validate() error {
 		return errors.New("cloud_url must use wss:// scheme (unencrypted ws:// is not allowed)")
 	}
 
-	// NEGATIVE: JWTSecret cannot be empty
-	if c.JWTSecret == "" {
-		return errors.New("jwt_secret cannot be empty")
+	// NEGATIVE: the device credential file is required (it replaced jwt_secret)
+	if c.GatewayCredentialFile == "" {
+		return errors.New("gateway_credential_file cannot be empty (jwt_secret was replaced by a device credential file)")
+	}
+
+	// NEGATIVE: the VPS API URL is required for device auth and must be encrypted
+	if err := validateVPSAPIURL(c.VPSAPIURL); err != nil {
+		return err
 	}
 
 	// NEGATIVE: Health listen address must be a safe IP literal when explicitly set.
@@ -551,7 +582,8 @@ func LoadFromEnv() *GatewayConfig {
 	cfg.GatewayID = os.Getenv("GATEWAY_ID")
 	cfg.CompanyID = os.Getenv("COMPANY_ID")
 	cfg.CloudURL = os.Getenv("CLOUD_URL")
-	cfg.JWTSecret = os.Getenv("JWT_SECRET")
+	cfg.GatewayCredentialFile = os.Getenv("GATEWAY_CREDENTIAL_FILE")
+	cfg.VPSAPIURL = os.Getenv("VPS_API_URL")
 
 	// Load optional fields with defaults
 	if val := os.Getenv("SYNC_INTERVAL"); val != "" {

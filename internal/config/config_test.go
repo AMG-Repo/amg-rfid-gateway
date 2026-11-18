@@ -65,10 +65,11 @@ func TestGatewayConfig_Validate_InvalidCloudURL(t *testing.T) {
 
 func TestGatewayConfig_Validate_ValidConfig(t *testing.T) {
 	cfg := &GatewayConfig{
-		GatewayID: "gw-001",
-		CompanyID: "comp-123",
-		CloudURL:  "wss://cloud.example.com/ws",
-		JWTSecret: "secret-key",
+		GatewayID:             "gw-001",
+		CompanyID:             "comp-123",
+		CloudURL:              "wss://cloud.example.com/ws",
+		GatewayCredentialFile: "/etc/amg-rfid-gateway/gateway.secret",
+		VPSAPIURL:             "https://vps.example.com",
 		Antennas: []AntennaConfig{
 			{ID: "ant-1", IP: "192.168.1.100", Port: 6000, Enabled: true},
 		},
@@ -130,7 +131,8 @@ func TestLoadFromYAML_ValidFile(t *testing.T) {
 gateway_id: "gw-001"
 company_id: "comp-123"
 cloud_url: "wss://cloud.example.com/ws"
-jwt_secret: "test-secret-key"
+gateway_credential_file: /etc/amg-rfid-gateway/gateway.secret
+vps_api_url: https://vps.example.com
 antennas:
   - id: "ant-1"
     ip: "192.168.1.100"
@@ -203,7 +205,8 @@ func TestLoadFromYAML_AntennaProtocolDefaults(t *testing.T) {
 gateway_id: "gw-001"
 company_id: "comp-123"
 cloud_url: "wss://cloud.example.com/ws"
-jwt_secret: "test-secret-key"
+gateway_credential_file: /etc/amg-rfid-gateway/gateway.secret
+vps_api_url: https://vps.example.com
 antennas:
 ` + tt.antennaYAML + "\n"
 			tmpDir := t.TempDir()
@@ -240,13 +243,14 @@ func TestGatewayConfig_Validate_AntennaProtocol(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &GatewayConfig{
-				GatewayID:     "gw-001",
-				CompanyID:     "comp-123",
-				CloudURL:      "wss://cloud.example.com/ws",
-				JWTSecret:     "secret-key",
-				ListenMode:    "auto",
-				WebAccessMode: "local",
-				WebListenAddr: "127.0.0.1",
+				GatewayID:             "gw-001",
+				CompanyID:             "comp-123",
+				CloudURL:              "wss://cloud.example.com/ws",
+				GatewayCredentialFile: "/etc/amg-rfid-gateway/gateway.secret",
+				VPSAPIURL:             "https://vps.example.com",
+				ListenMode:            "auto",
+				WebAccessMode:         "local",
+				WebListenAddr:         "127.0.0.1",
 				Antennas: []AntennaConfig{
 					{ID: "ant-1", IP: "192.168.1.100", Port: 6000, Enabled: true, Protocol: tt.protocol},
 				},
@@ -323,13 +327,14 @@ func TestGatewayConfig_Validate_DuplicateAntennaIDsErrorIsDeterministic(t *testi
 
 func validGatewayConfigForTest() *GatewayConfig {
 	return &GatewayConfig{
-		GatewayID:     "gw-001",
-		CompanyID:     "comp-123",
-		CloudURL:      "wss://cloud.example.com/ws",
-		JWTSecret:     "secret-key",
-		ListenMode:    "auto",
-		WebAccessMode: "local",
-		WebListenAddr: "127.0.0.1",
+		GatewayID:             "gw-001",
+		CompanyID:             "comp-123",
+		CloudURL:              "wss://cloud.example.com/ws",
+		GatewayCredentialFile: "/etc/amg-rfid-gateway/gateway.secret",
+		VPSAPIURL:             "https://vps.example.com",
+		ListenMode:            "auto",
+		WebAccessMode:         "local",
+		WebListenAddr:         "127.0.0.1",
 		Antennas: []AntennaConfig{
 			{ID: "ant-1", IP: "192.168.1.100", Port: 6000, Enabled: true},
 		},
@@ -348,7 +353,8 @@ func TestLoadFromYAML_LegacyLANConfigRequiresMigration(t *testing.T) {
 gateway_id: "gw-legacy"
 company_id: "comp-legacy"
 cloud_url: "wss://cloud.example.com/ws"
-jwt_secret: "legacy-secret"
+gateway_credential_file: /etc/amg-rfid-gateway/gateway.secret
+vps_api_url: https://vps.example.com
 web_listen_addr: "0.0.0.0"
 `
 
@@ -373,12 +379,12 @@ func TestLoadFromEnv(t *testing.T) {
 	os.Setenv("GATEWAY_ID", "gw-env-001")
 	os.Setenv("COMPANY_ID", "comp-env-123")
 	os.Setenv("CLOUD_URL", "wss://env.example.com")
-	os.Setenv("JWT_SECRET", "env-secret")
+	os.Setenv("GATEWAY_CREDENTIAL_FILE", "/etc/amg-rfid-gateway/gateway.secret")
 	defer func() {
 		os.Unsetenv("GATEWAY_ID")
 		os.Unsetenv("COMPANY_ID")
 		os.Unsetenv("CLOUD_URL")
-		os.Unsetenv("JWT_SECRET")
+		os.Unsetenv("GATEWAY_CREDENTIAL_FILE")
 	}()
 
 	cfg := LoadFromEnv()

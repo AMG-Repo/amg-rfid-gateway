@@ -644,7 +644,7 @@ func TestSettingsScreen_EditsAntennaProtocolPerAntenna(t *testing.T) {
 	cfg := protocolSettingsConfig(config.ProtocolGeneric)
 	cfg.GatewayID = "gateway-original"
 	cfg.CompanyID = "company-original"
-	cfg.JWTSecret = "secret"
+	cfg.GatewayCredentialFile = "/etc/amg-rfid-gateway/gateway.secret"
 	cfg.ListenMode = "auto"
 	cfg.WebAccessMode = "local"
 	cfg.WebListenAddr = "127.0.0.1"
