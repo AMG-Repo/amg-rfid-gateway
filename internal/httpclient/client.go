@@ -3,6 +3,7 @@ package httpclient
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,8 +31,24 @@ type VPSClient struct {
 	baseURL    string
 	httpClient *http.Client
 	timeout    time.Duration
-	jwtToken   string
+	tokens     TokenProvider
 }
+
+// TokenProvider supplies the access token for protected gateway endpoints.
+// Invalidate is called with a token the backend rejected with 401.
+type TokenProvider interface {
+	Token(ctx context.Context) (string, error)
+	Invalidate(token string)
+}
+
+// StaticToken is a TokenProvider that always returns the same token.
+type StaticToken string
+
+// Token returns the fixed token.
+func (s StaticToken) Token(context.Context) (string, error) { return string(s), nil }
+
+// Invalidate is a no-op: a fixed token cannot be renewed.
+func (StaticToken) Invalidate(string) {}
 
 // BaseURL returns the VPS API base URL.
 func (c *VPSClient) BaseURL() string {
@@ -41,8 +58,8 @@ func (c *VPSClient) BaseURL() string {
 // NewVPSClient creates a new VPS HTTP client.
 // baseURL: The VPS API base URL (e.g., "http://vps.example.com")
 // timeout: Request timeout (0 defaults to 30 seconds)
-// jwtToken: JWT token for authentication (can be empty for unauthenticated endpoints)
-func NewVPSClient(baseURL string, timeout time.Duration, jwtToken string) *VPSClient {
+// tokens: access token provider for protected endpoints (nil sends no Authorization header)
+func NewVPSClient(baseURL string, timeout time.Duration, tokens TokenProvider) *VPSClient {
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
@@ -55,9 +72,46 @@ func NewVPSClient(baseURL string, timeout time.Duration, jwtToken string) *VPSCl
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
-		timeout:  timeout,
-		jwtToken: jwtToken,
+		timeout: timeout,
+		tokens:  tokens,
 	}
+}
+
+// doAuthed sends req with a bearer token. On 401 it invalidates that token and
+// retries once with a renewed one.
+func (c *VPSClient) doAuthed(req *http.Request) (*http.Response, error) {
+	if c.tokens == nil {
+		return c.httpClient.Do(req)
+	}
+	resp, token, err := c.sendWithToken(req)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+		return resp, err
+	}
+	resp.Body.Close()
+	c.tokens.Invalidate(token)
+
+	retry := req.Clone(req.Context())
+	if req.GetBody != nil {
+		body, err := req.GetBody()
+		if err != nil {
+			return nil, fmt.Errorf("rewind request body: %w", err)
+		}
+		retry.Body = body
+	}
+	resp, _, err = c.sendWithToken(retry)
+	return resp, err
+}
+
+func (c *VPSClient) sendWithToken(req *http.Request) (*http.Response, string, error) {
+	token, err := c.tokens.Token(req.Context())
+	if err != nil {
+		return nil, "", fmt.Errorf("obtain access token: %w", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := c.httpClient.Do(req)
+	return resp, token, err
 }
 
 // FetchTools retrieves all tools for a company from the VPS.
@@ -107,12 +161,7 @@ func (c *VPSClient) FetchUsers(companyID string) ([]localstore.User, error) {
 	}
 
 	req.Header.Set("Accept", "application/json")
-	// Add Authorization header for protected gateway endpoint
-	if c.jwtToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
-	}
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doAuthed(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -175,12 +224,7 @@ func (c *VPSClient) sendGatewayConfirmation(companyID, uii, action, antennaID st
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	// Add Authorization header for protected gateway endpoint
-	if c.jwtToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
-	}
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doAuthed(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -211,12 +255,7 @@ func (c *VPSClient) FetchSyncData(companyID string) (*sync.SyncDataResponse, err
 	}
 
 	req.Header.Set("Accept", "application/json")
-	// Add Authorization header for protected gateway endpoint
-	if c.jwtToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
-	}
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doAuthed(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}

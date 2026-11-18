@@ -27,7 +27,7 @@ func TestNewServer(t *testing.T) {
 	// We can't easily create a real LocalStore without a DB, so we'll test with nil
 	// In real tests you'd use a test database
 	verifier := &verify.Verifier{}
-	vpsClient := httpclient.NewVPSClient("http://localhost:8080", 5*time.Second, "test-token")
+	vpsClient := httpclient.NewVPSClient("http://localhost:8080", 5*time.Second, httpclient.StaticToken("test-token"))
 
 	server := NewServer("127.0.0.1", 0, eventBus, nil, verifier, vpsClient, "test-company")
 
@@ -538,7 +538,7 @@ func TestHandleConfirm_VPSOnline(t *testing.T) {
 	}))
 	defer vpsServer.Close()
 
-	vpsClient := httpclient.NewVPSClient(vpsServer.URL, 5*time.Second, "test-token")
+	vpsClient := httpclient.NewVPSClient(vpsServer.URL, 5*time.Second, httpclient.StaticToken("test-token"))
 	verifier := verify.NewVerifier(nil, nil)
 
 	server := NewServer("127.0.0.1", 0, eventBus, nil, verifier, vpsClient, "test-company")
@@ -575,7 +575,7 @@ func TestHandleConfirm_VPSOffline(t *testing.T) {
 	defer eventBus.Close()
 
 	// Create VPS client pointing to non-existent server
-	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "test-token")
+	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("test-token"))
 	verifier := verify.NewVerifier(nil, nil)
 
 	// Create real local store with in-memory DB
@@ -998,7 +998,7 @@ func TestHandleStatus_VPSOnline(t *testing.T) {
 	}))
 	defer vpsServer.Close()
 
-	vpsClient := httpclient.NewVPSClient(vpsServer.URL, 5*time.Second, "test-token")
+	vpsClient := httpclient.NewVPSClient(vpsServer.URL, 5*time.Second, httpclient.StaticToken("test-token"))
 
 	// Create store with some pending confirmations
 	db, err := sql.Open("sqlite", ":memory:")
@@ -1107,7 +1107,7 @@ func TestHandleStatus_VPSOffline(t *testing.T) {
 	defer eventBus.Close()
 
 	// Create VPS client pointing to non-existent server
-	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "test-token")
+	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("test-token"))
 
 	server := NewServer("127.0.0.1", 0, eventBus, nil, nil, vpsClient, "test-company")
 
@@ -1250,7 +1250,7 @@ func TestHandleConfirm_WithAntennaID(t *testing.T) {
 	store := localstore.New(db)
 
 	// VPS client pointing to non-existent server (force offline mode)
-	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "test-token")
+	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("test-token"))
 	verifier := verify.NewVerifier(nil, nil)
 
 	server := NewServer("127.0.0.1", 0, eventBus, store, verifier, vpsClient, "test-company")

@@ -1,6 +1,7 @@
 package wsclient
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,17 +17,17 @@ import (
 // Client handles WebSocket connection to the cloud
 type Client struct {
 	url            string
-	jwtToken       string
+	tokens         TokenProvider
 	conn           *websocket.Conn
 	mu             sync.RWMutex
 	reconnectDelay time.Duration
 }
 
 // NewClient creates a new WebSocket client
-func NewClient(url, jwtToken string) *Client {
+func NewClient(url string, tokens TokenProvider) *Client {
 	return &Client{
 		url:            url,
-		jwtToken:       jwtToken,
+		tokens:         tokens,
 		reconnectDelay: 5 * time.Second,
 	}
 }
@@ -46,9 +47,15 @@ func (c *Client) Connect() error {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
 
-	// Set up headers with JWT
+	// Fetch the current token on every connect so reconnects pick up renewals
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	token, err := c.tokens.Token(ctx)
+	if err != nil {
+		return fmt.Errorf("obtain access token: %w", err)
+	}
 	headers := http.Header{
-		"Authorization": []string{"Bearer " + c.jwtToken},
+		"Authorization": []string{"Bearer " + token},
 	}
 
 	// Connect
@@ -56,8 +63,11 @@ func (c *Client) Connect() error {
 		HandshakeTimeout: 10 * time.Second,
 	}
 
-	conn, _, err := dialer.Dial(u.String(), headers)
+	conn, resp, err := dialer.Dial(u.String(), headers)
 	if err != nil {
+		if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+			c.tokens.Invalidate(token)
+		}
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 

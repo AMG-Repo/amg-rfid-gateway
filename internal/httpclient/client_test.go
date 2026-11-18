@@ -13,7 +13,7 @@ import (
 )
 
 func TestNewVPSClient(t *testing.T) {
-	client := NewVPSClient("http://example.com", 30*time.Second, "test-jwt-token")
+	client := NewVPSClient("http://example.com", 30*time.Second, StaticToken("test-jwt-token"))
 
 	if client == nil {
 		t.Fatal("expected client to be non-nil")
@@ -27,13 +27,13 @@ func TestNewVPSClient(t *testing.T) {
 	if client.httpClient == nil {
 		t.Error("expected httpClient to be initialized")
 	}
-	if client.jwtToken != "test-jwt-token" {
-		t.Errorf("expected jwtToken 'test-jwt-token', got %q", client.jwtToken)
+	if client.tokens != StaticToken("test-jwt-token") {
+		t.Errorf("expected tokens StaticToken(\"test-jwt-token\"), got %v", client.tokens)
 	}
 }
 
 func TestNewVPSClient_DefaultTimeout(t *testing.T) {
-	client := NewVPSClient("http://example.com", 0, "test-token")
+	client := NewVPSClient("http://example.com", 0, StaticToken("test-token"))
 
 	if client.timeout != 30*time.Second {
 		t.Errorf("expected default timeout 30s, got %v", client.timeout)
@@ -65,7 +65,7 @@ func TestFetchTools_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	tools, err := client.FetchTools("comp-1")
 
 	if err != nil {
@@ -85,7 +85,7 @@ func TestFetchTools_HTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	_, err := client.FetchTools("comp-1")
 
 	if err == nil {
@@ -95,7 +95,7 @@ func TestFetchTools_HTTPError(t *testing.T) {
 
 func TestFetchTools_NetworkError(t *testing.T) {
 	// Create client pointing to a non-existent server
-	client := NewVPSClient("http://localhost:59999", 100*time.Millisecond, "test-token")
+	client := NewVPSClient("http://localhost:59999", 100*time.Millisecond, StaticToken("test-token"))
 	_, err := client.FetchTools("comp-1")
 
 	if err == nil {
@@ -131,7 +131,7 @@ func TestFetchUsers_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	users, err := client.FetchUsers("comp-1")
 
 	if err != nil {
@@ -151,7 +151,7 @@ func TestFetchUsers_HTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	_, err := client.FetchUsers("comp-1")
 
 	if err == nil {
@@ -186,7 +186,7 @@ func TestSendConfirmation_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	err := client.SendConfirmation("comp-1", "EPC-123", "entrada")
 
 	if err != nil {
@@ -201,7 +201,7 @@ func TestSendConfirmation_HTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	err := client.SendConfirmation("comp-1", "EPC-123", "invalid")
 
 	if err == nil {
@@ -210,7 +210,7 @@ func TestSendConfirmation_HTTPError(t *testing.T) {
 }
 
 func TestSendConfirmation_NetworkError(t *testing.T) {
-	client := NewVPSClient("http://localhost:59999", 100*time.Millisecond, "test-token")
+	client := NewVPSClient("http://localhost:59999", 100*time.Millisecond, StaticToken("test-token"))
 	err := client.SendConfirmation("comp-1", "EPC-123", "entrada")
 
 	if err == nil {
@@ -226,7 +226,7 @@ func TestFetchTools_InvalidJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	_, err := client.FetchTools("comp-1")
 
 	if err == nil {
@@ -242,7 +242,7 @@ func TestFetchTools_EmptyResponse(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	tools, err := client.FetchTools("comp-1")
 
 	if err != nil {
@@ -265,7 +265,7 @@ func TestVPSClient_BaseURLWithTrailingSlash(t *testing.T) {
 	defer server.Close()
 
 	// Test with trailing slash
-	client := NewVPSClient(server.URL+"/", 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL+"/", 5*time.Second, StaticToken("test-token"))
 	_, err := client.FetchTools("comp-1")
 
 	if err != nil {
@@ -282,7 +282,7 @@ func TestFetchTools_Timeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 100*time.Millisecond, "test-token") // Short timeout
+	client := NewVPSClient(server.URL, 100*time.Millisecond, StaticToken("test-token")) // Short timeout
 	_, err := client.FetchTools("comp-1")
 
 	// Should get a timeout error
@@ -331,7 +331,7 @@ func TestFetchSyncData_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	resp, err := client.FetchSyncData("comp-1")
 
 	if err != nil {
@@ -362,7 +362,7 @@ func TestFetchSyncData_NonOKStatus(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	_, err := client.FetchSyncData("comp-1")
 
 	if err == nil {
@@ -376,7 +376,7 @@ func TestFetchSyncData_HTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	_, err := client.FetchSyncData("comp-1")
 
 	if err == nil {
@@ -418,7 +418,7 @@ func TestSendGatewayConfirmation_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	err := client.SendGatewayConfirmation("comp-1", "EPC-123", "salida", "ant-01")
 
 	if err != nil {
@@ -445,7 +445,7 @@ func TestSendGatewayConfirmation_WithoutAntennaID(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	err := client.SendGatewayConfirmation("comp-1", "EPC-456", "entrada", "")
 
 	if err != nil {
@@ -460,7 +460,7 @@ func TestSendGatewayConfirmation_HTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	err := client.SendGatewayConfirmation("comp-1", "UNKNOWN-EPC", "entrada", "ant-01")
 
 	if err == nil {
@@ -506,7 +506,7 @@ func TestFetchSyncData_SendsAuthorizationHeader(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-jwt-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-jwt-token"))
 	resp, err := client.FetchSyncData("comp-1")
 
 	if err != nil {
@@ -555,7 +555,7 @@ func TestSendConfirmationV2_SendsAuthorizationHeader(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "gateway-jwt-123")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("gateway-jwt-123"))
 	err := client.SendConfirmationV2("comp-1", "EPC-123", "entrada", "ant-01")
 
 	if err != nil {
@@ -584,7 +584,7 @@ func TestSendGatewayConfirmation_SendsAuthorizationHeader(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "gateway-auth-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("gateway-auth-token"))
 	err := client.SendGatewayConfirmation("comp-1", "EPC-123", "entrada", "ant-01")
 
 	if err != nil {
@@ -611,7 +611,7 @@ func TestFetchSyncData_WithoutToken_DoesNotSendAuthHeader(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "") // Empty token
+	client := NewVPSClient(server.URL, 5*time.Second, nil) // Empty token
 	_, err := client.FetchSyncData("comp-1")
 
 	if err != nil {
@@ -648,7 +648,7 @@ func TestFetchSyncData_NullableFields_NullValue(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	resp, err := client.FetchSyncData("comp-1")
 
 	if err != nil {
@@ -703,7 +703,7 @@ func TestFetchSyncData_NullableFields_EmptyString(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	resp, err := client.FetchSyncData("comp-1")
 
 	if err != nil {
@@ -759,7 +759,7 @@ func TestFetchSyncData_NullableFields_Omitted(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	resp, err := client.FetchSyncData("comp-1")
 
 	if err != nil {
@@ -810,7 +810,7 @@ func TestFetchSyncData_NullableFields_ValidValues(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	resp, err := client.FetchSyncData("comp-1")
 
 	if err != nil {

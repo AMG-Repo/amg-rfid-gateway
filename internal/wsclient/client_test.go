@@ -13,13 +13,13 @@ import (
 )
 
 func TestNewClient(t *testing.T) {
-	client := NewClient("wss://cloud.example.com/ws", "test-jwt-token")
+	client := NewClient("wss://cloud.example.com/ws", StaticToken("test-jwt-token"))
 
 	if client.url != "wss://cloud.example.com/ws" {
 		t.Errorf("expected URL 'wss://cloud.example.com/ws', got '%s'", client.url)
 	}
-	if client.jwtToken != "test-jwt-token" {
-		t.Errorf("expected token 'test-jwt-token', got '%s'", client.jwtToken)
+	if client.tokens != StaticToken("test-jwt-token") {
+		t.Errorf("expected tokens StaticToken(\"test-jwt-token\"), got %v", client.tokens)
 	}
 }
 
@@ -56,7 +56,7 @@ func TestClient_Connect(t *testing.T) {
 	// Convert http:// to ws://
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 
-	client := NewClient(wsURL, "test-token")
+	client := NewClient(wsURL, StaticToken("test-token"))
 	err := client.Connect()
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
@@ -69,7 +69,7 @@ func TestClient_Connect(t *testing.T) {
 }
 
 func TestClient_Connect_InvalidURL(t *testing.T) {
-	client := NewClient("not-a-valid-url", "test-token")
+	client := NewClient("not-a-valid-url", StaticToken("test-token"))
 	err := client.Connect()
 	if err == nil {
 		t.Error("expected error for invalid URL, got nil")
@@ -104,7 +104,7 @@ func TestClient_Send(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 
-	client := NewClient(wsURL, "test-token")
+	client := NewClient(wsURL, StaticToken("test-token"))
 	err := client.Connect()
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
@@ -130,7 +130,7 @@ func TestClient_Send(t *testing.T) {
 }
 
 func TestClient_Send_NotConnected(t *testing.T) {
-	client := NewClient("wss://example.com", "token")
+	client := NewClient("wss://example.com", StaticToken("token"))
 	// Don't connect
 
 	err := client.Send([]byte("test"))
@@ -156,7 +156,7 @@ func TestClient_Disconnect(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 
-	client := NewClient(wsURL, "test-token")
+	client := NewClient(wsURL, StaticToken("test-token"))
 	err := client.Connect()
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
@@ -195,7 +195,7 @@ func TestClient_Reconnect(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 
-	client := NewClient(wsURL, "test-token")
+	client := NewClient(wsURL, StaticToken("test-token"))
 	client.reconnectDelay = 50 * time.Millisecond // Speed up for tests
 
 	// First connect
@@ -243,7 +243,7 @@ func TestClient_SyncRequest(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 
-	client := NewClient(wsURL, "test-token")
+	client := NewClient(wsURL, StaticToken("test-token"))
 	err := client.Connect()
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
@@ -294,7 +294,7 @@ func TestClient_IsConnected_ClosedByServer(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 
-	client := NewClient(wsURL, "test-token")
+	client := NewClient(wsURL, StaticToken("test-token"))
 	err := client.Connect()
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
