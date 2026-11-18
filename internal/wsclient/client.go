@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"sync"
@@ -14,31 +15,58 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// errNotConnected is returned when there is no live connection.
+var errNotConnected = errors.New("not connected")
+
+// session is one live connection with its read loop.
+type session struct {
+	conn     *websocket.Conn
+	incoming chan []byte   // messages from the server, read by the read loop
+	done     chan struct{} // closed when the read loop ends
+}
+
+func (s *session) closed() bool {
+	select {
+	case <-s.done:
+		return true
+	default:
+		return false
+	}
+}
+
 // Client handles WebSocket connection to the cloud
 type Client struct {
-	url            string
-	tokens         TokenProvider
-	conn           *websocket.Conn
-	mu             sync.RWMutex
-	reconnectDelay time.Duration
+	url             string
+	tokens          TokenProvider
+	sess            *session
+	mu              sync.RWMutex
+	writeMu         sync.Mutex
+	reconnectDelay  time.Duration
+	responseTimeout time.Duration
 }
 
 // NewClient creates a new WebSocket client
 func NewClient(url string, tokens TokenProvider) *Client {
 	return &Client{
-		url:            url,
-		tokens:         tokens,
-		reconnectDelay: 5 * time.Second,
+		url:             url,
+		tokens:          tokens,
+		reconnectDelay:  5 * time.Second,
+		responseTimeout: 15 * time.Second,
 	}
 }
 
-// Connect establishes WebSocket connection with JWT authentication
+// Connect establishes WebSocket connection with JWT authentication and starts
+// the read loop that answers server pings and detects a dropped connection.
 func (c *Client) Connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.conn != nil {
+	if c.sess != nil && !c.sess.closed() {
 		return errors.New("already connected")
+	}
+	if c.sess != nil {
+		c.sess.conn.Close()
+		c.sess = nil
 	}
 
 	// Parse URL
@@ -71,8 +99,41 @@ func (c *Client) Connect() error {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 
-	c.conn = conn
+	sess := &session{
+		conn:     conn,
+		incoming: make(chan []byte, 16),
+		done:     make(chan struct{}),
+	}
+	c.sess = sess
+	go readLoop(sess)
 	return nil
+}
+
+// readLoop is the only reader of the connection. Reading lets gorilla answer
+// server pings with pongs; a read error means the connection is gone.
+func readLoop(s *session) {
+	defer close(s.done)
+	for {
+		_, msg, err := s.conn.ReadMessage()
+		if err != nil {
+			log.Printf("[WS] connection closed: %v", err)
+			return
+		}
+		select {
+		case s.incoming <- msg:
+		default:
+			log.Printf("[WS] dropping server message: receive buffer full")
+		}
+	}
+}
+
+func (c *Client) current() (*session, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.sess == nil || c.sess.closed() {
+		return nil, errNotConnected
+	}
+	return c.sess, nil
 }
 
 // Disconnect closes the WebSocket connection
@@ -80,57 +141,52 @@ func (c *Client) Disconnect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.conn == nil {
+	if c.sess == nil {
 		return nil
 	}
 
-	// Send close message
-	c.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+	// Send close message (WriteControl is safe alongside other writers)
+	_ = c.sess.conn.WriteControl(websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
 
-	err := c.conn.Close()
-	c.conn = nil
+	err := c.sess.conn.Close()
+	<-c.sess.done
+	c.sess = nil
 	return err
 }
 
-// IsConnected returns true if connected
+// IsConnected reports whether the connection is still alive
 func (c *Client) IsConnected() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if c.conn == nil {
-		return false
-	}
-
-	// Try to check connection health
-	c.conn.SetReadDeadline(time.Now().Add(10 * time.Millisecond))
-	c.conn.SetReadDeadline(time.Time{}) // Reset
-
-	return true
+	_, err := c.current()
+	return err == nil
 }
 
 // Send sends a message over the WebSocket
 func (c *Client) Send(data []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.conn == nil {
-		return errors.New("not connected")
+	s, err := c.current()
+	if err != nil {
+		return err
 	}
 
-	return c.conn.WriteMessage(websocket.TextMessage, data)
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return s.conn.WriteMessage(websocket.TextMessage, data)
 }
 
-// Read reads a message from the WebSocket
+// Read returns the next message from the server, or an error once the
+// connection is closed
 func (c *Client) Read() ([]byte, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.conn == nil {
-		return nil, errors.New("not connected")
+	s, err := c.current()
+	if err != nil {
+		return nil, err
 	}
 
-	_, message, err := c.conn.ReadMessage()
-	return message, err
+	select {
+	case msg := <-s.incoming:
+		return msg, nil
+	case <-s.done:
+		return nil, errors.New("connection closed")
+	}
 }
 
 // Reconnect attempts to reconnect with exponential backoff
@@ -143,6 +199,15 @@ func (c *Client) Reconnect() error {
 
 	// Try to connect
 	return c.Connect()
+}
+
+// isServerEvent reports whether msg is a typed server event such as
+// SESSION_READY ({"type": ..., "payload": ...}) rather than a sync response.
+func isServerEvent(msg []byte) bool {
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(msg, &envelope) == nil && envelope.Type != ""
 }
 
 // SendSyncRequest sends a sync request and waits for response
@@ -158,22 +223,37 @@ func (c *Client) SendSyncRequest(req models.SyncRequest) (*models.SyncResponse, 
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	s, err := c.current()
+	if err != nil {
+		return nil, fmt.Errorf("failed to send: %w", err)
+	}
+
 	// Send
 	if err := c.Send(data); err != nil {
 		return nil, fmt.Errorf("failed to send: %w", err)
 	}
 
-	// Read response
-	respData, err := c.Read()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
+	// Read response, skipping server events
+	timeout := time.NewTimer(c.responseTimeout)
+	defer timeout.Stop()
+	for {
+		var respData []byte
+		select {
+		case respData = <-s.incoming:
+		case <-s.done:
+			return nil, errors.New("failed to read response: connection closed")
+		case <-timeout.C:
+			return nil, errors.New("failed to read response: timeout")
+		}
+		if isServerEvent(respData) {
+			continue
+		}
 
-	// Parse response
-	var resp models.SyncResponse
-	if err := json.Unmarshal(respData, &resp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		// Parse response
+		var resp models.SyncResponse
+		if err := json.Unmarshal(respData, &resp); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		}
+		return &resp, nil
 	}
-
-	return &resp, nil
 }
