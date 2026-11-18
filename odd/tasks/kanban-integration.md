@@ -11,7 +11,7 @@ Source branch: `feat/local-panel-lanes` (41 local commits; its own specs live in
 
 ## Tasks
 
-- T1 S1-S3 — merge `feat/local-panel-lanes` into the integration branch, resolve `internal/web/server_test.go`, adapt kanban HTTP calls and test call sites to the TokenProvider API, full suite green — worker — commit: pending
+- T1 S1-S3 — merge `feat/local-panel-lanes` into the integration branch, resolve `internal/web/server_test.go`, adapt kanban HTTP calls and test call sites to the TokenProvider API, full suite green — worker — commit: 534565b (merge), 6a32724, 469d117
 - T2 S2 — propose chained PR split to the user — inline — commit: n/a
 - T3 S2 — open chained PRs, CI, merge (user decision) — inline — commit: n/a
 - T4 S2 — release v0.8.0 (authorized) — inline — commit: n/a
