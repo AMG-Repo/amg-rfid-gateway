@@ -40,8 +40,10 @@ type AntennaStatus struct {
 	LastTagEPC   string    `json:"last_tag_epc,omitempty"`
 	LastTagRSSI  int       `json:"last_tag_rssi,omitempty"`
 	LastSeen     time.Time `json:"last_seen"`
-	AutoReading  bool      `json:"auto_reading"`
-	ErrorCount   uint64    `json:"error_count"`
+	// LastReadAt is the time of the last tag read; nil until the first one.
+	LastReadAt  *time.Time `json:"last_read_at,omitempty"`
+	AutoReading bool       `json:"auto_reading"`
+	ErrorCount  uint64     `json:"error_count"`
 }
 
 // AntennaManager orchestrates the intelligent read loop, heartbeat, and auto-reading detection.
@@ -56,6 +58,7 @@ type AntennaManager struct {
 	// State (protected by mu)
 	mu             sync.RWMutex
 	lastPacketTime time.Time
+	lastReadAt     *time.Time
 	isAutoReading  bool
 	isRunning      bool
 	readingCount   uint64
@@ -352,6 +355,7 @@ func (m *AntennaManager) GetStatus() AntennaStatus {
 		LastTagEPC:   m.lastTagEPC,
 		LastTagRSSI:  m.lastTagRSSI,
 		LastSeen:     m.lastPacketTime,
+		LastReadAt:   m.lastReadAt,
 		AutoReading:  m.isAutoReading,
 		ErrorCount:   m.errorCount,
 	}
@@ -567,6 +571,8 @@ func (m *AntennaManager) RecordReading(epc string, rssi int) {
 	m.readingCount++
 	m.lastTagEPC = epc
 	m.lastTagRSSI = rssi
+	now := time.Now()
+	m.lastReadAt = &now
 }
 
 func (m *AntennaManager) RecordError() {

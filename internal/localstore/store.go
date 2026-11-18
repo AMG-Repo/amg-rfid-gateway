@@ -3,6 +3,8 @@ package localstore
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 	"log"
 	"time"
 )
@@ -66,6 +68,9 @@ type SyncDataItem struct {
 	Active          bool    `json:"active"`
 	KanbanZone      *string `json:"kanban_zone,omitempty"`
 	ToolDestination *string `json:"tool_destination,omitempty"`
+	// Kanban is the kanban the tag is assigned to (nil when unassigned or when
+	// the VPS predates kanbans). Optional: old payloads without it keep working.
+	Kanban *Kanban `json:"kanban,omitempty"`
 }
 
 // User represents a user from VPS cached locally.
@@ -79,6 +84,14 @@ type User struct {
 	Active       bool      `json:"active"`
 	LastSyncedAt time.Time `json:"last_synced_at"`
 }
+
+// ConfirmationRetention is how long synced confirmations are kept locally.
+// Pending (unsynced) confirmations are never purged.
+const ConfirmationRetention = 30 * 24 * time.Hour
+
+// sqliteTimestamp is the layout of CURRENT_TIMESTAMP, shared by created_at and
+// synced_at so retention comparisons are plain string comparisons.
+const sqliteTimestamp = "2006-01-02 15:04:05"
 
 // PendingConfirmation represents a confirmation awaiting VPS sync.
 type PendingConfirmation struct {
@@ -249,8 +262,8 @@ func (s *LocalStore) UpsertTools(tools []Tool) error {
 
 		// Insert/update tool tag record
 		_, err = tagStmt.Exec(
-			tool.ID,    // Use same ID for tag
-			tool.ID,    // tool_id references tools.id
+			tool.ID, // Use same ID for tag
+			tool.ID, // tool_id references tools.id
 			tool.UII,
 			tool.Status,
 			tool.Location,
@@ -344,8 +357,8 @@ func (s *LocalStore) UpsertToolsFromSync(rows []SyncDataItem) error {
 		}
 
 		_, err = tagStmt.Exec(
-			row.ID,        // tag id
-			row.ToolID,    // references tools.id
+			row.ID,     // tag id
+			row.ToolID, // references tools.id
 			row.UII,
 			toNullString(row.UnitNumber),
 			row.Status,
@@ -410,8 +423,21 @@ func (s *LocalStore) UpsertUsers(users []User) error {
 	return tx.Commit()
 }
 
+// WarehouseLocation is the cached location of a tag that is in the warehouse;
+// an entrada moves the tag there.
+const WarehouseLocation = "Almacén General"
+
+// ErrDuplicateTagUII is returned by UpsertToolTags when one batch carries the
+// same UII for two tags; the batch is rejected and nothing is written.
+var ErrDuplicateTagUII = errors.New("duplicate tag UII in sync batch")
+
+// ErrQueueFull is returned by CreateConfirmation when the pending queue is at
+// its cap. Nothing stored is discarded: the new confirmation is rejected.
+var ErrQueueFull = errors.New("pending confirmation queue is full")
+
 // CreateConfirmation stores a new pending confirmation.
-// If maxPending is > 0 and the count exceeds it, the oldest unsynced confirmation is deleted first.
+// If maxPending is > 0 and the unsynced count has reached it, the confirmation
+// is rejected with ErrQueueFull and the queue is left unchanged.
 func (s *LocalStore) CreateConfirmation(uii, action, antennaID string, timestamp time.Time, maxPending int) (*PendingConfirmation, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -419,28 +445,15 @@ func (s *LocalStore) CreateConfirmation(uii, action, antennaID string, timestamp
 	}
 	defer tx.Rollback()
 
-	// Check queue cap if maxPending > 0
 	if maxPending > 0 {
 		var count int
 		err := tx.QueryRow(`SELECT COUNT(*) FROM pending_confirmations WHERE synced = 0`).Scan(&count)
 		if err != nil {
 			return nil, err
 		}
-
-		// If at or over cap, delete oldest atomically
 		if count >= maxPending {
-			var deletedUII sql.NullString
-			err := tx.QueryRow(`
-				DELETE FROM pending_confirmations
-				WHERE id = (SELECT id FROM pending_confirmations WHERE synced = 0 ORDER BY created_at ASC LIMIT 1)
-				RETURNING uii
-			`).Scan(&deletedUII)
-			if err != nil && err != sql.ErrNoRows {
-				return nil, err
-			}
-			if deletedUII.Valid {
-				log.Printf("[LocalStore] Queue cap reached (%d), discarded oldest confirmation: UII=%s", maxPending, deletedUII.String)
-			}
+			log.Printf("[LocalStore] Queue cap reached (%d), rejected confirmation: UII=%s", maxPending, uii)
+			return nil, ErrQueueFull
 		}
 	}
 
@@ -473,15 +486,29 @@ func (s *LocalStore) CreateConfirmation(uii, action, antennaID string, timestamp
 	}, nil
 }
 
+// GetRetryableConfirmations returns the oldest unsynced confirmations that have
+// fewer than maxRetries send attempts and are due (no backoff pending), so
+// stuck or waiting ones never fill the batch.
+func (s *LocalStore) GetRetryableConfirmations(limit, maxRetries int) ([]PendingConfirmation, error) {
+	return s.queryUnsyncedConfirmations(`AND retry_count < ?
+		AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%d %H:%M:%S', 'now'))`, limit, maxRetries)
+}
+
 // GetUnsyncedConfirmations retrieves all unsynced confirmations.
 func (s *LocalStore) GetUnsyncedConfirmations(limit int) ([]PendingConfirmation, error) {
+	return s.queryUnsyncedConfirmations("", limit)
+}
+
+// queryUnsyncedConfirmations lists unsynced confirmations oldest first, with an
+// optional extra WHERE condition whose args precede the limit.
+func (s *LocalStore) queryUnsyncedConfirmations(extraWhere string, limit int, args ...any) ([]PendingConfirmation, error) {
 	rows, err := s.db.Query(`
 		SELECT id, uii, action, antenna_id, timestamp, retry_count, created_at
 		FROM pending_confirmations
-		WHERE synced = 0
+		WHERE synced = 0 `+extraWhere+`
 		ORDER BY created_at ASC
 		LIMIT ?
-	`, limit)
+	`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -509,14 +536,77 @@ func (s *LocalStore) GetUnsyncedConfirmations(limit int) ([]PendingConfirmation,
 	return confirmations, rows.Err()
 }
 
-// MarkConfirmationSynced marks a confirmation as synced.
+// MarkConfirmationSynced marks a confirmation as synced, stamping synced_at.
 func (s *LocalStore) MarkConfirmationSynced(id int64) error {
 	_, err := s.db.Exec(`
 		UPDATE pending_confirmations
-		SET synced = 1
+		SET synced = 1, synced_at = CURRENT_TIMESTAMP
 		WHERE id = ?
 	`, id)
 	return err
+}
+
+// RecordSyncedConfirmation stores a confirmation the VPS already accepted, as
+// synced with the send time, so the local history has every confirmation.
+func (s *LocalStore) RecordSyncedConfirmation(uii, action, antennaID string, sentAt time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO pending_confirmations (uii, action, antenna_id, timestamp, synced, retry_count, synced_at)
+		VALUES (?, ?, ?, ?, 1, 0, ?)
+	`, uii, action, antennaID, sentAt, sentAt.UTC().Format(sqliteTimestamp))
+	return err
+}
+
+// GetStuckConfirmationsCount counts pending confirmations that reached
+// minRetries send attempts; the sync worker keeps them queued but skips them.
+func (s *LocalStore) GetStuckConfirmationsCount(minRetries int) (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM pending_confirmations WHERE synced = 0 AND retry_count >= ?`, minRetries).Scan(&count)
+	return count, err
+}
+
+// RequeueStuckConfirmations resets the retry count and the backoff of every
+// pending confirmation that reached minRetries send attempts so the sync worker
+// sends it again right away, and returns how many were reset. Synced and still-retrying rows
+// are untouched.
+func (s *LocalStore) RequeueStuckConfirmations(minRetries int) (int64, error) {
+	res, err := s.db.Exec(`
+		UPDATE pending_confirmations
+		SET retry_count = 0, next_attempt_at = NULL
+		WHERE synced = 0 AND retry_count >= ?
+	`, minRetries)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// PurgeSyncedConfirmations deletes synced confirmations older than cutoff
+// (by synced_at, or created_at for rows synced before synced_at existed) and
+// returns how many were removed. Unsynced confirmations are never deleted, and
+// the most recently synced row is always kept so the last successful send to
+// the VPS (GetLastSyncedAt) survives retention. A synced row newer than a
+// still-pending one of the same tag is kept too, so the pending one never
+// becomes that tag's latest movement (ReapplyPendingMovements).
+func (s *LocalStore) PurgeSyncedConfirmations(cutoff time.Time) (int64, error) {
+	res, err := s.db.Exec(`
+		DELETE FROM pending_confirmations
+		WHERE synced = 1 AND COALESCE(synced_at, created_at) < ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM pending_confirmations older
+			WHERE older.uii = pending_confirmations.uii
+			  AND older.synced = 0
+			  AND older.id < pending_confirmations.id
+		  )
+		  AND id <> COALESCE((
+			SELECT id FROM pending_confirmations
+			WHERE synced = 1 AND synced_at IS NOT NULL
+			ORDER BY synced_at DESC, id DESC LIMIT 1
+		  ), -1)
+	`, cutoff.UTC().Format(sqliteTimestamp))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // IncrementRetryCount increments retry count for a confirmation.
@@ -527,6 +617,96 @@ func (s *LocalStore) IncrementRetryCount(id int64) error {
 		WHERE id = ?
 	`, id)
 	return err
+}
+
+// MaxRetryBackoff caps the wait between two send attempts of a confirmation.
+const MaxRetryBackoff = 30 * time.Minute
+
+// RetryBackoff is the wait after the retryCount-th failed send:
+// base * 2^(retryCount-1), capped at MaxRetryBackoff.
+func RetryBackoff(base time.Duration, retryCount int) time.Duration {
+	delay := base
+	for i := 1; i < retryCount && delay < MaxRetryBackoff; i++ {
+		delay *= 2
+	}
+	if delay > MaxRetryBackoff {
+		return MaxRetryBackoff
+	}
+	return delay
+}
+
+// ScheduleConfirmationRetry sets when a confirmation whose send just failed may
+// be sent again: now + RetryBackoff(base, its retry count). Call it after
+// IncrementRetryCount so the count includes the failed attempt.
+func (s *LocalStore) ScheduleConfirmationRetry(id int64, base time.Duration, now time.Time) error {
+	var retryCount int
+	if err := s.db.QueryRow(`SELECT retry_count FROM pending_confirmations WHERE id = ?`, id).Scan(&retryCount); err != nil {
+		return err
+	}
+	if retryCount == 0 {
+		return nil // requeued meanwhile: stays due now
+	}
+	next := now.Add(RetryBackoff(base, retryCount)).UTC().Format(sqliteTimestamp)
+	// Only if the count is still the one read: a requeue in between reset it,
+	// and its "due now" must not be overwritten by this stale schedule.
+	_, err := s.db.Exec(`UPDATE pending_confirmations SET next_attempt_at = ? WHERE id = ? AND retry_count = ?`, next, id, retryCount)
+	return err
+}
+
+// ApplyMovementLocation updates the cached location of a tag right after a
+// confirmation is accepted, so the gateway knows the movement before the VPS
+// does: entrada moves it to the warehouse, salida to its kanban's first zone
+// (empty when there is none). The next sync replaces it with the VPS's view.
+func (s *LocalStore) ApplyMovementLocation(uii, action string) error {
+	location := WarehouseLocation
+	if action == "salida" {
+		location = ""
+		kanban, err := s.GetKanbanByUII(uii)
+		if err != nil {
+			return err
+		}
+		if kanban != nil && len(kanban.Zones) > 0 {
+			location = kanban.Zones[0]
+		}
+	}
+	_, err := s.db.Exec(`UPDATE tool_tags SET location = ? WHERE uii = ?`, location, uii)
+	return err
+}
+
+// ReapplyPendingMovements re-applies, per tag, its latest accepted movement
+// when that one has not reached the VPS yet, so a sync carrying the VPS's older
+// location does not roll it back. When the latest movement was already sent,
+// the VPS's location wins, even if an older one is still pending.
+func (s *LocalStore) ReapplyPendingMovements() error {
+	rows, err := s.db.Query(`
+		SELECT uii, action FROM pending_confirmations p
+		WHERE synced = 0 AND id = (
+			SELECT MAX(id) FROM pending_confirmations WHERE uii = p.uii
+		)
+	`)
+	if err != nil {
+		return err
+	}
+	type movement struct{ uii, action string }
+	var pending []movement
+	for rows.Next() {
+		var m movement
+		if err := rows.Scan(&m.uii, &m.action); err != nil {
+			rows.Close()
+			return err
+		}
+		pending = append(pending, m)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, m := range pending {
+		if err := s.ApplyMovementLocation(m.uii, m.action); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetToolsCount returns count of cached tool tags (individual RFID instances).
@@ -550,6 +730,39 @@ func (s *LocalStore) GetPendingConfirmationsCount() (int, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM pending_confirmations WHERE synced = 0`).Scan(&count)
 	return count, err
+}
+
+// GetOldestPendingAt returns when the oldest unsynced confirmation was queued,
+// or nil when nothing is pending.
+func (s *LocalStore) GetOldestPendingAt() (*time.Time, error) {
+	return s.queryOptionalTime(`
+		SELECT created_at FROM pending_confirmations
+		WHERE synced = 0 AND created_at IS NOT NULL
+		ORDER BY created_at ASC LIMIT 1
+	`)
+}
+
+// GetLastSyncedAt returns when the most recent confirmation reached the VPS,
+// or nil when none has been recorded as synced yet.
+func (s *LocalStore) GetLastSyncedAt() (*time.Time, error) {
+	return s.queryOptionalTime(`
+		SELECT synced_at FROM pending_confirmations
+		WHERE synced_at IS NOT NULL
+		ORDER BY synced_at DESC LIMIT 1
+	`)
+}
+
+// queryOptionalTime runs a single-column, single-row time query; no row is nil.
+func (s *LocalStore) queryOptionalTime(query string) (*time.Time, error) {
+	var t time.Time
+	err := s.db.QueryRow(query).Scan(&t)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 // DeleteOldestUnsyncedConfirmation deletes the oldest unsynced confirmation by created_at.
@@ -582,6 +795,13 @@ func (s *LocalStore) UpsertToolTags(tags []ToolTagRecord) error {
 	if len(tags) == 0 {
 		return nil
 	}
+	seen := make(map[string]int64, len(tags))
+	for _, tag := range tags {
+		if other, dup := seen[tag.UII]; dup && other != tag.ID {
+			return fmt.Errorf("%w: %s (tags %d and %d)", ErrDuplicateTagUII, tag.UII, other, tag.ID)
+		}
+		seen[tag.UII] = tag.ID
+	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -592,7 +812,8 @@ func (s *LocalStore) UpsertToolTags(tags []ToolTagRecord) error {
 	stmt, err := tx.Prepare(`
 		INSERT INTO tool_tags (id, tool_id, uii, unit_number, status, location, location_id, display_name, notes, active, kanban_zone, last_synced_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(uii) DO UPDATE SET
+		ON CONFLICT(id) DO UPDATE SET
+			uii = excluded.uii,
 			tool_id = excluded.tool_id,
 			unit_number = excluded.unit_number,
 			status = excluded.status,
@@ -609,8 +830,36 @@ func (s *LocalStore) UpsertToolTags(tags []ToolTagRecord) error {
 	}
 	defer stmt.Close()
 
+	// The VPS is the source of truth by tag id: its UII can be renormalized, and
+	// a UII can move to another tag. Drop any other row holding the UII first so
+	// the id upsert never hits the UNIQUE(uii) constraint.
+	releaseUII, err := tx.Prepare(`DELETE FROM tool_tags WHERE uii = ? AND id <> ?`)
+	if err != nil {
+		return err
+	}
+	defer releaseUII.Close()
+
+	// A tag whose UII the VPS renormalized (same id, new UII) drops the kanban
+	// link of its old UII, which no tag carries any more; the sync relinks the
+	// new UII. Links of UIIs that are not tags yet (a just-accepted assignment)
+	// are never touched here.
+	dropOldLink, err := tx.Prepare(`
+		DELETE FROM tag_kanban_links
+		WHERE uii = (SELECT uii FROM tool_tags WHERE id = ? AND uii <> ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer dropOldLink.Close()
+
 	now := time.Now()
 	for _, tag := range tags {
+		if _, err := dropOldLink.Exec(tag.ID, tag.UII); err != nil {
+			return err
+		}
+		if _, err := releaseUII.Exec(tag.UII, tag.ID); err != nil {
+			return err
+		}
 		_, err := stmt.Exec(
 			tag.ID,
 			tag.ToolID,

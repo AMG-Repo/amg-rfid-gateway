@@ -58,6 +58,39 @@ func TestAntennaManagerProvider_GetAntennaStatuses_WithManagers(t *testing.T) {
 	assert.Equal(t, "ant-02", statuses[1].ID)
 }
 
+func TestAntennaManagerProvider_AddManagerReplacesSameID(t *testing.T) {
+	provider := NewAntennaManagerProvider()
+	gwCfg := &config.GatewayConfig{}
+
+	stale := NewAntennaManager(&simpleMockCommandSender{connected: false}, config.AntennaConfig{ID: "ant-01"}, gwCfg, nil)
+	other := NewAntennaManager(&simpleMockCommandSender{connected: true}, config.AntennaConfig{ID: "ant-02"}, gwCfg, nil)
+	fresh := NewAntennaManager(&simpleMockCommandSender{connected: true}, config.AntennaConfig{ID: "ant-01"}, gwCfg, nil)
+
+	provider.AddManager(stale)
+	provider.AddManager(other)
+	provider.AddManager(fresh) // reconnect of ant-01
+
+	statuses := provider.GetAntennaStatuses()
+	assert.Len(t, statuses, 2)
+	assert.Equal(t, "ant-01", statuses[0].ID)
+	assert.Equal(t, "ant-02", statuses[1].ID)
+	assert.Same(t, fresh, provider.managers[0])
+}
+
+func TestAntennaStatus_LastReadAtOnlyAfterATagRead(t *testing.T) {
+	manager := NewAntennaManager(&simpleMockCommandSender{connected: true}, config.AntennaConfig{ID: "ant-01"}, &config.GatewayConfig{}, nil)
+
+	assert.Nil(t, manager.GetStatus().LastReadAt)
+
+	before := time.Now()
+	manager.RecordReading("E2806995000040104CF4558B", 50)
+
+	lastRead := manager.GetStatus().LastReadAt
+	if assert.NotNil(t, lastRead) {
+		assert.False(t, lastRead.Before(before))
+	}
+}
+
 // simpleMockCommandSender is a simple mock for testing
 type simpleMockCommandSender struct {
 	connected bool

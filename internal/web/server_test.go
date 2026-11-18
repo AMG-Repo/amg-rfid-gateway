@@ -91,6 +91,27 @@ func TestHandleStatus(t *testing.T) {
 	}
 }
 
+func TestRoutesServeEmbeddedDashboard(t *testing.T) {
+	eventBus := events.NewEventBus(100)
+	defer eventBus.Close()
+
+	server := NewServer("127.0.0.1", 0, eventBus, nil, nil, nil, "test-company")
+	handler := server.routes()
+
+	for _, path := range []string{"/", "/style.css"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s: expected status 200, got %d", path, rec.Code)
+		}
+		if rec.Body.Len() == 0 {
+			t.Errorf("GET %s: expected a non-empty body", path)
+		}
+	}
+}
+
 func TestHandleStatusMethodNotAllowed(t *testing.T) {
 	eventBus := events.NewEventBus(100)
 	defer eventBus.Close()
@@ -275,16 +296,15 @@ func TestHandleConfirmAuth_LANMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			eventBus := events.NewEventBus(100)
-			defer eventBus.Close()
-
-			verifier := verify.NewVerifier(nil, nil)
 			cfg := &config.GatewayConfig{
 				WebAccessMode: "lan",
 				WebAuthToken:  "test-web-token",
 			}
 
-			server := NewServerWithConfig("127.0.0.1", 0, eventBus, nil, verifier, nil, "test-company", cfg)
+			// Confirmations require a kanban-assigned tag (S4): link the tag used below.
+			env := newKanbanTestEnv(t, cfg)
+			env.linkKanban(t, "test-epc", testKanban())
+			server := env.server
 
 			body := `{"uii":"test-epc","action":"entrada"}`
 			req := httptest.NewRequest(http.MethodPost, "/api/confirm", strings.NewReader(body))
@@ -539,9 +559,12 @@ func TestHandleConfirm_VPSOnline(t *testing.T) {
 	defer vpsServer.Close()
 
 	vpsClient := httpclient.NewVPSClient(vpsServer.URL, 5*time.Second, httpclient.StaticToken("test-token"))
-	verifier := verify.NewVerifier(nil, nil)
 
-	server := NewServer("127.0.0.1", 0, eventBus, nil, verifier, vpsClient, "test-company")
+	// Confirmations require a kanban-assigned tag (S4)
+	env := newKanbanTestEnv(t, nil)
+	env.linkKanban(t, "EPC-123", testKanban())
+	env.server.vpsClient = vpsClient
+	server := env.server
 
 	body := `{"uii":"EPC-123","action":"entrada"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/confirm", stringReader(body))
@@ -603,6 +626,7 @@ func TestHandleConfirm_VPSOffline(t *testing.T) {
 	}
 
 	store := localstore.New(db)
+	seedKanbanLink(t, db, "EPC-456") // confirmations require a kanban-assigned tag (S4)
 
 	server := NewServer("127.0.0.1", 0, eventBus, store, verifier, vpsClient, "test-company")
 
@@ -1248,6 +1272,7 @@ func TestHandleConfirm_WithAntennaID(t *testing.T) {
 	}
 
 	store := localstore.New(db)
+	seedKanbanLink(t, db, "EPC-456") // confirmations require a kanban-assigned tag (S4)
 
 	// VPS client pointing to non-existent server (force offline mode)
 	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("test-token"))

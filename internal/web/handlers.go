@@ -3,11 +3,27 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
+	syncpkg "github.com/amg-rfid/amg-rfid-gateway/internal/sync"
+)
+
+const (
+	msgConfirmNotAssigned = "No se puede registrar un movimiento hasta asignar la tag a un kanban."
+	msgConfirmNoVerify    = "No se pudo verificar la asignación de la tag."
+	msgConfirmSent        = "Confirmación enviada al VPS"
+	msgConfirmQueued      = "Confirmación guardada localmente (modo sin conexión)"
+	msgConfirmNoStore     = "No hay almacén local disponible"
+	msgConfirmQueueFailed = "No se pudo guardar la confirmación en el gateway."
+	msgConfirmQueueFull   = "La cola del gateway está llena: no se guardó el movimiento. Revisá la conexión con el VPS."
+	msgConfirmBadBody     = "Solicitud inválida."
+	msgConfirmBadAction   = "Movimiento inválido: debe ser entrada o salida."
+	msgConfirmNoUII       = "Falta el código de la tag (uii)."
 )
 
 // TagInfo represents tag information for API responses.
@@ -32,6 +48,8 @@ type ConfirmResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
 	Mode    string `json:"mode"` // "online" or "offline"
+	// Code is set only on rejections, e.g. "tag_not_assigned".
+	Code string `json:"code,omitempty"`
 }
 
 // StatusResponse represents the system status.
@@ -40,6 +58,18 @@ type StatusResponse struct {
 	PendingCount   int  `json:"pending_count"`
 	ToolsCount     int  `json:"tools_count"`
 	PendingWarning bool `json:"pending_warning"`
+	// OldestPendingAt is when the oldest pending confirmation was queued (null when none).
+	OldestPendingAt *time.Time `json:"oldest_pending_at"`
+	// PendingWarningThreshold is the configured queue size that raises pending_warning.
+	PendingWarningThreshold int `json:"pending_warning_threshold"`
+	// LastSyncAt is when the last confirmation reached the VPS (null when none is recorded).
+	LastSyncAt *time.Time `json:"last_sync_at"`
+	// MaxPendingConfirmations is the enforced queue cap (0 = unlimited); at the cap
+	// a new confirmation is rejected with code queue_full.
+	MaxPendingConfirmations int `json:"max_pending_confirmations"`
+	// StuckCount is how many pending confirmations reached the sync worker's max
+	// retries: they stay queued but are no longer sent.
+	StuckCount int `json:"stuck_count"`
 }
 
 // AuthModeResponse indicates whether UI write calls require a bearer token.
@@ -116,13 +146,43 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	// Parse request body
 	var req ConfirmRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.jsonError(w, "Invalid request body", http.StatusBadRequest)
+		s.jsonError(w, msgConfirmBadBody, http.StatusBadRequest)
 		return
 	}
 
 	// Validate action
 	if err := s.verifier.ValidateAction(req.Action); err != nil {
-		s.jsonError(w, err.Error(), http.StatusBadRequest)
+		s.jsonError(w, msgConfirmBadAction, http.StatusBadRequest)
+		return
+	}
+	// Validation is case-insensitive; store, send and apply the canonical form.
+	req.Action = strings.ToLower(strings.TrimSpace(req.Action))
+
+	// Movements are only registered for tags assigned to a kanban. Checked before
+	// anything is sent or queued, online or offline, and fail closed if the
+	// assignment cannot be verified.
+	if strings.TrimSpace(req.UII) == "" {
+		s.jsonError(w, msgConfirmNoUII, http.StatusBadRequest)
+		return
+	}
+	if s.store == nil {
+		s.jsonError(w, msgConfirmNoVerify, http.StatusInternalServerError)
+		return
+	}
+	kanban, err := s.store.GetKanbanByUII(req.UII)
+	if err != nil {
+		log.Printf("[Web] Failed to verify kanban assignment for %s: %v", req.UII, err)
+		s.jsonError(w, msgConfirmNoVerify, http.StatusInternalServerError)
+		return
+	}
+	if kanban == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		json.NewEncoder(w).Encode(ConfirmResponse{
+			Success: false,
+			Message: msgConfirmNotAssigned,
+			Code:    "tag_not_assigned",
+		})
 		return
 	}
 
@@ -139,11 +199,18 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		if antennaID == "" {
 			antennaID = "manual"
 		}
+		sentAt := time.Now()
 		err := s.vpsClient.SendConfirmationV2(s.companyID, req.UII, req.Action, antennaID)
 		if err == nil {
+			// Keep a local record as already synced. The VPS has the confirmation,
+			// so a failure here is logged and never fails the request.
+			s.applyMovementLocation(req.UII, req.Action)
+			if err := s.store.RecordSyncedConfirmation(req.UII, req.Action, antennaID, sentAt); err != nil {
+				log.Printf("[Web] Failed to record synced confirmation for %s: %v", req.UII, err)
+			}
 			s.jsonResponse(w, ConfirmResponse{
 				Success: true,
-				Message: "Confirmation sent to VPS",
+				Message: msgConfirmSent,
 				Mode:    "online",
 			})
 			return
@@ -155,7 +222,7 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		s.jsonResponse(w, ConfirmResponse{
 			Success: false,
-			Message: "No local store available",
+			Message: msgConfirmNoStore,
 			Mode:    "offline",
 		})
 		return
@@ -168,25 +235,32 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get max pending confirmations from config (0 = unlimited)
-	maxPending := 0
-	if s.config != nil && s.config.MaxPendingConfirmations != nil {
-		maxPending = *s.config.MaxPendingConfirmations
+	_, err = s.store.CreateConfirmation(req.UII, req.Action, antennaID, time.Now(), s.maxPendingConfirmations())
+	if errors.Is(err, localstore.ErrQueueFull) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInsufficientStorage)
+		json.NewEncoder(w).Encode(ConfirmResponse{
+			Success: false,
+			Message: msgConfirmQueueFull,
+			Mode:    "offline",
+			Code:    "queue_full",
+		})
+		return
 	}
-
-	_, err := s.store.CreateConfirmation(req.UII, req.Action, antennaID, time.Now(), maxPending)
 	if err != nil {
 		log.Printf("[Web] Failed to create local confirmation: %v", err)
 		s.jsonResponse(w, ConfirmResponse{
 			Success: false,
-			Message: "Failed to queue confirmation: " + err.Error(),
+			Message: msgConfirmQueueFailed,
 			Mode:    "offline",
 		})
 		return
 	}
 
+	s.applyMovementLocation(req.UII, req.Action)
 	s.jsonResponse(w, ConfirmResponse{
 		Success: true,
-		Message: "Confirmation queued locally (offline mode)",
+		Message: msgConfirmQueued,
 		Mode:    "offline",
 	})
 }
@@ -226,26 +300,63 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Calculate pending warning based on threshold
-	pendingWarning := false
-	if s.config != nil && s.config.PendingWarningThreshold != nil {
-		threshold := *s.config.PendingWarningThreshold
-		if threshold > 0 && pendingCount >= threshold {
-			pendingWarning = true
+	// Queue detail for the panel: oldest pending and last successful send.
+	var oldestPendingAt, lastSyncAt *time.Time
+	if s.store != nil {
+		var err error
+		if oldestPendingAt, err = s.store.GetOldestPendingAt(); err != nil {
+			log.Printf("[Web] Failed to get oldest pending confirmation: %v", err)
+			oldestPendingAt = nil
 		}
-	} else {
-		// Default threshold is 1000
-		if pendingCount >= 1000 {
-			pendingWarning = true
+		if lastSyncAt, err = s.store.GetLastSyncedAt(); err != nil {
+			log.Printf("[Web] Failed to get last sync time: %v", err)
+			lastSyncAt = nil
 		}
 	}
 
+	stuckCount := 0
+	if s.store != nil {
+		var err error
+		if stuckCount, err = s.store.GetStuckConfirmationsCount(syncpkg.MaxRetries); err != nil {
+			log.Printf("[Web] Failed to count stuck confirmations: %v", err)
+			stuckCount = 0
+		}
+	}
+
+	// Calculate pending warning based on threshold (default 1000, 0 = never warn)
+	threshold := 1000
+	if s.config != nil && s.config.PendingWarningThreshold != nil {
+		threshold = *s.config.PendingWarningThreshold
+	}
+	pendingWarning := threshold > 0 && pendingCount >= threshold
+
 	s.jsonResponse(w, StatusResponse{
-		VPSOnline:      vpsOnline,
-		PendingCount:   pendingCount,
-		ToolsCount:     toolsCount,
-		PendingWarning: pendingWarning,
+		VPSOnline:               vpsOnline,
+		PendingCount:            pendingCount,
+		ToolsCount:              toolsCount,
+		PendingWarning:          pendingWarning,
+		OldestPendingAt:         oldestPendingAt,
+		PendingWarningThreshold: threshold,
+		LastSyncAt:              lastSyncAt,
+		MaxPendingConfirmations: s.maxPendingConfirmations(),
+		StuckCount:              stuckCount,
 	})
+}
+
+// applyMovementLocation updates the cached tag location for an accepted
+// confirmation; a failure is logged only, the movement itself is recorded.
+func (s *Server) applyMovementLocation(uii, action string) {
+	if err := s.store.ApplyMovementLocation(uii, action); err != nil {
+		log.Printf("[Web] Failed to update cached location of %s after %s: %v", uii, action, err)
+	}
+}
+
+// maxPendingConfirmations is the enforced pending queue cap (0 = unlimited).
+func (s *Server) maxPendingConfirmations() int {
+	if s.config != nil && s.config.MaxPendingConfirmations != nil {
+		return *s.config.MaxPendingConfirmations
+	}
+	return 0
 }
 
 // handleAuthMode returns frontend auth requirements for write endpoints.

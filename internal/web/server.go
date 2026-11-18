@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"strings"
@@ -33,6 +34,16 @@ type Server struct {
 	config     *config.GatewayConfig
 	sseClients map[chan events.TagDetected]struct{}
 	mu         sync.RWMutex
+
+	// unassigned tags inbox recorder (see unassigned.go)
+	unassignedFlushInterval time.Duration
+	// now is the clock used for inbox expiry; nil means time.Now.
+	now            func() time.Time
+	recorderCancel context.CancelFunc
+
+	// refreshed right after a successful tag assignment (optional)
+	syncTrigger SyncTrigger
+	antennas    AntennaStatusProvider
 }
 
 // NewServer creates a new web server.
@@ -76,32 +87,41 @@ func NewServerWithConfig(
 	}
 }
 
-// staticFileServer serves files from the embedded static directory
-type staticFileServer struct {
-	fs http.FileSystem
-}
-
-func (s *staticFileServer) Open(name string) (http.File, error) {
-	// Serve files from the static subdirectory
-	return s.fs.Open("static" + name)
-}
-
-// Start initializes routes and starts the HTTP server.
-func (s *Server) Start(ctx context.Context) error {
+// routes builds the HTTP routes served by the web server.
+func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// Static files - strip the static/ prefix by using a custom wrapper
-	staticHandler := http.FileServer(&staticFileServer{fs: http.FS(staticFS)})
-	mux.Handle("/", staticHandler)
+	// Static files rooted at static/, so "/" resolves to static/index.html.
+	staticRoot, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		panic(fmt.Sprintf("web: embedded static directory missing: %v", err))
+	}
+	mux.Handle("/", http.FileServer(http.FS(staticRoot)))
 
 	// API routes
 	mux.HandleFunc("/events", s.SSEHandler)
 	mux.HandleFunc("/api/tags", s.handleTags)
 	mux.HandleFunc("/api/confirm", s.requireWriteAuth(s.handleConfirm))
+	mux.HandleFunc("/api/confirmations/requeue", s.requireWriteAuth(s.handleRequeue))
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/auth-mode", s.handleAuthMode)
+	mux.HandleFunc("/api/unassigned-tags", s.handleUnassignedTags)
+	mux.HandleFunc("/api/kanbans", s.handleKanbans)
+	mux.HandleFunc("/api/antennas", s.handleAntennas)
+	mux.HandleFunc("/api/history", s.handleHistory)
+	mux.HandleFunc("/api/tags/assign", s.requireWriteAuth(s.handleAssignTag))
 
-	s.httpServer.Handler = mux
+	return mux
+}
+
+// Start initializes routes and starts the HTTP server.
+func (s *Server) Start(ctx context.Context) error {
+	s.httpServer.Handler = s.routes()
+
+	// Keep the unassigned tags inbox fed even when no SSE client is connected
+	recorderCtx, recorderCancel := context.WithCancel(ctx)
+	s.recorderCancel = recorderCancel
+	s.startUnassignedRecorder(recorderCtx)
 
 	// Start server in goroutine
 	go func() {
@@ -164,6 +184,10 @@ func (s *Server) hasValidBearerToken(authHeader string) bool {
 // Stop gracefully shuts down the HTTP server.
 func (s *Server) Stop(ctx context.Context) error {
 	log.Printf("[Web] Shutting down server...")
+
+	if s.recorderCancel != nil {
+		s.recorderCancel()
+	}
 
 	// Close all SSE clients
 	s.mu.Lock()
