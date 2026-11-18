@@ -42,6 +42,18 @@ type SQLite struct {
 	mu       sync.RWMutex
 }
 
+// sqliteBusyTimeoutMs is how long a connection waits for a locked database.
+const sqliteBusyTimeoutMs = 5000
+
+// sqliteDSN adds per-connection pragmas to a file path; in-memory and URI
+// paths are left as given.
+func sqliteDSN(dbPath string) string {
+	if dbPath == ":memory:" || strings.HasPrefix(dbPath, "file:") {
+		return dbPath
+	}
+	return fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)", dbPath, sqliteBusyTimeoutMs)
+}
+
 // NewSQLite creates a new SQLite cache instance.
 // Uses NEGATIVE PROGRAMMING: check what should NOT be, early returns.
 func NewSQLite(dbPath string) (*SQLite, error) {
@@ -51,8 +63,10 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	// Open database
-	db, err := sql.Open("sqlite", dbPath)
+	// Open database. busy_timeout goes in the DSN so every pooled connection
+	// waits for a held write lock instead of failing with SQLITE_BUSY: the
+	// reading cache, the unassigned inbox and the sync write concurrently.
+	db, err := sql.Open("sqlite", sqliteDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -90,6 +104,12 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 	if err := migrateNullableFields(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to migrate nullable fields: %w", err)
+	}
+
+	// Kanban catalog + tag links (additive tables, rebuilt from sync)
+	if err := migrateKanbanTables(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate kanban tables: %w", err)
 	}
 
 	// HAPPY PATH: Create cache instance with buffered channel
@@ -167,7 +187,9 @@ func createTables(db *sql.DB) error {
 				timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 				synced BOOLEAN DEFAULT 0,
 				retry_count INTEGER DEFAULT 0,
-				created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+				synced_at DATETIME,
+				next_attempt_at DATETIME
 			);
 
 			CREATE INDEX IF NOT EXISTS idx_users_rfid ON users(rfid_tag);
@@ -240,7 +262,9 @@ func createTables(db *sql.DB) error {
 			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			synced_at DATETIME,
+			next_attempt_at DATETIME
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_tool_tags_uii ON tool_tags(uii);
@@ -301,6 +325,43 @@ func migratePendingConfirmations(db *sql.DB) error {
 		_, err = db.Exec(`UPDATE pending_confirmations SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL`)
 		if err != nil {
 			return fmt.Errorf("failed to update created_at values: %w", err)
+		}
+	}
+
+	// Check if synced_at column exists (when the VPS accepted the confirmation)
+	var syncedAtExists bool
+	err = db.QueryRow(`
+		SELECT COUNT(*) > 0 FROM pragma_table_info('pending_confirmations') WHERE name = 'synced_at'
+	`).Scan(&syncedAtExists)
+	if err != nil {
+		return fmt.Errorf("failed to check synced_at column: %w", err)
+	}
+
+	// Add synced_at column if missing; existing synced rows keep it NULL and
+	// are retained by created_at.
+	if !syncedAtExists {
+		_, err = db.Exec(`ALTER TABLE pending_confirmations ADD COLUMN synced_at DATETIME`)
+		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("failed to add synced_at column: %w", err)
+		}
+	}
+
+	// Check if next_attempt_at column exists (retry backoff: when the sync worker
+	// may send a failed confirmation again)
+	var nextAttemptAtExists bool
+	err = db.QueryRow(`
+		SELECT COUNT(*) > 0 FROM pragma_table_info('pending_confirmations') WHERE name = 'next_attempt_at'
+	`).Scan(&nextAttemptAtExists)
+	if err != nil {
+		return fmt.Errorf("failed to check next_attempt_at column: %w", err)
+	}
+
+	// Add next_attempt_at column if missing; existing rows keep it NULL, which
+	// means eligible now.
+	if !nextAttemptAtExists {
+		_, err = db.Exec(`ALTER TABLE pending_confirmations ADD COLUMN next_attempt_at DATETIME`)
+		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("failed to add next_attempt_at column: %w", err)
 		}
 	}
 
@@ -546,6 +607,51 @@ func migrateNullableFields(db *sql.DB) error {
 	}
 
 	return tx.Commit()
+}
+
+// migrateKanbanTables creates the kanban cache tables. They are additive and
+// independent from tool_tags, so databases created before kanbans existed
+// upgrade in place without touching tool_tags or pending_confirmations.
+// kanbans and tag_kanban_links are a read-only copy of VPS data rebuilt on
+// every sync; unassigned_tags is the local inbox of reads with no kanban.
+// It is idempotent - safe to run multiple times.
+func migrateKanbanTables(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS kanbans (
+			code TEXT PRIMARY KEY,
+			description TEXT,
+			standard_pack REAL,
+			unit TEXT,
+			zones TEXT,
+			extrusora TEXT,
+			position TEXT,
+			area TEXT,
+			customer TEXT,
+			card_type TEXT,
+			sku TEXT,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS tag_kanban_links (
+			uii TEXT PRIMARY KEY,
+			kanban_code TEXT NOT NULL,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_tag_kanban_links_code ON tag_kanban_links(kanban_code);
+
+		CREATE TABLE IF NOT EXISTS unassigned_tags (
+			epc TEXT PRIMARY KEY,
+			antenna_id TEXT,
+			first_seen DATETIME NOT NULL,
+			last_seen DATETIME NOT NULL,
+			read_count INTEGER NOT NULL DEFAULT 0
+		);
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create kanban tables: %w", err)
+	}
+	return nil
 }
 
 // Store adds a reading to the cache.

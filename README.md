@@ -60,7 +60,7 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 ### Core Features
 
 | Feature | Description |
-|---------|-------------|
+| --------- | ------------- |
 | **Splash Screen** | ASCII art logo with RFID waves, version, and VPS connection status |
 | **Auto-Detect Config** | Binary searches config automatically in standard locations |
 | **SQLite Cache** | Thread-safe local storage with WAL mode for durability |
@@ -71,6 +71,7 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 | **Multi-Antenna** | Supports multiple antennas via goroutines |
 | **Protocol Config** | Per-antenna protocol selection with backward-compatible `generic` default |
 | **Web UI** | Built-in verification interface on port 9090 |
+| **Kanban Tags** | Cached kanban catalog, unassigned-tag inbox and online-only assignment (see [Kanban Tags and Unassigned Tags](#kanban-tags-and-unassigned-tags)) |
 | **Settings TUI** | Full configuration editing with explicit save confirmation and unsaved-exit protection |
 
 ### TUI Configurator
@@ -86,19 +87,24 @@ Interactive terminal interface using Bubbletea with splash screen and multiple s
 ```
 
 **Flow:**
+
 1. **Splash Screen** (2 seconds): ASCII logo + version + VPS connection status
 2. **Main Menu**: Navigate to Antennas, Network, System, Settings, or Quit
 
 #### Splash Screen
+
 ![Splash Screen](docs/screenshots/splash.svg)
 
 #### Main Menu
+
 ![Main Menu](docs/screenshots/main-menu.svg)
 
 #### Settings
+
 ![Settings](docs/screenshots/settings.svg)
 
 **Screens:**
+
 - **Antennas**: View all connected antennas, their status, reading counts, and last tag EPC/RSSI
 - **Network**: Connection state to cloud backend and VPS API
 - **System**: Gateway ID, company ID, version, backend/gateway uptime, cache size, sync status
@@ -110,6 +116,7 @@ Interactive terminal interface using Bubbletea with splash screen and multiple s
   - Leaving Settings with unsaved changes prompts to save, discard, or stay
 
 **Navigation:**
+
 - Arrow keys or `j/k` to navigate; navigable lists wrap at the first/last item
 - Enter to select/edit
 - In Settings protocol fields, `←/→`, Space, or Enter cycles supported values (`generic`, `zebra`, `chainway`)
@@ -325,7 +332,7 @@ web_enabled: true                      # Enable/disable the web UI
 web_port: 9090                         # Port for the web server
 web_listen_addr: "0.0.0.0"             # Bind address (0.0.0.0 = all interfaces)
 sync_tools_interval: 1h                # How often to sync tools from VPS
-confirmation_retry_interval: 30s       # Retry interval for pending confirmations
+confirmation_retry_interval: 30s       # Base retry interval for pending confirmations (doubles per failed attempt, max 30m)
 
 # Queue Size Limits (Pending Confirmations)
 max_pending_confirmations: 10000       # Max pending confirmations (0 = unlimited)
@@ -343,7 +350,7 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 ### Configuration Fields Reference
 
 | Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| ------- | ------ | --------- | ------------- |
 | `gateway_id` | string | required | Unique gateway identifier |
 | `company_id` | string | required | Company UUID for authentication |
 | `cloud_url` | string | required | WebSocket URL (wss://) for cloud sync |
@@ -363,8 +370,8 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 | `web_listen_addr` | string | 0.0.0.0 | Web UI bind address |
 | `vps_api_url` | string | required | VPS REST API base URL (device token endpoint and tool sync). Must be `https://`; `http://` is only accepted for loopback hosts |
 | `sync_tools_interval` | duration | 1h | Tool sync frequency |
-| `confirmation_retry_interval` | duration | 30s | Pending confirmation retry |
-| `max_pending_confirmations` | int | 10000 | Queue size limit (0=unlimited) |
+| `confirmation_retry_interval` | duration | 30s | Base wait before resending a failed confirmation; it doubles after each failure (`interval × 2^(failures-1)`, capped at 30 min). After 10 failed sends the confirmation is stuck until requeued |
+| `max_pending_confirmations` | int | 10000 | Queue size limit (0=unlimited); at the limit new confirmations are rejected with `queue_full`, nothing queued is discarded |
 | `pending_warning_threshold` | int | 1000 | Warning threshold (0=never) |
 | `log_level` | string | info | Logging verbosity |
 
@@ -373,7 +380,7 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 Each antenna supports a `protocol` field:
 
 | Protocol | Status | Use when |
-|----------|--------|----------|
+| ---------- | -------- | ---------- |
 | `generic` | Supported default | The antenna speaks the current generic RFID TCP packet format |
 | `zebra` | Configurable, explicit runtime unsupported | Preparing configuration for a future Zebra-specific handler |
 | `chainway` | Supported | The antenna is a Chainway UR4 fixed reader (see [Chainway UR4](#chainway-ur4-protocol-chainway)) |
@@ -496,6 +503,7 @@ http://gateway-ip:9090
 ```
 
 Features:
+
 - Manual tag confirmation interface
 - Real-time reading display
 - Tool verification status
@@ -523,7 +531,7 @@ go test ./test/e2e/... -v --tags=e2e
 The gateway communicates with the cloud backend using these endpoints:
 
 | Endpoint | Method | Description |
-|----------|--------|-------------|
+| ---------- | -------- | ------------- |
 | `/api/v1/rfid/sync` | POST | Send batch of readings |
 | `/api/v1/rfid/pending` | GET | Get pending confirmations |
 | `/api/v1/health/gateways` | GET | Health check |
@@ -531,6 +539,105 @@ The gateway communicates with the cloud backend using these endpoints:
 | `/health` | GET | Simple health status |
 
 **Authentication:** The gateway exchanges its device credential (`gateway_id` + the secret in `gateway_credential_file`) at `POST /api/v1/gateway/auth/token` for a 12 h Bearer token. The token is renewed automatically at ~80% of its lifetime or after a 401; no manual token handoff is needed.
+
+## Kanban Tags and Unassigned Tags
+
+Operators recognize **kanban cards**, not EPCs. The kanban catalog and the tag-to-kanban
+assignments are maintained on the VPS; the gateway keeps a read-only copy and never edits
+kanban data.
+
+- **Assigned tag**: its UII (EPC) is linked to a kanban. Reads carry the kanban fields
+  (`code`, `description`, `standard_pack`, `unit`, `zones`, `extrusora`, `position`, `area`,
+  `customer`, `card_type`, `sku`).
+- **Unassigned tag**: a read whose UII has no active kanban link. It is listed in the local
+  unassigned inbox (EPC, antenna, first/last seen, read count) until it is assigned, or until it
+  has not been read for 24 hours (it reappears on its next read). Unassigned reads never create
+  movements. Employee badges (a synced user `rfid_tag`) are not listed.
+- **Assigning requires the VPS online.** There is no offline assignment queue: if the VPS is
+  unreachable the request fails with `503` and nothing is stored locally.
+- **Movements only for assigned tags.** `POST /api/confirm` rejects a UII without a kanban link.
+
+### Local web API
+
+All routes are served by the web UI (`web_port`). Reads have no auth; writes (`POST`) require
+the bearer token when `web_access_mode: lan`.
+
+| Endpoint | Method | Auth | Description |
+| ---------- | -------- | ------ | ------------- |
+| `/api/unassigned-tags` | GET | none | `[{epc, antenna_id, first_seen, last_seen, read_count}]`, most recent first |
+| `/api/kanbans` | GET | none | Cached kanban catalog (picker source), ordered by `code` |
+| `/api/antennas` | GET | none | `[{id, zone, state, last_read_at}]` per configured antenna; `state` is `reading`, `reconnecting` or `stopped` (disabled); `zone` is `entrada`, `salida` or `""`; `last_read_at` is `null` until the first tag read |
+| `/api/status` | GET | none | `{vps_online, pending_count, tools_count, pending_warning, oldest_pending_at, pending_warning_threshold, last_sync_at, max_pending_confirmations, stuck_count}`; `max_pending_confirmations` is the enforced queue cap (`0` = unlimited), `stuck_count` counts pending confirmations that reached the sync worker's max retries (kept queued, no longer sent); `oldest_pending_at` is when the oldest pending confirmation was queued (`null` when none), `pending_warning_threshold` is the configured threshold (default 1000, `0` = never warn), `last_sync_at` is the last time a confirmation reached the VPS (online confirm or worker flush; `null` when none is recorded) |
+| `/api/history` | GET | none | Today's confirmations (gateway local day), newest first: `[{uii, kanban_code, description, quantity, unit, action, antenna_id, time, synced}]`. `quantity` is the kanban `standard_pack`; the four kanban fields are `null` when the tag has no active kanban link; `synced` is `false` while the confirmation is still queued for the VPS |
+| `/api/tags/assign` | POST | write auth | Assign a tag to a kanban (online only) |
+| `/api/confirm` | POST | write auth | Confirm entrada/salida (assigned tags only) |
+| `/api/confirmations/requeue` | POST | write auth | Resets the retry count and backoff of every pending confirmation stuck after the max retries so the sync worker sends them again; answers `200 {"requeued": N}` (`0` when none are stuck), `405` for other methods |
+| `/events` | GET (SSE) | none | `tag_detected` events, see below |
+
+**`POST /api/tags/assign`** body `{"uii": "...", "kanban_code": "...", "antenna_id": "..."}`
+(`antenna_id` optional, used for audit; defaults to the antenna that read the tag, else `manual`).
+The request is forwarded to the VPS (`POST /api/v1/gateway/tags/assign`); the kanban code is not
+checked against the local catalog because the VPS is authoritative (the cached catalog can be stale).
+
+| Status | `code` | Meaning |
+| -------- | -------- | --------- |
+| 200 | | `{success, message, uii, kanban}`. The local cache is updated, the tag leaves the inbox and an immediate sync is requested (no 1 h wait) |
+| 400 | `invalid_request` | Invalid body, blank `uii`/`kanban_code`, or rejected by the VPS |
+| 404 | `kanban_not_found` | The kanban does not exist on the VPS |
+| 409 | `uii_assigned` | The tag belongs to another kanban; the body includes `current_kanban` |
+| 502 | `vps_error` | The VPS answered with an unexpected error |
+| 503 | `vps_offline` | VPS unreachable or timed out: "Sin conexión con el VPS: la asignación requiere estar en línea." |
+
+Error bodies are `{"error": "<mensaje>", "code": "<code>"}`. Assigning the same tag to the same
+kanban again is idempotent.
+
+**Retries.** A failed send is retried with a per-confirmation backoff: the wait after the n-th
+failure is `confirmation_retry_interval × 2^(n-1)`, capped at 30 minutes, so a VPS outage of
+minutes does not exhaust the 10 attempts. Confirmations waiting out their backoff are skipped
+by the sync worker and never crowd out due ones. After 10 failed sends a confirmation is
+*stuck* (`stuck_count` in `/api/status`): it stays queued and is not sent again until
+`POST /api/confirmations/requeue` (the panel's "Reintentar" button on the "N confirmaciones sin
+enviar" item) resets it. The tick is also `confirmation_retry_interval`, so a due confirmation
+may wait for the next tick.
+
+**`POST /api/confirm`** keeps its request and response shape; `message` is in Spanish
+(`Confirmación enviada al VPS` online, `Confirmación guardada localmente (modo sin conexión)`
+offline) while `mode` stays `online`/`offline`. Validation errors are Spanish too (400
+`{"error": "Solicitud inválida."}`, `"Movimiento inválido: debe ser entrada o salida."`,
+`"Falta el código de la tag (uii)."`), and a local storage failure answers
+`No se pudo guardar la confirmación en el gateway.` without leaking the database error. Every confirmation is also recorded locally: an
+online success is stored as synced with the send time (`synced_at`), an offline one stays pending
+until the sync worker sends it. Synced confirmations older than 30 days are deleted (by
+`synced_at`), except the most recent one, which keeps `last_sync_at`; pending ones are never purged. A UII with no active kanban link answers
+`422 {"success": false, "message": "No se puede registrar un movimiento hasta asignar la tag a un kanban.", "code": "tag_not_assigned"}`
+and nothing is sent or queued. If the assignment cannot be verified (local store error) it answers `500`.
+An accepted confirmation (online or queued) updates the cached tag location right away (`entrada` →
+`Almacén General`, `salida` → the kanban's first zone or empty), so the next read of the same tag suggests the
+opposite movement even offline; a sync does not roll it back while the confirmation is still pending.
+When the offline queue is at `max_pending_confirmations` it answers
+`507 {"success": false, "message": "La cola del gateway está llena: no se guardó el movimiento. Revisá la conexión con el VPS.", "mode": "offline", "code": "queue_full"}`
+and nothing queued is discarded.
+
+**SSE `tag_detected`** keeps its fields (`epc`, `rssi`, `antenna_id`, `timestamp`,
+`suggested_action`, `suggested_reason`) and adds, additively: a `kanban` object for assigned
+tags, or `"unassigned": true` for tags with no active link.
+
+### Cloud contract and local storage
+
+The gateway expects these (additive) VPS changes; a VPS without them keeps working as before:
+
+- `GET /api/v1/gateway/sync-data` items may carry `kanban` (object or `null`) and `active: false`.
+  Items must carry `active: true` explicitly to keep a link. `active: false` or `kanban: null`
+  clears the local link on the next sync (stale links never survive).
+- `GET /api/v1/gateway/kanbans?company_id=` returns `{"status":"OK","kanbans":[...]}`; it is
+  fetched on every sync (best effort: a failure is logged and does not fail the sync).
+- `POST /api/v1/gateway/tags/assign` with `{company_id, uii, kanban_code, antenna_id}` returns
+  `200 {uii, kanban}`, `404 {error: kanban_not_found}`, `409 {error: uii_assigned, current_kanban}` or `400`.
+
+On startup the SQLite cache gains three tables (`kanbans`, `tag_kanban_links`, `unassigned_tags`)
+through an idempotent migration. `pending_confirmations` only gains a nullable `synced_at`
+column (idempotent), so queued confirmations survive the upgrade; the kanban tables are rebuilt
+from the next sync.
 
 ## Shared Module (amg-rfid-shared-go)
 
@@ -598,6 +705,13 @@ sudo chmod 600 /etc/amg-rfid-gateway/gateway.secret
 # Check cache status
 curl http://localhost:8080/health
 ```
+
+### Confirm answers "No se puede registrar un movimiento hasta asignar la tag a un kanban."
+
+The tag has no active kanban link in the local cache. Check `GET /api/unassigned-tags`, assign
+it with `POST /api/tags/assign` (needs the VPS online), or verify that the VPS sync returns
+`kanban` and `active: true` for the tag. If the VPS has not been updated with kanban support yet,
+no tag can be confirmed.
 
 ### Update failures
 
@@ -685,7 +799,7 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Support
 
-- Email: support@amg-rfid.com
+- Email: <support@amg-rfid.com>
 - Discord: [AMG-RFID Community](https://discord.gg/amg-rfid)
 - Issues: [GitHub Issues](https://github.com/AMG-Repo/amg-rfid-gateway/issues)
 

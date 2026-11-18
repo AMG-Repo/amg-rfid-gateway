@@ -976,3 +976,218 @@ func TestNormalizedSchema_Idempotent(t *testing.T) {
 		t.Errorf("expected tools table to exist after second migration, got %d", toolsCount)
 	}
 }
+
+func tableExists(t *testing.T, db *sql.DB, name string) bool {
+	t.Helper()
+	var exists bool
+	if err := db.QueryRow(`SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&exists); err != nil {
+		t.Fatalf("failed to check table %s: %v", name, err)
+	}
+	return exists
+}
+
+func TestKanbanTables_CreatedOnNewDatabase(t *testing.T) {
+	c, err := NewSQLite(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	defer c.Close()
+
+	for _, name := range []string{"kanbans", "tag_kanban_links", "unassigned_tags"} {
+		if !tableExists(t, c.GetDB(), name) {
+			t.Errorf("expected table %s to exist on a new database", name)
+		}
+	}
+}
+
+// An existing gateway DB (created before kanbans existed) must gain the kanban
+// tables on upgrade without touching tool_tags or the offline confirmation queue.
+func TestKanbanTables_MigrationOnExistingDatabaseKeepsPendingConfirmations(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	first, err := NewSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	db := first.GetDB()
+	if _, err := db.Exec(`INSERT INTO pending_confirmations (uii, action, antenna_id, synced, retry_count) VALUES ('EPC-OLD', 'salida', 'ant-1', 0, 3)`); err != nil {
+		t.Fatalf("failed to seed pending confirmation: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO tools (id, company_id, sku, name) VALUES (1, 'c', 'SKU', 'Tool')`); err != nil {
+		t.Fatalf("failed to seed tool: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO tool_tags (id, tool_id, uii, status, active) VALUES (1, 1, 'EPC-OLD', 'active', 1)`); err != nil {
+		t.Fatalf("failed to seed tool tag: %v", err)
+	}
+	// Simulate a database from before this feature.
+	if _, err := db.Exec(`DROP TABLE kanbans; DROP TABLE tag_kanban_links; DROP TABLE unassigned_tags;`); err != nil {
+		t.Fatalf("failed to drop kanban tables: %v", err)
+	}
+	first.Close()
+
+	// Upgrade twice: migration must be idempotent.
+	for i := 0; i < 2; i++ {
+		c, err := NewSQLite(dbPath)
+		if err != nil {
+			t.Fatalf("reopen %d failed: %v", i, err)
+		}
+		for _, name := range []string{"kanbans", "tag_kanban_links", "unassigned_tags"} {
+			if !tableExists(t, c.GetDB(), name) {
+				t.Errorf("reopen %d: expected table %s after migration", i, name)
+			}
+		}
+
+		var uii, action, antenna string
+		var retry int
+		err = c.GetDB().QueryRow(`SELECT uii, action, antenna_id, retry_count FROM pending_confirmations`).Scan(&uii, &action, &antenna, &retry)
+		if err != nil {
+			t.Fatalf("reopen %d: pending confirmation lost: %v", i, err)
+		}
+		if uii != "EPC-OLD" || action != "salida" || antenna != "ant-1" || retry != 3 {
+			t.Errorf("reopen %d: pending confirmation altered: %s %s %s %d", i, uii, action, antenna, retry)
+		}
+
+		var tags int
+		if err := c.GetDB().QueryRow(`SELECT COUNT(*) FROM tool_tags`).Scan(&tags); err != nil || tags != 1 {
+			t.Errorf("reopen %d: expected tool_tags untouched, got (%d, %v)", i, tags, err)
+		}
+		c.Close()
+	}
+}
+
+// Concurrent writers (reading cache, unassigned inbox, sync) share one file.
+// A writer that finds the database locked must wait instead of failing with
+// SQLITE_BUSY, as seen on hardware at ~95 reads/s.
+func TestNewSQLite_WaitsForLockInsteadOfFailing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache.db")
+	c, err := NewSQLite(path)
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	defer c.Close()
+	db := c.GetDB()
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO unassigned_tags (epc, antenna_id, first_seen, last_seen, read_count) VALUES ('A1', 'a', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := db.Exec(`INSERT INTO unassigned_tags (epc, antenna_id, first_seen, last_seen, read_count) VALUES ('A2', 'a', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)`)
+		done <- err
+	}()
+	time.Sleep(200 * time.Millisecond)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("second writer failed instead of waiting for the lock: %v", err)
+	}
+}
+
+// A database created before synced_at existed gets the column, keeps its rows,
+// and reopening it again is a no-op.
+func TestMigratePendingConfirmations_AddsSyncedAtAndKeepsRows(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy_synced_at.db")
+
+	legacy, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	_, err = legacy.Exec(`
+		CREATE TABLE pending_confirmations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			uii TEXT NOT NULL,
+			action TEXT NOT NULL CHECK(action IN ('entrada', 'salida')),
+			antenna_id TEXT,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			synced BOOLEAN DEFAULT 0,
+			retry_count INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		INSERT INTO pending_confirmations (uii, action, synced) VALUES ('EPC-SYNCED', 'entrada', 1), ('EPC-PENDING', 'salida', 0);
+	`)
+	if err != nil {
+		t.Fatalf("failed to create legacy schema: %v", err)
+	}
+	legacy.Close()
+
+	for i := 0; i < 2; i++ {
+		c, err := NewSQLite(dbPath)
+		if err != nil {
+			t.Fatalf("open #%d failed: %v", i+1, err)
+		}
+		var cols, rows int
+		if err := c.GetDB().QueryRow(`SELECT COUNT(*) FROM pragma_table_info('pending_confirmations') WHERE name = 'synced_at'`).Scan(&cols); err != nil || cols != 1 {
+			t.Errorf("open #%d: expected one synced_at column, got %d (err %v)", i+1, cols, err)
+		}
+		if err := c.GetDB().QueryRow(`SELECT COUNT(*) FROM pending_confirmations`).Scan(&rows); err != nil || rows != 2 {
+			t.Errorf("open #%d: expected 2 rows preserved, got %d (err %v)", i+1, rows, err)
+		}
+		c.Close()
+	}
+}
+
+func TestNewSQLite_FreshDatabaseHasSyncedAt(t *testing.T) {
+	c, err := NewSQLite(filepath.Join(t.TempDir(), "fresh.db"))
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	defer c.Close()
+
+	var cols int
+	if err := c.GetDB().QueryRow(`SELECT COUNT(*) FROM pragma_table_info('pending_confirmations') WHERE name = 'synced_at'`).Scan(&cols); err != nil || cols != 1 {
+		t.Errorf("expected one synced_at column, got %d (err %v)", cols, err)
+	}
+}
+
+// TestMigratePendingConfirmations_AddsNextAttemptAt tests that the retry backoff
+// column is added to an existing table, keeps rows eligible (NULL) and is idempotent.
+func TestMigratePendingConfirmations_AddsNextAttemptAt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test_migrate.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE pending_confirmations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			uii TEXT NOT NULL,
+			action TEXT NOT NULL CHECK(action IN ('entrada', 'salida')),
+			antenna_id TEXT,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			synced BOOLEAN DEFAULT 0,
+			retry_count INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			synced_at DATETIME
+		);
+		INSERT INTO pending_confirmations (uii, action, retry_count) VALUES ('EPC-OLD', 'entrada', 3);
+	`)
+	if err != nil {
+		t.Fatalf("failed to create old schema: %v", err)
+	}
+	db.Close()
+
+	for i := 0; i < 2; i++ { // the second open proves idempotency
+		c, err := NewSQLite(dbPath)
+		if err != nil {
+			t.Fatalf("open %d failed: %v", i+1, err)
+		}
+		var cols int
+		if err := c.GetDB().QueryRow(`SELECT COUNT(*) FROM pragma_table_info('pending_confirmations') WHERE name = 'next_attempt_at'`).Scan(&cols); err != nil || cols != 1 {
+			t.Errorf("open %d: next_attempt_at column count = %d (err %v), want 1", i+1, cols, err)
+		}
+		var next sql.NullString
+		var retries int
+		if err := c.GetDB().QueryRow(`SELECT next_attempt_at, retry_count FROM pending_confirmations WHERE uii = 'EPC-OLD'`).Scan(&next, &retries); err != nil {
+			t.Fatalf("open %d: read old row: %v", i+1, err)
+		}
+		if next.Valid || retries != 3 {
+			t.Errorf("open %d: old row next_attempt_at=%v retry_count=%d, want NULL and 3", i+1, next, retries)
+		}
+		c.Close()
+	}
+}

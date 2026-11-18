@@ -2,7 +2,9 @@ package localstore
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +56,12 @@ func setupTestDB(t *testing.T) *sql.DB {
 			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 
+		CREATE TABLE IF NOT EXISTS tag_kanban_links (
+			uii TEXT PRIMARY KEY,
+			kanban_code TEXT NOT NULL,
+			last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
 		CREATE TABLE IF NOT EXISTS pending_confirmations (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			uii TEXT NOT NULL,
@@ -62,7 +70,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			synced_at DATETIME,
+			next_attempt_at DATETIME
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_tool_tags_uii ON tool_tags(uii);
@@ -857,40 +867,65 @@ func TestCreateConfirmation_QueueCapEnforcement(t *testing.T) {
 		t.Errorf("expected 3 confirmations, got %d", count)
 	}
 
-	// Create 4th confirmation with cap of 3 - should discard oldest (EPC-001)
-	_, err = store.CreateConfirmation("EPC-004", "salida", "ANT-02", now.Add(3*time.Second), 3)
-	if err != nil {
-		t.Fatalf("failed to create confirmation 4: %v", err)
+	// A 4th confirmation at the cap is rejected; nothing stored is discarded.
+	conf, err := store.CreateConfirmation("EPC-004", "salida", "ANT-02", now.Add(3*time.Second), 3)
+	if !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("expected ErrQueueFull at the cap, got conf=%v err=%v", conf, err)
+	}
+	if conf != nil {
+		t.Errorf("expected no confirmation on ErrQueueFull, got %+v", conf)
 	}
 
-	// Verify still 3 confirmations (oldest was discarded)
-	count, err = store.GetPendingConfirmationsCount()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if count != 3 {
-		t.Errorf("expected 3 confirmations after cap enforcement, got %d", count)
-	}
-
-	// Verify oldest was discarded - EPC-001 should not exist
 	confirmations, err := store.GetUnsyncedConfirmations(100)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	var uiis []string
+	for _, c := range confirmations {
+		uiis = append(uiis, c.UII)
+	}
+	if strings.Join(uiis, ",") != "EPC-001,EPC-002,EPC-003" {
+		t.Errorf("queue must stay EPC-001,EPC-002,EPC-003, got %v", uiis)
+	}
+}
 
-	for _, conf := range confirmations {
-		if conf.UII == "EPC-001" {
-			t.Error("EPC-001 should have been discarded due to queue cap")
+func TestCreateConfirmation_SyncedRowsDoNotCountTowardCap(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	store := New(db)
+
+	now := time.Now()
+	if err := store.RecordSyncedConfirmation("EPC-SYNCED", "entrada", "ANT-01", now); err != nil {
+		t.Fatalf("record synced: %v", err)
+	}
+	if _, err := store.CreateConfirmation("EPC-001", "entrada", "ANT-01", now, 1); err != nil {
+		t.Fatalf("first pending under cap 1 must be accepted, got %v", err)
+	}
+}
+
+func TestGetStuckConfirmationsCount(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	store := New(db)
+
+	now := time.Now()
+	stuck, _ := store.CreateConfirmation("EPC-STUCK", "entrada", "ANT-01", now, 0)
+	fresh, _ := store.CreateConfirmation("EPC-FRESH", "entrada", "ANT-01", now, 0)
+	for i := 0; i < 10; i++ {
+		if err := store.IncrementRetryCount(stuck.ID); err != nil {
+			t.Fatalf("increment: %v", err)
 		}
 	}
-
-	// Verify EPC-002, EPC-003, EPC-004 exist
-	found := make(map[string]bool)
-	for _, conf := range confirmations {
-		found[conf.UII] = true
+	if err := store.IncrementRetryCount(fresh.ID); err != nil {
+		t.Fatalf("increment: %v", err)
 	}
-	if !found["EPC-002"] || !found["EPC-003"] || !found["EPC-004"] {
-		t.Errorf("expected EPC-002, EPC-003, EPC-004 to exist, got: %v", found)
+
+	got, err := store.GetStuckConfirmationsCount(10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 1 {
+		t.Errorf("stuck count = %d, want 1", got)
 	}
 }
 
@@ -1247,6 +1282,58 @@ func TestUpsertToolTags_Insert(t *testing.T) {
 }
 
 // Test UpsertToolTags updates existing tags
+// The VPS can renormalize a tag's UII (same id, new UII) and move a UII to
+// another tag id; the cache must follow the VPS by id instead of failing.
+func TestUpsertToolTags_FollowsVPSWhenUIIChangesOrMoves(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	store := New(db)
+
+	now := time.Now()
+	if _, err := db.Exec(`INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at) VALUES (10, 'comp-001', 'SKU-001', 'Tool', 'D', 'W', ?)`, now); err != nil {
+		t.Fatalf("seed tool: %v", err)
+	}
+	for _, row := range []struct {
+		id  int
+		uii string
+	}{{1, "E2806995000040104CF4558"}, {2, "E2806995000050104CF4909B"}, {3, "KEEP-ME"}} {
+		if _, err := db.Exec(`INSERT INTO tool_tags (id, tool_id, uii, status, active, last_synced_at) VALUES (?, 10, ?, 'available', 1, ?)`, row.id, row.uii, now); err != nil {
+			t.Fatalf("seed tag %d: %v", row.id, err)
+		}
+	}
+
+	err := store.UpsertToolTags([]ToolTagRecord{
+		{ID: 1, ToolID: 10, UII: "E2806995000040104CF4558B", Status: "available", Active: true}, // truncated UII fixed
+		{ID: 4, ToolID: 10, UII: "E2806995000050104CF4909B", Status: "available", Active: true}, // UII moved from id 2
+	})
+	if err != nil {
+		t.Fatalf("upsert must follow the VPS, got %v", err)
+	}
+
+	got := map[int]string{}
+	rows, err := db.Query(`SELECT id, uii FROM tool_tags ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int
+		var uii string
+		rows.Scan(&id, &uii)
+		got[id] = uii
+	}
+	want := map[int]string{1: "E2806995000040104CF4558B", 3: "KEEP-ME", 4: "E2806995000050104CF4909B"}
+	if len(got) != len(want) {
+		t.Fatalf("tool_tags = %v, want %v", got, want)
+	}
+	for id, uii := range want {
+		if got[id] != uii {
+			t.Errorf("tool_tags = %v, want %v", got, want)
+			break
+		}
+	}
+}
+
 func TestUpsertToolTags_Update(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
@@ -1277,10 +1364,10 @@ func TestUpsertToolTags_Update(t *testing.T) {
 			ToolID:      10,
 			UII:         "EPC-001",
 			UnitNumber:  strPtr("001"),
-			Status:      "in_use",           // Changed
-			Location:    strPtr("Line 1"),   // Changed
+			Status:      "in_use",               // Changed
+			Location:    strPtr("Line 1"),       // Changed
 			DisplayName: strPtr("Updated Name"), // Changed
-			Active:      false,              // Changed
+			Active:      false,                  // Changed
 		},
 	}
 
@@ -1506,11 +1593,11 @@ func TestUpsertToolsRecords_Update(t *testing.T) {
 	updatedTools := []ToolRecord{
 		{
 			ID:                 1,
-			CompanyID:          "comp-002",              // Changed
+			CompanyID:          "comp-002", // Changed
 			SKU:                "SKU-001",
-			Name:               "New Name",              // Changed
-			Description:        strPtr("New Desc"),      // Changed
-			DefaultDestination: strPtr("New Location"),  // Changed
+			Name:               "New Name",             // Changed
+			Description:        strPtr("New Desc"),     // Changed
+			DefaultDestination: strPtr("New Location"), // Changed
 		},
 	}
 
@@ -1757,5 +1844,38 @@ func TestNullability_UpsertStoresEmptyStringAsEmpty(t *testing.T) {
 		t.Error("expected description to be valid (not NULL)")
 	} else if description.String != "" {
 		t.Errorf("expected description to be empty string, got %q", description.String)
+	}
+}
+
+// Two tags with the same UII in one batch is invalid VPS data: reject the batch
+// and write nothing instead of silently dropping one of them.
+func TestUpsertToolTags_RejectsDuplicateUIIsWithoutWriting(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	store := New(db)
+
+	now := time.Now()
+	if _, err := db.Exec(`INSERT INTO tools (id, company_id, sku, name, description, default_destination, last_synced_at) VALUES (10, 'comp-001', 'SKU-001', 'Tool', 'D', 'W', ?)`, now); err != nil {
+		t.Fatalf("seed tool: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO tool_tags (id, tool_id, uii, status, active, last_synced_at) VALUES (1, 10, 'DUP', 'available', 1, ?)`, now); err != nil {
+		t.Fatalf("seed tag: %v", err)
+	}
+
+	err := store.UpsertToolTags([]ToolTagRecord{
+		{ID: 1, ToolID: 10, UII: "DUP", Status: "in_use", Active: true},
+		{ID: 2, ToolID: 10, UII: "DUP", Status: "in_use", Active: true},
+	})
+	if !errors.Is(err, ErrDuplicateTagUII) {
+		t.Fatalf("expected ErrDuplicateTagUII, got %v", err)
+	}
+
+	var count int
+	var status string
+	if err := db.QueryRow(`SELECT COUNT(*), MAX(status) FROM tool_tags`).Scan(&count, &status); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if count != 1 || status != "available" {
+		t.Errorf("tool_tags must stay unchanged, got count=%d status=%s", count, status)
 	}
 }

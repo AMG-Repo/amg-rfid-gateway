@@ -120,6 +120,9 @@ func main() {
 	)
 	log.Println("Tools sync initialized")
 
+	// Initialize antenna provider (bridge server and web panel)
+	antennaProvider := antenna.NewAntennaManagerProvider()
+
 	// Initialize web server (if enabled)
 	var webServer *web.Server
 	if cfg.WebEnabled {
@@ -133,6 +136,9 @@ func main() {
 			cfg.CompanyID,
 			cfg,
 		)
+		// A successful tag assignment refreshes tools/kanbans right away
+		webServer.SetSyncTrigger(toolsSync)
+		webServer.SetAntennaProvider(antennaProvider)
 		log.Printf("Web server initialized on %s:%d", cfg.WebListenAddr, cfg.WebPort)
 	}
 
@@ -154,9 +160,6 @@ func main() {
 
 	// Initialize metrics
 	metricsCollector := monitoring.NewMetrics(cacheStore, syncEngine)
-
-	// Initialize antenna provider for bridge server
-	antennaProvider := antenna.NewAntennaManagerProvider()
 
 	// Initialize and start bridge server for TUI
 	bridgeServer := newBridgeServer(cfg, healthMonitor, antennaProvider, tui.NewBridgeServer)
@@ -273,6 +276,13 @@ func main() {
 
 	log.Println("Gateway stopped")
 }
+
+// The tools sync reaches the kanban cache through optional interfaces; these
+// assertions make sure the production types really provide them.
+var (
+	_ syncpkg.KanbanStore   = (*localstore.LocalStore)(nil)
+	_ syncpkg.KanbanFetcher = (*httpclient.VPSClient)(nil)
+)
 
 // toolStoreAdapter wraps localstore to implement verify.ToolStore interface
 // Maps normalized schema data (tool_tags JOIN tools) to verify.Tool.

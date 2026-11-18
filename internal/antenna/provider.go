@@ -16,10 +16,17 @@ func NewAntennaManagerProvider() *AntennaManagerProvider {
 	}
 }
 
-// AddManager adds an antenna manager to the provider.
+// AddManager adds an antenna manager to the provider. A manager for an antenna
+// ID already present (a reconnect) replaces the previous one in place.
 func (p *AntennaManagerProvider) AddManager(manager *AntennaManager) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	for i, existing := range p.managers {
+		if existing.config.ID == manager.config.ID {
+			p.managers[i] = manager
+			return
+		}
+	}
 	p.managers = append(p.managers, manager)
 }
 
