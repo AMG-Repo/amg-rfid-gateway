@@ -17,12 +17,12 @@ func TestGatewayConfig_SaveToYAML_Basic(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "config.yaml")
 
 	cfg := &GatewayConfig{
-		GatewayID:  "gw-001",
-		CompanyID:  "comp-123",
-		CloudURL:   "wss://cloud.example.com/ws",
-		JWTSecret:  "test-secret",
-		LogLevel:   "info",
-		ListenMode: "auto",
+		GatewayID:             "gw-001",
+		CompanyID:             "comp-123",
+		CloudURL:              "wss://cloud.example.com/ws",
+		GatewayCredentialFile: "/etc/amg-rfid-gateway/gateway.secret",
+		LogLevel:              "info",
+		ListenMode:            "auto",
 		Antennas: []AntennaConfig{
 			{ID: "ant-1", IP: "192.168.1.100", Port: 6000, Enabled: true, Zone: "entrada"},
 		},
@@ -77,13 +77,13 @@ func TestGatewayConfig_SaveToYAML_PreservesAntennaProtocol(t *testing.T) {
 			tmpDir := t.TempDir()
 			configPath := filepath.Join(tmpDir, "config.yaml")
 			cfg := &GatewayConfig{
-				GatewayID:     "gw-001",
-				CompanyID:     "comp-123",
-				CloudURL:      "wss://cloud.example.com/ws",
-				JWTSecret:     "test-secret",
-				ListenMode:    "auto",
-				WebAccessMode: "local",
-				WebListenAddr: "127.0.0.1",
+				GatewayID:             "gw-001",
+				CompanyID:             "comp-123",
+				CloudURL:              "wss://cloud.example.com/ws",
+				GatewayCredentialFile: "/etc/amg-rfid-gateway/gateway.secret",
+				ListenMode:            "auto",
+				WebAccessMode:         "local",
+				WebListenAddr:         "127.0.0.1",
 				Antennas: []AntennaConfig{
 					{ID: "ant-1", IP: "192.168.1.100", Port: 6000, Enabled: true, Protocol: tt.protocol},
 				},
@@ -119,17 +119,17 @@ func TestGatewayConfig_SaveToYAML_PreservesAntennaProtocol(t *testing.T) {
 func TestGatewayConfig_SaveToYAML_DuplicateAntennaIDsRejected(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
-	originalContent := "gateway_id: original-gw\ncompany_id: original-comp\ncloud_url: wss://old.example.com/ws\njwt_secret: original-secret\nlisten_mode: auto\nweb_access_mode: local\nweb_listen_addr: 127.0.0.1\n"
+	originalContent := "gateway_id: original-gw\ncompany_id: original-comp\ncloud_url: wss://old.example.com/ws\ngateway_credential_file: /etc/amg-rfid-gateway/gateway.secret\nlisten_mode: auto\nweb_access_mode: local\nweb_listen_addr: 127.0.0.1\n"
 	require.NoError(t, os.WriteFile(configPath, []byte(originalContent), 0644))
 
 	cfg := &GatewayConfig{
-		GatewayID:     "gw-001",
-		CompanyID:     "comp-123",
-		CloudURL:      "wss://cloud.example.com/ws",
-		JWTSecret:     "test-secret",
-		ListenMode:    "auto",
-		WebAccessMode: "local",
-		WebListenAddr: "127.0.0.1",
+		GatewayID:             "gw-001",
+		CompanyID:             "comp-123",
+		CloudURL:              "wss://cloud.example.com/ws",
+		GatewayCredentialFile: "/etc/amg-rfid-gateway/gateway.secret",
+		ListenMode:            "auto",
+		WebAccessMode:         "local",
+		WebListenAddr:         "127.0.0.1",
 		Antennas: []AntennaConfig{
 			{ID: "dock-reader", IP: "192.168.1.100", Port: 6000, Enabled: true},
 			{ID: "exit-reader", IP: "192.168.1.101", Port: 6001, Enabled: true},
@@ -157,7 +157,7 @@ func TestGatewayConfig_SaveToYAML_CreatesBackup(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "config.yaml")
 
 	// Create an existing config file
-	originalContent := "gateway_id: old-gw\ncompany_id: old-comp\ncloud_url: wss://old.example.com\njwt_secret: old-secret\nlisten_mode: active\n"
+	originalContent := "gateway_id: old-gw\ncompany_id: old-comp\ncloud_url: wss://old.example.com\ngateway_credential_file: /etc/amg-rfid-gateway/gateway.secret\nlisten_mode: active\n"
 	if err := os.WriteFile(configPath, []byte(originalContent), 0644); err != nil {
 		t.Fatalf("failed to write original config: %v", err)
 	}
@@ -165,11 +165,11 @@ func TestGatewayConfig_SaveToYAML_CreatesBackup(t *testing.T) {
 
 	// Save new config
 	cfg := &GatewayConfig{
-		GatewayID:  "gw-new",
-		CompanyID:  "comp-new",
-		CloudURL:   "wss://cloud.example.com/ws",
-		JWTSecret:  "new-secret",
-		ListenMode: "auto",
+		GatewayID:             "gw-new",
+		CompanyID:             "comp-new",
+		CloudURL:              "wss://cloud.example.com/ws",
+		GatewayCredentialFile: "/etc/amg-rfid-gateway/gateway.secret",
+		ListenMode:            "auto",
 	}
 
 	// Small delay to ensure mod time would be different
@@ -213,11 +213,11 @@ func TestGatewayConfig_SaveToYAML_OverwritesExisting(t *testing.T) {
 
 	// Save new config
 	cfg := &GatewayConfig{
-		GatewayID:  "gw-new",
-		CompanyID:  "comp-new",
-		CloudURL:   "wss://cloud.example.com/ws",
-		JWTSecret:  "secret",
-		ListenMode: "auto",
+		GatewayID:             "gw-new",
+		CompanyID:             "comp-new",
+		CloudURL:              "wss://cloud.example.com/ws",
+		GatewayCredentialFile: "/etc/amg-rfid-gateway/gateway.secret",
+		ListenMode:            "auto",
 	}
 
 	if err := cfg.SaveToYAML(configPath); err != nil {
@@ -238,11 +238,11 @@ func TestGatewayConfig_SaveToYAML_OverwritesExisting(t *testing.T) {
 func TestGatewayConfig_SaveToYAML_InvalidPath(t *testing.T) {
 	// Test error handling for invalid path
 	cfg := &GatewayConfig{
-		GatewayID:  "gw-001",
-		CompanyID:  "comp-123",
-		CloudURL:   "wss://cloud.example.com/ws",
-		JWTSecret:  "secret",
-		ListenMode: "auto",
+		GatewayID:             "gw-001",
+		CompanyID:             "comp-123",
+		CloudURL:              "wss://cloud.example.com/ws",
+		GatewayCredentialFile: "/etc/amg-rfid-gateway/gateway.secret",
+		ListenMode:            "auto",
 	}
 
 	// Try to save to a non-existent directory
@@ -265,11 +265,11 @@ func getModTime(t *testing.T, path string) time.Time {
 func TestGatewayConfig_SaveToYAML_EmptyPath(t *testing.T) {
 	// Test error handling for empty path
 	cfg := &GatewayConfig{
-		GatewayID:  "gw-001",
-		CompanyID:  "comp-123",
-		CloudURL:   "wss://cloud.example.com/ws",
-		JWTSecret:  "secret",
-		ListenMode: "auto",
+		GatewayID:             "gw-001",
+		CompanyID:             "comp-123",
+		CloudURL:              "wss://cloud.example.com/ws",
+		GatewayCredentialFile: "/etc/amg-rfid-gateway/gateway.secret",
+		ListenMode:            "auto",
 	}
 
 	err := cfg.SaveToYAML("")
@@ -287,10 +287,10 @@ func TestGatewayConfig_SaveToYAML_ComplexConfig(t *testing.T) {
 	threshold := 1000
 
 	cfg := &GatewayConfig{
-		GatewayID: "complex-gw",
-		CompanyID: "complex-comp",
-		CloudURL:  "wss://complex.example.com/ws",
-		JWTSecret: "complex-secret",
+		GatewayID:             "complex-gw",
+		CompanyID:             "complex-comp",
+		CloudURL:              "wss://complex.example.com/ws",
+		GatewayCredentialFile: "/etc/amg-rfid-gateway/gateway.secret",
 		Antennas: []AntennaConfig{
 			{ID: "ant-1", IP: "192.168.1.100", Port: 6000, Enabled: true, Zone: "entrada"},
 			{ID: "ant-2", IP: "192.168.1.101", Port: 6000, Enabled: false, Zone: "salida"},
@@ -356,11 +356,11 @@ func TestGatewayConfig_SaveToYAML_MultipleSaves(t *testing.T) {
 
 	// First save
 	cfg1 := &GatewayConfig{
-		GatewayID:  "gw-001",
-		CompanyID:  "comp-123",
-		CloudURL:   "wss://cloud.example.com/ws",
-		JWTSecret:  "secret1",
-		ListenMode: "auto",
+		GatewayID:             "gw-001",
+		CompanyID:             "comp-123",
+		CloudURL:              "wss://cloud.example.com/ws",
+		GatewayCredentialFile: "/etc/amg-rfid-gateway/gateway.secret",
+		ListenMode:            "auto",
 	}
 	if err := cfg1.SaveToYAML(configPath); err != nil {
 		t.Fatalf("first save failed: %v", err)
@@ -368,11 +368,11 @@ func TestGatewayConfig_SaveToYAML_MultipleSaves(t *testing.T) {
 
 	// Second save
 	cfg2 := &GatewayConfig{
-		GatewayID:  "gw-002",
-		CompanyID:  "comp-456",
-		CloudURL:   "wss://cloud2.example.com/ws",
-		JWTSecret:  "secret2",
-		ListenMode: "active",
+		GatewayID:             "gw-002",
+		CompanyID:             "comp-456",
+		CloudURL:              "wss://cloud2.example.com/ws",
+		GatewayCredentialFile: "/etc/amg-rfid-gateway/gateway.secret",
+		ListenMode:            "active",
 	}
 	if err := cfg2.SaveToYAML(configPath); err != nil {
 		t.Fatalf("second save failed: %v", err)

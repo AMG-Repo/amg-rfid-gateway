@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/antenna"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/auth"
 	cachepkg "github.com/amg-rfid/amg-rfid-gateway/internal/cache"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
@@ -98,8 +99,15 @@ func main() {
 	verifier := verify.NewVerifier(toolStoreAdapter, cfg.Antennas)
 	log.Println("Verifier initialized")
 
-	// Initialize VPS HTTP client with JWT token for protected gateway endpoints
-	vpsClient := httpclient.NewVPSClient(cfg.VPSAPIURL, 10*time.Second, httpclient.StaticToken(cfg.JWTSecret))
+	// Load the device credential; tokens are obtained and renewed by the TokenSource
+	secret, err := auth.LoadCredentialFile(cfg.GatewayCredentialFile)
+	if err != nil {
+		log.Fatalf("Failed to load gateway credential file %s: %v", cfg.GatewayCredentialFile, err)
+	}
+	ts := auth.NewTokenSource(cfg.VPSAPIURL, auth.Credential{GatewayID: cfg.GatewayID, Secret: secret}, nil)
+
+	// Initialize VPS HTTP client with renewable device tokens for protected gateway endpoints
+	vpsClient := httpclient.NewVPSClient(cfg.VPSAPIURL, 10*time.Second, ts)
 	log.Println("VPS client initialized")
 
 	// Initialize tools sync service
@@ -129,7 +137,7 @@ func main() {
 	}
 
 	// Initialize WebSocket client
-	wsClient := wsclient.NewClient(cfg.CloudURL, wsclient.StaticToken(cfg.JWTSecret))
+	wsClient := wsclient.NewClient(cfg.CloudURL, ts)
 
 	// Initialize sync engine
 	syncConfig := syncpkg.EngineConfig{

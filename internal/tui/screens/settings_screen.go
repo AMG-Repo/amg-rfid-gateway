@@ -582,7 +582,7 @@ func copyConfig(cfg *config.GatewayConfig) *config.GatewayConfig {
 		GatewayID:                 cfg.GatewayID,
 		CompanyID:                 cfg.CompanyID,
 		CloudURL:                  cfg.CloudURL,
-		JWTSecret:                 cfg.JWTSecret,
+		GatewayCredentialFile:     cfg.GatewayCredentialFile,
 		SyncInterval:              cfg.SyncInterval,
 		BatchSize:                 cfg.BatchSize,
 		MaxRetries:                cfg.MaxRetries,

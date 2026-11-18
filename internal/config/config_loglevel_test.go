@@ -25,7 +25,7 @@ func TestGatewayConfig_LogLevelYamlTag(t *testing.T) {
 gateway_id: "gw-001"
 company_id: "comp-123"
 cloud_url: "wss://cloud.example.com"
-jwt_secret: "test-secret"
+gateway_credential_file: /etc/amg-rfid-gateway/gateway.secret
 log_level: "warn"
 `
 	tmpDir := t.TempDir()

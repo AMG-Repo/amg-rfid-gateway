@@ -255,7 +255,8 @@ create_config() {
 gateway_id: "${gateway_id}"
 company_id: "your-company-id"
 cloud_url: "wss://api.your-domain.com/ws"
-jwt_secret: ""
+gateway_credential_file: "${CONFIG_DIR}/gateway.secret"
+vps_api_url: "https://api.your-domain.com"
 
 # Sync configuration
 sync_interval: 30s
@@ -373,18 +374,24 @@ NEXT STEPS:
 1. Edit the configuration file:
    sudo nano ${CONFIG_DIR}/config.yaml
 
-2. Set your company_id, cloud_url, and antenna configurations
+2. Set your company_id, cloud_url, vps_api_url (https://), and antenna configurations
 
-3. Start the service:
+3. Store the device secret issued by the backend CLI for this gateway_id
+   in the credential file (never in config.yaml). Create it owned by the
+   service user with mode 0600, then paste the secret:
+   sudo install -m 600 -o ${SERVICE_USER} -g ${SERVICE_GROUP} /dev/null ${CONFIG_DIR}/gateway.secret
+   sudo nano ${CONFIG_DIR}/gateway.secret
+
+4. Start the service:
    sudo systemctl start ${SERVICE_NAME}
 
-4. Check service status:
+5. Check service status:
    sudo systemctl status ${SERVICE_NAME}
 
-5. View logs:
+6. View logs:
    sudo journalctl -u ${SERVICE_NAME} -f
 
-6. Health check:
+7. Health check:
    curl http://localhost:8080/health
 
 MANAGEMENT COMMANDS:

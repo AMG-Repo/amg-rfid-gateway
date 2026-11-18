@@ -20,7 +20,7 @@ func writeConfig(t *testing.T, body string) string {
 const knownOnlyConfig = `gateway_id: gw-001
 company_id: comp-001
 cloud_url: wss://example.com/ws
-jwt_secret: secret
+gateway_credential_file: /etc/amg-rfid-gateway/gateway.secret
 log_level: info
 antennas: []
 `
