@@ -135,3 +135,63 @@ func TestAuthedRequest_TokenErrorSendsNoRequest(t *testing.T) {
 		t.Fatalf("requests = %d; want 0", hits.Load())
 	}
 }
+
+func TestFetchKanbans_UsesProviderTokenAndRetriesOnceAfter401(t *testing.T) {
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		seen = append(seen, auth)
+		if auth != "Bearer tok-2" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "kanbans": []any{}})
+	}))
+	defer server.Close()
+
+	tokens := &rotatingTokens{}
+	client := NewVPSClient(server.URL, 5*time.Second, tokens)
+	if _, err := client.FetchKanbans("comp-1"); err != nil {
+		t.Fatalf("FetchKanbans after renewal: %v", err)
+	}
+	if len(seen) != 2 || seen[0] != "Bearer tok-1" || seen[1] != "Bearer tok-2" {
+		t.Fatalf("Authorization headers = %v; want [Bearer tok-1 Bearer tok-2]", seen)
+	}
+	if len(tokens.invalidated) != 1 || tokens.invalidated[0] != "tok-1" {
+		t.Fatalf("invalidated = %v; want [tok-1]", tokens.invalidated)
+	}
+}
+
+func TestAssignTag_UsesProviderTokenAndRetriedPOSTResendsBody(t *testing.T) {
+	var seen []string
+	var bodies []assignRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req assignRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		bodies = append(bodies, req)
+		auth := r.Header.Get("Authorization")
+		seen = append(seen, auth)
+		if auth != "Bearer tok-2" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"uii": req.UII})
+	}))
+	defer server.Close()
+
+	tokens := &rotatingTokens{}
+	client := NewVPSClient(server.URL, 5*time.Second, tokens)
+	if _, err := client.AssignTag(context.Background(), "comp-1", "EPC-1", "KB-1", "ant-1"); err != nil {
+		t.Fatalf("AssignTag after renewal: %v", err)
+	}
+	if len(seen) != 2 || seen[0] != "Bearer tok-1" || seen[1] != "Bearer tok-2" {
+		t.Fatalf("Authorization headers = %v; want [Bearer tok-1 Bearer tok-2]", seen)
+	}
+	if len(tokens.invalidated) != 1 || tokens.invalidated[0] != "tok-1" {
+		t.Fatalf("invalidated = %v; want [tok-1]", tokens.invalidated)
+	}
+	want := assignRequest{CompanyID: "comp-1", UII: "EPC-1", KanbanCode: "KB-1", AntennaID: "ant-1"}
+	if len(bodies) != 2 || bodies[0] != want || bodies[1] != want {
+		t.Fatalf("bodies = %+v; want the same payload twice", bodies)
+	}
+}

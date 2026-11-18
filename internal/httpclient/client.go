@@ -294,7 +294,7 @@ var _ sync.KanbanFetcher = (*VPSClient)(nil)
 
 // FetchKanbans retrieves the kanban catalog (read-only copy used by the assignment picker).
 // Calls GET /api/v1/gateway/kanbans?company_id={company_id}
-// This endpoint requires GatewayAuth (JWT token).
+// This endpoint requires GatewayAuth (device access token).
 func (c *VPSClient) FetchKanbans(companyID string) ([]localstore.Kanban, error) {
 	url := fmt.Sprintf("%s/api/v1/gateway/kanbans?company_id=%s", c.baseURL, companyID)
 
@@ -304,11 +304,8 @@ func (c *VPSClient) FetchKanbans(companyID string) ([]localstore.Kanban, error) 
 	}
 
 	req.Header.Set("Accept", "application/json")
-	if c.jwtToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
-	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doAuthed(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -377,7 +374,7 @@ type assignErrorBody struct {
 //   - *AssignError: the VPS answered with a non-2xx status
 //
 // Calls POST /api/v1/gateway/tags/assign
-// This endpoint requires GatewayAuth (JWT token).
+// This endpoint requires GatewayAuth (device access token).
 func (c *VPSClient) AssignTag(ctx context.Context, companyID, uii, kanbanCode, antennaID string) (*localstore.Kanban, error) {
 	url := fmt.Sprintf("%s/api/v1/gateway/tags/assign", c.baseURL)
 
@@ -386,18 +383,15 @@ func (c *VPSClient) AssignTag(ctx context.Context, companyID, uii, kanbanCode, a
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	if c.jwtToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
-	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doAuthed(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrVPSUnavailable, err)
 	}
