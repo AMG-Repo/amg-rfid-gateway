@@ -857,7 +857,7 @@ func TestFetchSyncData_DecodesKanbanFields(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	resp, err := client.FetchSyncData("comp-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -884,7 +884,7 @@ func TestFetchSyncData_OldPayloadWithoutKanbanFields(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	resp, err := client.FetchSyncData("comp-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -911,7 +911,7 @@ func TestFetchKanbans_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	kanbans, err := client.FetchKanbans("comp-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -940,7 +940,7 @@ func TestFetchKanbans_Errors(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+			client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 			if kanbans, err := client.FetchKanbans("comp-1"); err == nil {
 				t.Errorf("expected error, got kanbans %+v", kanbans)
 			}
@@ -971,7 +971,7 @@ func TestAssignTag_Success(t *testing.T) {
 	server := assignServer(t, http.StatusOK, `{"uii":"A0000001","kanban":{"code":"EXP758SF M16","description":"Burlete","standard_pack":250,"unit":"PZ","zones":["C"]}}`, &sent)
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	kanban, err := client.AssignTag(context.Background(), "comp-1", "A0000001", "EXP758SF M16", "ant-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1003,7 +1003,7 @@ func TestAssignTag_MapsVPSErrors(t *testing.T) {
 			server := assignServer(t, tt.status, tt.body, nil)
 			defer server.Close()
 
-			client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+			client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 			_, err := client.AssignTag(context.Background(), "comp-1", "A1", "K1", "")
 			var assignErr *AssignError
 			if !errors.As(err, &assignErr) {
@@ -1023,7 +1023,7 @@ func TestAssignTag_UnreachableAndTimeoutAreUnavailable(t *testing.T) {
 	// Connection refused
 	closed := httptest.NewServer(http.NotFoundHandler())
 	closed.Close()
-	client := NewVPSClient(closed.URL, 500*time.Millisecond, "test-token")
+	client := NewVPSClient(closed.URL, 500*time.Millisecond, StaticToken("test-token"))
 	if _, err := client.AssignTag(context.Background(), "c", "A1", "K1", ""); !errors.Is(err, ErrVPSUnavailable) {
 		t.Errorf("connection refused: expected ErrVPSUnavailable, got %v", err)
 	}
@@ -1033,7 +1033,7 @@ func TestAssignTag_UnreachableAndTimeoutAreUnavailable(t *testing.T) {
 		time.Sleep(300 * time.Millisecond)
 	}))
 	defer slow.Close()
-	client = NewVPSClient(slow.URL, 50*time.Millisecond, "test-token")
+	client = NewVPSClient(slow.URL, 50*time.Millisecond, StaticToken("test-token"))
 	if _, err := client.AssignTag(context.Background(), "c", "A1", "K1", ""); !errors.Is(err, ErrVPSUnavailable) {
 		t.Errorf("timeout: expected ErrVPSUnavailable, got %v", err)
 	}
@@ -1043,7 +1043,7 @@ func TestAssignTag_SuccessWithoutKanbanBodyStillSucceeds(t *testing.T) {
 	server := assignServer(t, http.StatusOK, `{"uii":"A1"}`, nil)
 	defer server.Close()
 
-	client := NewVPSClient(server.URL, 5*time.Second, "test-token")
+	client := NewVPSClient(server.URL, 5*time.Second, StaticToken("test-token"))
 	kanban, err := client.AssignTag(context.Background(), "c", "A1", "K1", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

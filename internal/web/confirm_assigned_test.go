@@ -100,7 +100,7 @@ func assertRejectedNotAssigned(t *testing.T, rec *httptest.ResponseRecorder) {
 func TestHandleConfirm_RejectsUnassignedTagAndQueuesNothing(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
 	vps := newFakeConfirmVPS(t)
-	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("tok"))
 
 	rec := postConfirm(env.server, `{"uii":"UNKNOWN-EPC","action":"entrada"}`)
 
@@ -115,7 +115,7 @@ func TestHandleConfirm_RejectsUnassignedTagAndQueuesNothing(t *testing.T) {
 
 func TestHandleConfirm_RejectsUnassignedTagWhileOfflineToo(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
-	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("tok"))
 
 	rec := postConfirm(env.server, `{"uii":"UNKNOWN-EPC","action":"salida"}`)
 
@@ -128,7 +128,7 @@ func TestHandleConfirm_RejectsUnassignedTagWhileOfflineToo(t *testing.T) {
 // A legacy tool tag synced without a kanban is "unassigned" as well.
 func TestHandleConfirm_RejectsKnownToolTagWithoutKanban(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
-	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("tok"))
 	if err := env.store.UpsertToolsFromSync([]localstore.SyncDataItem{
 		{ID: 1, ToolID: 1, UII: "LEGACY-1", SKU: "S", Name: "Hammer", Status: "active", Active: true},
 	}); err != nil {
@@ -143,7 +143,7 @@ func TestHandleConfirm_RejectsKnownToolTagWithoutKanban(t *testing.T) {
 
 func TestHandleConfirm_RejectsTagWhoseLinkWasClearedBySync(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
-	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("tok"))
 	k := testKanban()
 	env.linkKanban(t, "A0000001", k)
 	// Next sync returns the tag inactive.
@@ -159,7 +159,7 @@ func TestHandleConfirm_RejectsTagWhoseLinkWasClearedBySync(t *testing.T) {
 func TestHandleConfirm_AssignedTagConfirmsOnlineAsBefore(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
 	vps := newFakeConfirmVPS(t)
-	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("tok"))
 	env.linkKanban(t, "A0000001", testKanban())
 
 	rec := postConfirm(env.server, `{"uii":"A0000001","action":"entrada","antenna_id":"ant-2"}`)
@@ -184,7 +184,7 @@ func TestHandleConfirm_AssignedTagConfirmsOnlineAsBefore(t *testing.T) {
 // Regression: an assigned tag confirms exactly as before (offline queue path).
 func TestHandleConfirm_AssignedTagIsQueuedOfflineAsBefore(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
-	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("tok"))
 	env.linkKanban(t, "A0000001", testKanban())
 
 	rec := postConfirm(env.server, `{"uii":"A0000001","action":"salida"}`)
@@ -220,7 +220,7 @@ func TestHandleConfirm_EmptyUIIIsBadRequest(t *testing.T) {
 func TestHandleConfirm_FailsClosedWhenAssignmentCannotBeVerified(t *testing.T) {
 	t.Run("no local store", func(t *testing.T) {
 		vps := newFakeConfirmVPS(t)
-		srv := NewServer("127.0.0.1", 0, nil, nil, nil, httpclient.NewVPSClient(vps.URL, time.Second, "tok"), "c")
+		srv := NewServer("127.0.0.1", 0, nil, nil, nil, httpclient.NewVPSClient(vps.URL, time.Second, httpclient.StaticToken("tok")), "c")
 		rec := postConfirm(srv, `{"uii":"A1","action":"entrada"}`)
 		if rec.Code != http.StatusInternalServerError || vps.confirms.Load() != 0 {
 			t.Errorf("expected 500 and no VPS call, got %d (%d calls)", rec.Code, vps.confirms.Load())
@@ -230,7 +230,7 @@ func TestHandleConfirm_FailsClosedWhenAssignmentCannotBeVerified(t *testing.T) {
 	t.Run("lookup error", func(t *testing.T) {
 		env := newKanbanTestEnv(t, nil)
 		env.linkKanban(t, "A0000001", testKanban())
-		env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+		env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("tok"))
 		if _, err := env.db.Exec(`DROP TABLE tag_kanban_links`); err != nil {
 			t.Fatalf("drop failed: %v", err)
 		}
@@ -275,7 +275,7 @@ func (e *kanbanTestEnv) allConfirmations(t *testing.T) []storedConfirmation {
 func TestHandleConfirm_OnlineSuccessIsRecordedAsSynced(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
 	vps := newFakeConfirmVPS(t)
-	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("tok"))
 	env.linkKanban(t, "A0000001", testKanban())
 	before := time.Now().UTC().Add(-time.Second)
 
@@ -306,7 +306,7 @@ func TestHandleConfirm_OnlineSuccessIsRecordedAsSynced(t *testing.T) {
 // Offline confirmations stay pending (not synced, no synced_at).
 func TestHandleConfirm_OfflineStaysPendingWithoutSyncedAt(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
-	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("tok"))
 	env.linkKanban(t, "A0000001", testKanban())
 
 	postConfirm(env.server, `{"uii":"A0000001","action":"entrada"}`)
@@ -321,7 +321,7 @@ func TestHandleConfirm_OfflineStaysPendingWithoutSyncedAt(t *testing.T) {
 func TestHandleConfirm_OnlineSuccessSurvivesLocalRecordFailure(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
 	vps := newFakeConfirmVPS(t)
-	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("tok"))
 	env.linkKanban(t, "A0000001", testKanban())
 	if _, err := env.db.Exec(`DROP TABLE pending_confirmations`); err != nil {
 		t.Fatalf("drop failed: %v", err)
@@ -339,7 +339,7 @@ func TestHandleConfirm_OnlineSuccessSurvivesLocalRecordFailure(t *testing.T) {
 // The panel shows these messages to operators, so even failures are Spanish.
 func TestHandleConfirm_QueueFailureMessageIsSpanish(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
-	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("tok"))
 	env.linkKanban(t, "A0000001", testKanban())
 	if _, err := env.db.Exec(`DROP TABLE pending_confirmations`); err != nil {
 		t.Fatalf("drop failed: %v", err)
@@ -385,7 +385,7 @@ func TestHandleConfirm_ValidationErrorsAreSpanish(t *testing.T) {
 
 func TestHandleConfirm_RejectsWithQueueFullAtCapWithoutDroppingQueued(t *testing.T) {
 	env := newKanbanTestEnv(t, queueCapConfig(1))
-	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("tok"))
 	env.linkKanban(t, "A0000001", testKanban())
 	if _, err := env.store.CreateConfirmation("OLDER-EPC", "entrada", "ant-1", time.Now(), 0); err != nil {
 		t.Fatalf("seed failed: %v", err)
@@ -445,7 +445,7 @@ func TestHandleConfirm_UpdatesCachedLocationOnlineAndOffline(t *testing.T) {
 	t.Run("online salida", func(t *testing.T) {
 		env := newKanbanTestEnv(t, nil)
 		vps := newFakeConfirmVPS(t)
-		env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, "tok")
+		env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("tok"))
 		seedAssignedTag(t, env, "A0000001", localstore.WarehouseLocation)
 
 		rec := postConfirm(env.server, `{"uii":"A0000001","action":"salida","antenna_id":"ant-1"}`)
@@ -458,7 +458,7 @@ func TestHandleConfirm_UpdatesCachedLocationOnlineAndOffline(t *testing.T) {
 	})
 	t.Run("offline entrada", func(t *testing.T) {
 		env := newKanbanTestEnv(t, nil)
-		env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+		env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("tok"))
 		seedAssignedTag(t, env, "A0000001", "E")
 
 		rec := postConfirm(env.server, `{"uii":"A0000001","action":"entrada","antenna_id":"ant-1"}`)
@@ -471,7 +471,7 @@ func TestHandleConfirm_UpdatesCachedLocationOnlineAndOffline(t *testing.T) {
 	})
 	t.Run("rejected confirm leaves location", func(t *testing.T) {
 		env := newKanbanTestEnv(t, queueCapConfig(1))
-		env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+		env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("tok"))
 		seedAssignedTag(t, env, "A0000001", "E")
 		if _, err := env.store.CreateConfirmation("OTHER", "entrada", "ant-1", time.Now(), 0); err != nil {
 			t.Fatalf("fill queue: %v", err)
@@ -492,7 +492,7 @@ func TestHandleConfirm_UpdatesCachedLocationOnlineAndOffline(t *testing.T) {
 func TestHandleConfirm_UppercaseActionUpdatesLocationLikeLowercase(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
 	vps := newFakeConfirmVPS(t)
-	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("tok"))
 	seedAssignedTag(t, env, "A0000001", localstore.WarehouseLocation)
 
 	rec := postConfirm(env.server, `{"uii":"A0000001","action":"SALIDA","antenna_id":"ant-1"}`)

@@ -137,9 +137,9 @@ func TestHandleHistory_ReflectsConfirmEndpointInBothModes(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
 	env.linkKanban(t, "A0000001", testKanban())
 	vps := newFakeConfirmVPS(t)
-	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("tok"))
 	postConfirm(env.server, `{"uii":"A0000001","action":"entrada","antenna_id":"ant-1"}`)
-	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("tok"))
 	postConfirm(env.server, `{"uii":"A0000001","action":"salida","antenna_id":"ant-2"}`)
 
 	_, items := getHistory(t, env)

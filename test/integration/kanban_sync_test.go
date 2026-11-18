@@ -44,7 +44,7 @@ func syncOnce(t *testing.T, vps *httptest.Server) *localstore.LocalStore {
 	t.Cleanup(func() { c.Close() })
 	store := localstore.New(c.GetDB())
 
-	client := httpclient.NewVPSClient(vps.URL, 2*time.Second, "jwt")
+	client := httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("jwt"))
 	ts := syncpkg.NewToolsSync(client, store, "comp-1", time.Hour, time.Hour)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

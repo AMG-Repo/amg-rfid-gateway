@@ -59,7 +59,7 @@ func (f *fakeAssignVPS) sent() map[string]any {
 
 // withVPS points the env's server at a VPS URL and installs a sync trigger spy.
 func (e *kanbanTestEnv) withVPS(url string, timeout time.Duration) *fakeSyncTrigger {
-	e.server.vpsClient = httpclient.NewVPSClient(url, timeout, "vps-jwt")
+	e.server.vpsClient = httpclient.NewVPSClient(url, timeout, httpclient.StaticToken("vps-jwt"))
 	trigger := &fakeSyncTrigger{}
 	e.server.SetSyncTrigger(trigger)
 	return trigger
@@ -328,7 +328,7 @@ func TestHandleAssignTag_MethodNotAllowed(t *testing.T) {
 
 func TestHandleAssignTag_NoLocalStoreDoesNotCallTheVPS(t *testing.T) {
 	vps := newFakeAssignVPS(t, http.StatusOK, vpsAssignOKBody)
-	srv := NewServer("127.0.0.1", 0, nil, nil, nil, httpclient.NewVPSClient(vps.URL, time.Second, "vps-jwt"), "test-company")
+	srv := NewServer("127.0.0.1", 0, nil, nil, nil, httpclient.NewVPSClient(vps.URL, time.Second, httpclient.StaticToken("vps-jwt")), "test-company")
 
 	rec := postAssign(srv, `{"uii":"A1","kanban_code":"K"}`)
 

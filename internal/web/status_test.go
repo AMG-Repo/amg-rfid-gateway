@@ -104,7 +104,7 @@ func TestHandleStatus_ReportsOldestPendingAndLastSync(t *testing.T) {
 func TestHandleStatus_LastSyncFollowsOnlineConfirm(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
 	vps := newFakeConfirmVPS(t)
-	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, "tok")
+	env.server.vpsClient = httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("tok"))
 	env.linkKanban(t, "A0000001", testKanban())
 	postConfirm(env.server, `{"uii":"A0000001","action":"entrada"}`)
 

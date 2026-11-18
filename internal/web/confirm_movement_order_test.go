@@ -14,7 +14,7 @@ func movementLocOffline(t *testing.T, e *kanbanTestEnv) {
 	t.Helper()
 	v := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }))
 	t.Cleanup(v.Close)
-	e.server.vpsClient = httpclient.NewVPSClient(v.URL, time.Second, "tok")
+	e.server.vpsClient = httpclient.NewVPSClient(v.URL, time.Second, httpclient.StaticToken("tok"))
 }
 func movementLocAccepted(t *testing.T, r *httptest.ResponseRecorder, mode string) {
 	t.Helper()
@@ -64,7 +64,7 @@ func TestMovementLocationOlderPendingMustNotRollbackNewOnlineMovement(t *testing
 	movementLocOffline(t, e)
 	movementLocAccepted(t, postConfirm(e.server, `{"uii":"A","action":"entrada"}`), "offline")
 	v := newFakeConfirmVPS(t)
-	e.server.vpsClient = httpclient.NewVPSClient(v.URL, time.Second, "tok")
+	e.server.vpsClient = httpclient.NewVPSClient(v.URL, time.Second, httpclient.StaticToken("tok"))
 	movementLocAccepted(t, postConfirm(e.server, `{"uii":"A","action":"salida"}`), "online")
 	before := cachedLocation(t, e, "A")
 	all := e.allConfirmations(t)
@@ -88,7 +88,7 @@ func TestMovementLocationAcceptedUppercaseSalidaMustMoveOutside(t *testing.T) {
 	e := newKanbanTestEnv(t, nil)
 	seedAssignedTag(t, e, "A", localstore.WarehouseLocation)
 	v := newFakeConfirmVPS(t)
-	e.server.vpsClient = httpclient.NewVPSClient(v.URL, time.Second, "tok")
+	e.server.vpsClient = httpclient.NewVPSClient(v.URL, time.Second, httpclient.StaticToken("tok"))
 	movementLocAccepted(t, postConfirm(e.server, `{"uii":"A","action":"SALIDA"}`), "online")
 	got := cachedLocation(t, e, "A")
 	t.Logf("accepted SALIDA location=%q", got)

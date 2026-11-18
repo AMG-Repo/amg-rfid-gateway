@@ -109,7 +109,7 @@ func TestKanbanAssign_EndToEnd_InboxAssignSyncAndStaleLink(t *testing.T) {
 	}
 	defer c.Close()
 	store := localstore.New(c.GetDB())
-	client := httpclient.NewVPSClient(vps.URL, 2*time.Second, "jwt")
+	client := httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("jwt"))
 
 	toolsSync := syncpkg.NewToolsSync(client, store, "comp-1", time.Hour, time.Hour)
 	ctx, cancel := context.WithCancel(context.Background())
