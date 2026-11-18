@@ -168,7 +168,7 @@ func TestVerifyFlow_EndToEnd(t *testing.T) {
 	verifier := verify.NewVerifier(mockStore, antennas)
 
 	// Create VPS client
-	vpsClient := httpclient.NewVPSClient(vpsServer.URL, 5*time.Second, "test-token")
+	vpsClient := httpclient.NewVPSClient(vpsServer.URL, 5*time.Second, httpclient.StaticToken("test-token"))
 
 	// Create web server
 	server := newTestServer(eventBus, store, verifier, vpsClient)
@@ -310,7 +310,7 @@ func TestVerifyFlow_OfflineMode(t *testing.T) {
 	verifier := verify.NewVerifier(mockStore, nil)
 
 	// Create VPS client pointing to non-existent server (offline)
-	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, "test-token")
+	vpsClient := httpclient.NewVPSClient("http://localhost:59999", 100*time.Millisecond, httpclient.StaticToken("test-token"))
 
 	// Create web server using test helper
 	server := newTestServer(eventBus, store, verifier, vpsClient)

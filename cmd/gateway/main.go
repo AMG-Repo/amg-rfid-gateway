@@ -99,7 +99,7 @@ func main() {
 	log.Println("Verifier initialized")
 
 	// Initialize VPS HTTP client with JWT token for protected gateway endpoints
-	vpsClient := httpclient.NewVPSClient(cfg.VPSAPIURL, 10*time.Second, cfg.JWTSecret)
+	vpsClient := httpclient.NewVPSClient(cfg.VPSAPIURL, 10*time.Second, httpclient.StaticToken(cfg.JWTSecret))
 	log.Println("VPS client initialized")
 
 	// Initialize tools sync service
@@ -129,7 +129,7 @@ func main() {
 	}
 
 	// Initialize WebSocket client
-	wsClient := wsclient.NewClient(cfg.CloudURL, cfg.JWTSecret)
+	wsClient := wsclient.NewClient(cfg.CloudURL, wsclient.StaticToken(cfg.JWTSecret))
 
 	// Initialize sync engine
 	syncConfig := syncpkg.EngineConfig{
