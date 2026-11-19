@@ -746,7 +746,8 @@
     var epcs = un.map((c) => c.epc);
     function tagMeta(c) {
       var p = [c.ant, " · ", agoSpan([c.epc])];
-      if (c.rssi !== null) p.push(" · " + c.rssi + " dBm");
+      // rssi is signed dBm; 0 means unknown, so it is not shown.
+      if (c.rssi !== null && c.rssi !== 0) p.push(" · " + c.rssi + " dBm");
       return p;
     }
     var sub = h("ul", "sub");

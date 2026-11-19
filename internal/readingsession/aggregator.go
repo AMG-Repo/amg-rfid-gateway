@@ -103,7 +103,9 @@ func (a *Aggregator) Store(r models.Reading) error {
 				s.reading.LastSeen = r.Timestamp
 			}
 			s.reading.ReadCount++
-			if r.RSSI > s.reading.RSSI {
+			// RSSI is signed dBm with 0 = unknown: keep the strongest known
+			// read, and never let an unknown read replace a known one.
+			if r.RSSI != 0 && (s.reading.RSSI == 0 || r.RSSI > s.reading.RSSI) {
 				s.reading.RSSI = r.RSSI
 			}
 			return nil

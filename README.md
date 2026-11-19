@@ -11,7 +11,7 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 - **TUI Configurator**: Terminal-based configuration with full settings editing
 - **Local Caching**: SQLite-based buffering for offline operation
 - **Automatic Sync**: Batches readings to the cloud over HTTPS (`POST /api/v1/gateway/sync`) with the device token
-- **Reading Sessions**: Repeated reads of one tag on one antenna are merged into a single session (first read, last read, read count, max RSSI) that is uploaded once the tag goes unread for `reading_session_idle` (default 5s) or after `reading_session_max` (default 60s); the local panel and movement detection still see every read
+- **Reading Sessions**: Repeated reads of one tag on one antenna are merged into a single session (first read, last read, read count, strongest RSSI: the largest known signed dBm, unknown reads never win) that is uploaded once the tag goes unread for `reading_session_idle` (default 5s) or after `reading_session_max` (default 60s); the local panel and movement detection still see every read
 - **Multi-Antenna Support**: Connect multiple antennas simultaneously
 - **Per-Antenna Protocol Config**: Configure each antenna protocol independently (`generic` by default)
 - **Web UI**: Built-in web interface for manual tag confirmation
@@ -626,6 +626,11 @@ and nothing queued is discarded.
 **SSE `tag_detected`** keeps its fields (`epc`, `rssi`, `antenna_id`, `timestamp`,
 `suggested_action`, `suggested_reason`) and adds, additively: a `kanban` object for assigned
 tags, or `"unassigned": true` for tags with no active link.
+`rssi` (here, in readings and on the VPS sync wire) is a signed integer dBm, larger = stronger
+(`-55` beats `-82`), and `0` means unknown; values above 0 are rejected. Per protocol:
+Chainway reports dBm, rounded keeping the sign (-65.9 → -66); the generic protocol's RSSI byte
+is read as a signed 8-bit dBm (`0xC9` → -55), an assumption until checked with a real generic
+reader, and a byte that decodes to a positive value becomes 0.
 
 ### Cloud contract and local storage
 

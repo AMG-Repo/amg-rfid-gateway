@@ -77,6 +77,35 @@ func TestAggregator_MergesReadsOfOneTagIntoOneSession(t *testing.T) {
 	}
 }
 
+func TestAggregator_SessionKeepsStrongestKnownRSSI(t *testing.T) {
+	cases := []struct {
+		name  string
+		rssis []int
+		want  int
+	}{
+		{"known then unknown keeps known", []int{-70, 0}, -70},
+		{"unknown then known takes known", []int{0, -70}, -70},
+		{"all unknown stays unknown", []int{0, 0, 0}, 0},
+		{"strongest of several negatives", []int{-60, 0, -52, -65}, -52},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			next := &recordingStore{}
+			a := New(next, 5*time.Second, 60*time.Second)
+			for i, rssi := range c.rssis {
+				mustStore(t, a, read("E1", "almacen", time.Duration(i)*time.Second, rssi))
+			}
+			if err := a.FlushAll(); err != nil {
+				t.Fatalf("FlushAll: %v", err)
+			}
+			got := next.all()
+			if len(got) != 1 || got[0].RSSI != c.want {
+				t.Fatalf("sessions = %+v; want 1 session with rssi %d", got, c.want)
+			}
+		})
+	}
+}
+
 func TestAggregator_KeepsSessionOpenUntilIdleElapses(t *testing.T) {
 	next := &recordingStore{}
 	a := New(next, 5*time.Second, 60*time.Second)
