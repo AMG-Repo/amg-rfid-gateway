@@ -14,9 +14,9 @@ Group reads of the same tag into one session record with a counter. Branch `feat
 
 ## Tasks
 
-- T1 [S4] shared model + local queue: `Reading.LastSeen`, `Reading.ReadCount`; pending_readings columns last_seen, read_count (additive migration) — inline, TDD
-- T2 [S1-S3,S5,S6] session aggregator implementing antenna.Cache, wrapping the SQLite cache; config `reading_session_idle` (5s) and `reading_session_max` (60s) — inline, TDD
-- T3 [S5] wiring in cmd/gateway/main.go; README/config docs — inline
+- T1 [S4] shared model + local queue: `Reading.LastSeen`, `Reading.ReadCount`; pending_readings columns last_seen, read_count (additive migration) — inline, TDD — 877e6c4
+- T2 [S1-S3,S5,S6] session aggregator implementing antenna.Cache, wrapping the SQLite cache; config `reading_session_idle` (5s) and `reading_session_max` (60s) — inline, TDD — 877e6c4
+- T3 [S5] wiring in cmd/gateway/main.go; README/config docs — inline — 877e6c4
 - T4 [S4] VPS contract agreed and deployed (other session); release v0.8.3; Pi upgrade; verify sessions in prod
 
 ## Log
@@ -26,3 +26,4 @@ Group reads of the same tag into one session record with a counter. Branch `feat
 - L3 Design: both protocol handlers store through `antenna.Cache` (internal/antenna/manager.go:31); the aggregator implements it and wraps the SQLite cache, so handlers, event bus and stats stay unchanged.
 - L4 VPS agreed (msg 62c928c7, user OK there "Sí, issue + rama + PR"): optional per-reading "last_seen" (RFC3339/Nano) and "read_count" (integer); missing or null -> last_seen = timestamp, read_count = 1. Rejections in errors[]: "reading[i]: last_seen is before timestamp", "reading[i]: read_count must be at least 1", "reading[i]: read_count out of range" (> 2147483647), malformed -> "reading[i]: invalid reading". timestamp = first_seen keeps the natural key; rssi = session max; duplicate key -> ON CONFLICT DO NOTHING counted as duplicate (no update). Migration 012: last_seen NOT NULL backfilled = read_at, read_count NOT NULL DEFAULT 1, CHECKs. Do not release until their deploy.
 - L5 T1 GREEN (not committed): Reading.LastSeen `json:"last_seen,omitzero"`, Reading.ReadCount `json:"read_count,omitempty"` (0 = plain reading, omitted, VPS reads 1); Validate rejects last_seen before timestamp and negative read_count; pending_readings gets last_seen DATETIME NULL and read_count INTEGER NOT NULL DEFAULT 0 via migrateReadingSessionColumns; insert/select carry them.
+- L6 T1-T3 committed as 877e6c4 (815 authored lines, one behavior; most are tests). New package internal/readingsession (Aggregator implements antenna.Cache; Run ticks every 1 s; ShutdownQueue = FlushAll + cache Flush, because cache Close only writes the batch in progress, not readings still buffered in its channel). Config reading_session_idle/max with defaults 5s/60s; Validate rejects negatives and max < idle. pending_readings is only read inside internal/cache, so panel/movements are unaffected (S5). Checks: go build, go vet, go test ./... green except the pre-existing internal/deploy/homebrew "transaction refused" failures; go test -race on readingsession, cmd/gateway, config, cache green. Slice boundary past ~400 lines accepted; choose PR shape when publishing.
