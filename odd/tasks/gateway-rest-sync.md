@@ -12,9 +12,9 @@ User chose option A: authenticated REST. Branch `feat/gateway-rest-sync` from or
 
 ## Tasks
 
-- T1 [S3] sync engine depends on a narrow sender interface; mark accepted+duplicates — inline, TDD
-- T2 [S1,S2] httpclient `VPSClient.SendSyncRequest` POST /api/v1/gateway/sync via doAuthed — inline, TDD
-- T3 [S1] main wires engine to the VPS client, stops dialing WS; docs — inline
+- T1 [S3] sync engine depends on a narrow sender interface; mark accepted+duplicates, rejections by index terminal — inline, TDD — 77e9151
+- T2 [S1,S2] httpclient `VPSClient.SendSyncRequest` POST /api/v1/gateway/sync via doAuthed — inline, TDD — 77e9151
+- T3 [S1] main wires engine to the VPS client, stops dialing WS; docs — inline — 77e9151
 - T4 [S4] issue + PR, release v0.8.2, Pi upgrade (operator sudo), verify prod readings — after VPS deploy
 
 ## Log
@@ -25,3 +25,5 @@ User chose option A: authenticated REST. Branch `feat/gateway-rest-sync` from or
 - L5 VPS agreed (msg 15d34993): UNIQUE(company_id, gateway_id, antenna_id, epc, read_at), read_at µs precision, index-based errors[], status codes as in S3. VPS implementing on branch feat/gateway-sync-rest.
 - L6 User asked "es un rescan de la misma tag?" Evidence (~/ur4-t6/data/cache.db, source of the service copy): 111556 unsynced, 16 EPCs, 1 antenna, 2026-11-05 18:38 to 2026-11-06 17:38 CST, ~15k reads per tag. Stored timestamps use Go time.String() with monotonic suffix ("... -0600 CST m=+103.84"); must check they parse back non-zero.
 - L3 Engine bug found: marks only ids[:accepted]; idempotent resend returns accepted=0, duplicates=N → infinite resend. Folded into T1 (S3).
+- L7 User chose to purge the 111556 cached e2e readings on the Pi (backup cache.db first) before v0.8.2 starts syncing.
+- L8 77e9151 holds T1-T3 (454 authored lines, one behavior: engine, client and wiring only work together; slice boundary accepted past ~400). Stored-timestamp parse (time.String() with m=+ suffix) verified OK and pinned in internal/cache/sqlite_test.go.
