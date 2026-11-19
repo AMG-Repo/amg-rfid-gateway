@@ -24,6 +24,10 @@ import (
 // before exceeding it. A variable so tests can lower it.
 var maxReadCount = math.MaxInt32
 
+// maxClosing caps the sessions waiting for a queue retry; beyond it the
+// oldest are dropped (logged). A variable so tests can lower it.
+var maxClosing = 10000
+
 // Store is the queue that receives closed sessions (antenna.Cache).
 type Store interface {
 	Store(r models.Reading) error
@@ -38,86 +42,121 @@ type key struct {
 	gateway, antenna, epc string
 }
 
+// session is one open session. reading carries wall-clock times only, as
+// stored and sent; firstAt and lastAt keep the original read times, whose
+// monotonic readings (time.Now) make the idle and max ages immune to wall
+// clock steps.
+type session struct {
+	reading models.Reading
+	firstAt time.Time
+	lastAt  time.Time
+}
+
 // Aggregator implements antenna.Cache in front of the upload queue.
 type Aggregator struct {
 	next Store
 	idle time.Duration
 	max  time.Duration
 
+	// flushMu serializes flushes, so a final flush waits for an in-flight
+	// tick and retries keep their order. Store never takes it.
+	flushMu sync.Mutex
+
 	mu      sync.Mutex
-	open    map[key]*models.Reading
+	open    map[key]*session
 	closing []models.Reading // closed, waiting to be queued (or queue retry)
+	stopped bool
 }
 
 // New returns an Aggregator that closes a session after idle without reads or
 // after max since its first read, whichever comes first.
 func New(next Store, idle, max time.Duration) *Aggregator {
-	return &Aggregator{next: next, idle: idle, max: max, open: map[key]*models.Reading{}}
+	return &Aggregator{next: next, idle: idle, max: max, open: map[key]*session{}}
 }
 
 // Store adds one raw read to its session. It only fails for an invalid
-// reading: closing a session never queues inline, so a failing queue cannot
-// reject the read that triggered the close.
+// reading, or after shutdown when the read goes straight to the queue:
+// closing a session never queues inline, so a failing queue cannot reject the
+// read that triggered the close.
 func (a *Aggregator) Store(r models.Reading) error {
 	if err := r.Validate(); err != nil {
 		return err
 	}
-	// Compare and persist wall-clock times only: SQLite and JSON drop the
-	// monotonic reading, so comparisons must match what is stored and sent.
+	at := r.Timestamp
 	r.Timestamp = r.Timestamp.Round(0)
 	k := key{r.GatewayID, r.AntennaID, r.EPC}
 
 	a.mu.Lock()
+	if a.stopped {
+		a.mu.Unlock()
+		return a.next.Store(r)
+	}
 	defer a.mu.Unlock()
 	if s, ok := a.open[k]; ok {
-		if r.Timestamp.Sub(s.Timestamp) < a.max && r.Timestamp.Sub(s.LastSeen) < a.idle && s.ReadCount < maxReadCount {
-			if r.Timestamp.After(s.LastSeen) {
-				s.LastSeen = r.Timestamp
+		if at.Sub(s.firstAt) < a.max && at.Sub(s.lastAt) < a.idle && s.reading.ReadCount < maxReadCount {
+			if at.After(s.lastAt) {
+				s.lastAt = at
 			}
-			s.ReadCount++
-			if r.RSSI > s.RSSI {
-				s.RSSI = r.RSSI
+			// The wire needs last_seen >= timestamp even if the wall clock
+			// stepped back, so LastSeen only moves forward.
+			if r.Timestamp.After(s.reading.LastSeen) {
+				s.reading.LastSeen = r.Timestamp
+			}
+			s.reading.ReadCount++
+			if r.RSSI > s.reading.RSSI {
+				s.reading.RSSI = r.RSSI
 			}
 			return nil
 		}
-		a.closing = append(a.closing, *s)
+		a.addClosing(s.reading)
 		delete(a.open, k)
 	}
-	session := r
-	session.LastSeen = r.Timestamp
-	session.ReadCount = 1
-	a.open[k] = &session
+	r.LastSeen = r.Timestamp
+	r.ReadCount = 1
+	a.open[k] = &session{reading: r, firstAt: at, lastAt: at}
 	return nil
+}
+
+// addClosing appends a closed session to the retry list, dropping the oldest
+// beyond maxClosing. Callers hold mu.
+func (a *Aggregator) addClosing(rs ...models.Reading) {
+	a.closing = append(a.closing, rs...)
+	if over := len(a.closing) - maxClosing; over > 0 {
+		log.Printf("[Sessions] retry list full: dropping %d oldest sessions", over)
+		a.closing = append([]models.Reading(nil), a.closing[over:]...)
+	}
 }
 
 // FlushIdle queues every closed session plus every open session whose tag has
 // not been read for idle, or that has been open for max, as of now. Sessions
 // the queue rejects are kept and retried on the next call.
 func (a *Aggregator) FlushIdle(now time.Time) error {
-	now = now.Round(0)
-	return a.flush(func(s *models.Reading) bool {
-		return now.Sub(s.LastSeen) >= a.idle || now.Sub(s.Timestamp) >= a.max
+	return a.flush(func(s *session) bool {
+		return now.Sub(s.lastAt) >= a.idle || now.Sub(s.firstAt) >= a.max
 	})
 }
 
 // FlushAll queues every session (shutdown).
 func (a *Aggregator) FlushAll() error {
-	return a.flush(func(*models.Reading) bool { return true })
+	return a.flush(func(*session) bool { return true })
 }
 
-func (a *Aggregator) flush(closed func(*models.Reading) bool) error {
+func (a *Aggregator) flush(closed func(*session) bool) error {
+	a.flushMu.Lock()
+	defer a.flushMu.Unlock()
+
 	a.mu.Lock()
 	batch := a.closing
 	a.closing = nil
 	for k, s := range a.open {
 		if closed(s) {
-			batch = append(batch, *s)
+			batch = append(batch, s.reading)
 			delete(a.open, k)
 		}
 	}
 	a.mu.Unlock()
 
-	// Queue outside the lock: a slow queue must not block Store on every antenna.
+	// Queue outside mu: a slow queue must not block Store on every antenna.
 	var errs []error
 	var failed []models.Reading
 	for _, s := range batch {
@@ -128,7 +167,10 @@ func (a *Aggregator) flush(closed func(*models.Reading) bool) error {
 	}
 	if len(failed) > 0 {
 		a.mu.Lock()
-		a.closing = append(failed, a.closing...)
+		rest := a.closing
+		a.closing = nil
+		a.addClosing(failed...)
+		a.addClosing(rest...)
 		a.mu.Unlock()
 	}
 	return errors.Join(errs...)
@@ -150,10 +192,13 @@ func (a *Aggregator) Run(ctx context.Context, tick time.Duration) {
 	}
 }
 
-// ShutdownQueue queues every session and always flushes the queue's write
-// buffer, so a following Close persists what was queued even if some
-// sessions failed. Call it after the antennas stopped and before closing the
-// queue.
+// ShutdownQueue stops session tracking (later reads go straight to the
+// queue), queues every session after any in-flight tick, and always flushes
+// the queue's write buffer, so a following Close persists what was queued.
+// Call it after the antennas stopped and before closing the queue.
 func ShutdownQueue(a *Aggregator, queue Flusher) error {
+	a.mu.Lock()
+	a.stopped = true
+	a.mu.Unlock()
 	return errors.Join(a.FlushAll(), queue.Flush())
 }

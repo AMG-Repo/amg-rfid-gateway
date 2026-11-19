@@ -365,3 +365,129 @@ func TestShutdownQueue_FlushesTheQueueEvenWhenASessionFails(t *testing.T) {
 		t.Errorf("queued %+v; want GOOD", got)
 	}
 }
+
+// orderedQueue records Store and Flush calls in order; Store blocks for the
+// EPC in slowEPC until release is closed.
+type orderedQueue struct {
+	mu      sync.Mutex
+	events  []string
+	slowEPC string
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (q *orderedQueue) Store(r models.Reading) error {
+	if r.EPC == q.slowEPC {
+		close(q.entered)
+		<-q.release
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.events = append(q.events, "store "+r.EPC)
+	return nil
+}
+
+func (q *orderedQueue) Flush() error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.events = append(q.events, "flush")
+	return nil
+}
+
+func (q *orderedQueue) log() []string {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return append([]string(nil), q.events...)
+}
+
+func TestShutdownQueue_WaitsForAnInFlightTick(t *testing.T) {
+	q := &orderedQueue{slowEPC: "SLOW", entered: make(chan struct{}), release: make(chan struct{})}
+	a := New(q, 5*time.Second, 60*time.Second)
+	mustStore(t, a, read("SLOW", "almacen", 0, 60))
+
+	tickDone := make(chan error, 1)
+	go func() { tickDone <- a.FlushIdle(t0.Add(10 * time.Second)) }()
+	<-q.entered // the tick holds the SLOW session, detached from the map
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- ShutdownQueue(a, q) }()
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("ShutdownQueue returned (%v) while a tick was still queueing a session", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(q.release)
+	if err := <-tickDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-shutdownDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := q.log(); len(got) != 2 || got[0] != "store SLOW" || got[1] != "flush" {
+		t.Errorf("events = %v; want [store SLOW flush]", got)
+	}
+}
+
+func TestAggregator_ReadsAfterShutdownGoStraightToTheQueue(t *testing.T) {
+	q := &failingQueue{}
+	a := New(q, 5*time.Second, 60*time.Second)
+	if err := ShutdownQueue(a, q); err != nil {
+		t.Fatal(err)
+	}
+	mustStore(t, a, read("LATE", "almacen", 0, 60))
+	got := q.all()
+	if len(got) != 1 || got[0].EPC != "LATE" {
+		t.Fatalf("late read queued as %+v; want it queued immediately", got)
+	}
+	if err := got[0].Validate(); err != nil {
+		t.Errorf("late read invalid: %v", err)
+	}
+}
+
+func TestAggregator_BackwardWallClockKeepsLastSeenAfterTimestamp(t *testing.T) {
+	next := &recordingStore{}
+	a := New(next, 5*time.Second, 60*time.Second)
+	mustStore(t, a, read("E1", "almacen", 0, 60))
+	mustStore(t, a, read("E1", "almacen", -30*time.Second, 61)) // clock stepped back
+	if err := a.FlushAll(); err != nil {
+		t.Fatal(err)
+	}
+	got := next.all()
+	if len(got) != 1 {
+		t.Fatalf("stored %d; want 1", len(got))
+	}
+	if got[0].LastSeen.Before(got[0].Timestamp) || got[0].ReadCount != 2 {
+		t.Errorf("session = first %v last %v count %d; want last_seen >= timestamp and count 2",
+			got[0].Timestamp, got[0].LastSeen, got[0].ReadCount)
+	}
+	if err := got[0].Validate(); err != nil {
+		t.Errorf("session invalid: %v", err)
+	}
+}
+
+func TestAggregator_RetryListIsCapped(t *testing.T) {
+	old := maxClosing
+	maxClosing = 2
+	defer func() { maxClosing = old }()
+
+	next := &recordingStore{err: errors.New("cache is closed")}
+	a := New(next, 5*time.Second, 60*time.Second)
+	for i := 0; i < 4; i++ {
+		mustStore(t, a, read("E1", "almacen", time.Duration(i)*time.Minute, 60))
+	}
+	_ = a.FlushIdle(t0.Add(10 * time.Minute)) // fails; sessions go to the retry list
+
+	next.mu.Lock()
+	next.err = nil
+	next.mu.Unlock()
+	if err := a.FlushAll(); err != nil {
+		t.Fatal(err)
+	}
+	got := next.all()
+	if len(got) != 2 {
+		t.Fatalf("stored %d after recovery; want the 2 newest kept by the cap", len(got))
+	}
+	if !got[0].Timestamp.Equal(t0.Add(2*time.Minute)) || !got[1].Timestamp.Equal(t0.Add(3*time.Minute)) {
+		t.Errorf("kept %v and %v; want the two newest sessions in order", got[0].Timestamp, got[1].Timestamp)
+	}
+}
