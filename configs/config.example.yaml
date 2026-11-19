@@ -7,6 +7,7 @@ gateway_id: "rpi-gateway-001"
 company_id: "your-company-uuid"
 
 # Cloud backend connection
+# Validated but unused: raw readings sync over HTTPS to vps_api_url (POST /api/v1/gateway/sync)
 cloud_url: "wss://api.your-domain.com/ws"
 # Path to a mode 0600 file holding the device secret issued by the backend CLI
 gateway_credential_file: "/etc/amg-rfid-gateway/gateway.secret"

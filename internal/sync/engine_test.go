@@ -368,3 +368,113 @@ func TestEngineConfig_Validate(t *testing.T) {
 		t.Error("expected error for empty company ID")
 	}
 }
+
+// senderOnly is a request/response transport without a connection to manage,
+// like the HTTP VPS client.
+type senderOnly struct {
+	resp *models.SyncResponse
+	err  error
+	sent []models.SyncRequest
+}
+
+func (s *senderOnly) SendSyncRequest(req models.SyncRequest) (*models.SyncResponse, error) {
+	s.sent = append(s.sent, req)
+	return s.resp, s.err
+}
+
+func pendingReadings(n int) []cache.PendingReading {
+	var out []cache.PendingReading
+	for i := 1; i <= n; i++ {
+		out = append(out, cache.PendingReading{ID: int64(i), Reading: models.Reading{EPC: "EPC", GatewayID: "gw-001", Timestamp: time.Now()}})
+	}
+	return out
+}
+
+func TestEngine_SyncOnce_DuplicatesCountAsDelivered(t *testing.T) {
+	c := &mockCache{readings: pendingReadings(3)}
+	sender := &senderOnly{resp: &models.SyncResponse{Success: true, Accepted: 1, Duplicates: 2}}
+	engine := NewEngine(c, sender, EngineConfig{GatewayID: "gw-001", CompanyID: "comp-123", BatchSize: 100})
+
+	if err := engine.syncOnce(context.Background()); err != nil {
+		t.Fatalf("syncOnce: %v", err)
+	}
+	if n, _ := c.Count(); n != 0 {
+		t.Errorf("pending after sync = %d, want 0 (duplicates are already stored server-side)", n)
+	}
+	if got := engine.GetStats().TotalSynced; got != 3 {
+		t.Errorf("TotalSynced = %d, want 3", got)
+	}
+}
+
+func TestEngine_SyncOnce_ResendOfAllDuplicatesDoesNotLoop(t *testing.T) {
+	c := &mockCache{readings: pendingReadings(2)}
+	sender := &senderOnly{resp: &models.SyncResponse{Success: true, Accepted: 0, Duplicates: 2}}
+	engine := NewEngine(c, sender, EngineConfig{GatewayID: "gw-001", CompanyID: "comp-123", BatchSize: 100})
+
+	if err := engine.syncOnce(context.Background()); err != nil {
+		t.Fatalf("syncOnce: %v", err)
+	}
+	if n, _ := c.Count(); n != 0 {
+		t.Errorf("pending after all-duplicate resend = %d, want 0", n)
+	}
+}
+
+func TestEngine_SyncOnce_RejectedReadingsAreTerminalByIndex(t *testing.T) {
+	c := &mockCache{readings: pendingReadings(3)}
+	var marked []int64
+	c.markSyncedFn = func(ids []int64) error { marked = append(marked, ids...); return nil }
+	sender := &senderOnly{resp: &models.SyncResponse{Success: true, Accepted: 2, Errors: []string{"reading[0]: epc is required"}}}
+	engine := NewEngine(c, sender, EngineConfig{GatewayID: "gw-001", CompanyID: "comp-123", BatchSize: 100})
+
+	if err := engine.syncOnce(context.Background()); err != nil {
+		t.Fatalf("syncOnce: %v", err)
+	}
+	if len(marked) != 3 {
+		t.Fatalf("marked = %v, want all 3 ids (2 stored + 1 terminal rejection)", marked)
+	}
+	stats := engine.GetStats()
+	if stats.TotalSynced != 2 || stats.TotalFailed != 1 {
+		t.Errorf("TotalSynced=%d TotalFailed=%d, want 2 and 1", stats.TotalSynced, stats.TotalFailed)
+	}
+}
+
+func TestEngine_SyncOnce_InconsistentCountsKeepReadingsPending(t *testing.T) {
+	c := &mockCache{readings: pendingReadings(3)}
+	sender := &senderOnly{resp: &models.SyncResponse{Success: true, Accepted: 1}}
+	engine := NewEngine(c, sender, EngineConfig{GatewayID: "gw-001", CompanyID: "comp-123", BatchSize: 100})
+
+	if err := engine.syncOnce(context.Background()); err != nil {
+		t.Fatalf("syncOnce: %v (unaccounted readings are retried later, not an error)", err)
+	}
+	if n, _ := c.Count(); n != 3 {
+		t.Errorf("pending = %d, want 3 (nothing marked when the response does not account for every reading)", n)
+	}
+}
+
+func TestEngine_SenderWithoutConnection_ReportsLastSyncOutcome(t *testing.T) {
+	c := &mockCache{readings: pendingReadings(1)}
+	sender := &senderOnly{err: errors.New("vps down")}
+	engine := NewEngine(c, sender, EngineConfig{GatewayID: "gw-001", CompanyID: "comp-123", BatchSize: 100})
+
+	if err := engine.syncOnce(context.Background()); err == nil {
+		t.Fatal("syncOnce succeeded; want error")
+	}
+	if engine.GetStats().IsConnected {
+		t.Error("IsConnected = true after a failed request, want false")
+	}
+	if n, _ := c.Count(); n != 1 {
+		t.Errorf("pending after failure = %d, want 1", n)
+	}
+
+	sender.err = nil
+	sender.resp = &models.SyncResponse{Success: true, Accepted: 1}
+	if err := engine.syncOnce(context.Background()); err != nil {
+		t.Fatalf("syncOnce: %v", err)
+	}
+	if !engine.GetStats().IsConnected {
+		t.Error("IsConnected = false after a successful request, want true")
+	}
+	if len(sender.sent) != 2 || sender.sent[1].GatewayID != "gw-001" || sender.sent[1].CompanyID != "comp-123" {
+		t.Errorf("requests = %+v, want 2 with gateway/company ids", sender.sent)
+	}
+}

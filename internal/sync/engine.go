@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/cache"
-	"github.com/amg-rfid/amg-rfid-gateway/internal/wsclient"
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
 )
 
@@ -19,8 +21,20 @@ type Cache interface {
 	Count() (int, error)
 }
 
-// WSClient interface is defined in internal/wsclient/interfaces.go
-// Use wsclient.WSClient instead of local definition
+// Sender delivers a batch of readings to the cloud and returns its verdict.
+type Sender interface {
+	SendSyncRequest(req models.SyncRequest) (*models.SyncResponse, error)
+}
+
+// connectionManager is implemented by senders that hold a connection
+// (WebSocket). Request/response senders (HTTP) do not implement it.
+type connectionManager interface {
+	IsConnected() bool
+	Reconnect() error
+}
+
+// rejectedIndex matches a per-reading rejection: "reading[<index>]: <reason>".
+var rejectedIndex = regexp.MustCompile(`^reading\[(\d+)\]:`)
 
 // EngineConfig holds configuration for the sync engine
 type EngineConfig struct {
@@ -52,7 +66,8 @@ func (c EngineConfig) Validate() error {
 type Engine struct {
 	config     EngineConfig
 	cache      Cache
-	client     wsclient.WSClient
+	client     Sender
+	lastSyncOK bool
 	running    bool
 	stopCh     chan struct{}
 	wg         sync.WaitGroup
@@ -74,7 +89,7 @@ type Stats struct {
 }
 
 // NewEngine creates a new sync engine
-func NewEngine(cache Cache, client wsclient.WSClient, config EngineConfig) *Engine {
+func NewEngine(cache Cache, client Sender, config EngineConfig) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Engine{
 		config: config,
@@ -130,7 +145,11 @@ func (e *Engine) GetStats() Stats {
 
 	stats := e.stats
 	stats.GatewayID = e.config.GatewayID
-	stats.IsConnected = e.client.IsConnected()
+	if conn, ok := e.client.(connectionManager); ok {
+		stats.IsConnected = conn.IsConnected()
+	} else {
+		stats.IsConnected = e.lastSyncOK
+	}
 
 	// Get pending count from cache
 	if count, err := e.cache.Count(); err == nil {
@@ -202,10 +221,9 @@ func (e *Engine) syncOnce(ctx context.Context) error {
 	default:
 	}
 
-	// Check if connected
-	if !e.client.IsConnected() {
-		// Try to reconnect with context check
-		if err := e.client.Reconnect(); err != nil {
+	// Connection-based senders must be connected first
+	if conn, ok := e.client.(connectionManager); ok && !conn.IsConnected() {
+		if err := conn.Reconnect(); err != nil {
 			return fmt.Errorf("not connected and reconnect failed: %w", err)
 		}
 	}
@@ -245,30 +263,62 @@ func (e *Engine) syncOnce(ctx context.Context) error {
 
 	// Send to cloud
 	resp, err := e.client.SendSyncRequest(req)
+	e.mu.Lock()
+	e.lastSyncOK = err == nil
+	e.mu.Unlock()
 	if err != nil {
 		e.handleFailure(len(readings))
 		return fmt.Errorf("sync request failed: %w", err)
 	}
 
-	// Handle response
-	if resp.Success {
-		// Mark synced readings
-		syncedCount := resp.Accepted
-		if syncedCount > 0 && syncedCount <= len(ids) {
-			syncedIDs := ids[:syncedCount]
-			if err := e.cache.MarkSynced(syncedIDs); err != nil {
-				// Track partial failure
-				e.handlePartialFailure(syncedCount, len(ids)-syncedCount)
-				return fmt.Errorf("failed to mark %d of %d readings as synced: %w", len(ids)-syncedCount, len(ids), err)
-			}
-		}
-
-		e.handleSuccess(syncedCount)
-	} else {
+	if !resp.Success {
 		e.handleFailure(len(readings))
+		return nil
 	}
 
+	// The server stored (accepted) or already had (duplicates) every reading
+	// except the ones it rejected by index. Rejections are terminal: a resend
+	// would be rejected again, so they leave the queue too.
+	rejected := rejectedIndexes(resp.Errors, len(ids))
+	delivered := resp.Accepted + resp.Duplicates
+	if delivered < 0 || delivered+rejected != len(ids) {
+		// The response does not account for every reading: keep them all
+		// pending and retry later rather than guess which ones landed.
+		log.Printf("[Sync] response accounts for %d of %d readings (accepted %d, duplicates %d, rejected %d); retrying later",
+			delivered+rejected, len(ids), resp.Accepted, resp.Duplicates, rejected)
+		e.handleFailure(len(ids))
+		return nil
+	}
+
+	if err := e.cache.MarkSynced(ids); err != nil {
+		e.handlePartialFailure(0, len(ids))
+		return fmt.Errorf("failed to mark %d readings as synced: %w", len(ids), err)
+	}
+	if rejected > 0 {
+		log.Printf("[Sync] server rejected %d of %d readings: %v", rejected, len(ids), resp.Errors)
+	}
+	e.handlePartialFailure(delivered, rejected)
+	e.mu.Lock()
+	e.retryCount = 0
+	e.mu.Unlock()
 	return nil
+}
+
+// rejectedIndexes counts the distinct in-range request indexes named by
+// "reading[<index>]: <reason>" errors.
+func rejectedIndexes(errs []string, n int) int {
+	seen := make(map[int]bool)
+	for _, msg := range errs {
+		m := rejectedIndex.FindStringSubmatch(msg)
+		if m == nil {
+			continue
+		}
+		i, err := strconv.Atoi(m[1])
+		if err == nil && i >= 0 && i < n {
+			seen[i] = true
+		}
+	}
+	return len(seen)
 }
 
 // handleSuccess updates stats on successful sync

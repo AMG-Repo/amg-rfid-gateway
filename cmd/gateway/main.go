@@ -31,7 +31,6 @@ import (
 	"github.com/amg-rfid/amg-rfid-gateway/internal/verify"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/version"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/web"
-	"github.com/amg-rfid/amg-rfid-gateway/internal/wsclient"
 )
 
 const (
@@ -142,9 +141,6 @@ func main() {
 		log.Printf("Web server initialized on %s:%d", cfg.WebListenAddr, cfg.WebPort)
 	}
 
-	// Initialize WebSocket client
-	wsClient := wsclient.NewClient(cfg.CloudURL, ts)
-
 	// Initialize sync engine
 	syncConfig := syncpkg.EngineConfig{
 		GatewayID:    cfg.GatewayID,
@@ -153,7 +149,8 @@ func main() {
 		BatchSize:    cfg.BatchSize,
 		MaxRetries:   cfg.MaxRetries,
 	}
-	syncEngine := syncpkg.NewEngine(cacheStore, wsClient, syncConfig)
+	// Raw readings are uploaded over HTTPS (POST /api/v1/gateway/sync) with the device token
+	syncEngine := syncpkg.NewEngine(cacheStore, vpsClient, syncConfig)
 
 	// Initialize health monitor
 	healthMonitor := health.NewMonitor(cfg.GatewayID, cfg.CompanyID, version.Version, cacheStore, syncEngine)

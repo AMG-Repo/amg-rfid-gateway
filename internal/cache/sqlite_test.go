@@ -1191,3 +1191,32 @@ func TestMigratePendingConfirmations_AddsNextAttemptAt(t *testing.T) {
 		c.Close()
 	}
 }
+
+// Rows written by earlier gateways store the timestamp as Go's time.String(),
+// including the monotonic clock suffix; they must read back with their real time.
+func TestSQLite_GetUnsynced_ParsesStoredTimeStringWithMonotonicSuffix(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cache.db")
+	cache, err := NewSQLite(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	defer cache.Close()
+
+	_, err = cache.db.Exec(`INSERT INTO pending_readings (antenna_id, gateway_id, epc, rssi, timestamp, synced, retry_count)
+		VALUES ('UR4-001', 'e2e-gateway', 'E2806995000050104CF452C0', -60, '2026-11-06 17:38:00.619618357 -0600 CST m=+103.845681204', 0, 0)`)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	got, err := cache.GetUnsynced(10)
+	if err != nil {
+		t.Fatalf("GetUnsynced: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("GetUnsynced returned %d rows, want 1", len(got))
+	}
+	want := time.Date(2026, 11, 6, 23, 38, 0, 619618357, time.UTC)
+	if !got[0].Timestamp.Equal(want) {
+		t.Errorf("Timestamp = %v, want %v", got[0].Timestamp, want)
+	}
+}
