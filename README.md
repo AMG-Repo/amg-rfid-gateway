@@ -47,11 +47,11 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 │                  └────────────────┘                          │
 │                                                              │
 └──────────────────────────┬───────────────────────────────────┘
-                           │ HTTPS/WSS
+                           │ HTTPS (device token)
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    Cloud Backend                             │
-│              api.amg-rfid.com/api/v1/rfid/sync              │
+│            api.amg-rfid.com/api/v1/gateway/sync             │
 └─────────────────────────────────────────────────────────────┘
 ```
 

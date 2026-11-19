@@ -478,3 +478,43 @@ func TestEngine_SenderWithoutConnection_ReportsLastSyncOutcome(t *testing.T) {
 		t.Errorf("requests = %+v, want 2 with gateway/company ids", sender.sent)
 	}
 }
+
+func TestEngine_SyncOnce_NegativeCountsKeepReadingsPending(t *testing.T) {
+	c := &mockCache{readings: pendingReadings(3)}
+	sender := &senderOnly{resp: &models.SyncResponse{Success: true, Accepted: -1, Duplicates: 4}}
+	engine := NewEngine(c, sender, EngineConfig{GatewayID: "gw-001", CompanyID: "comp-123", BatchSize: 100})
+
+	if err := engine.syncOnce(context.Background()); err != nil {
+		t.Fatalf("syncOnce: %v", err)
+	}
+	if n, _ := c.Count(); n != 3 {
+		t.Errorf("pending = %d, want 3 (malformed counts must not drain the batch)", n)
+	}
+}
+
+func TestEngine_SyncOnce_CapsBatchAtServerLimit(t *testing.T) {
+	c := &mockCache{readings: pendingReadings(MaxReadingsPerRequest + 20)}
+	sender := &senderOnly{resp: &models.SyncResponse{Success: true, Accepted: MaxReadingsPerRequest}}
+	engine := NewEngine(c, sender, EngineConfig{GatewayID: "gw-001", CompanyID: "comp-123", BatchSize: 1000})
+
+	if err := engine.syncOnce(context.Background()); err != nil {
+		t.Fatalf("syncOnce: %v", err)
+	}
+	if len(sender.sent) != 1 || len(sender.sent[0].Readings) != MaxReadingsPerRequest {
+		t.Fatalf("sent %d readings, want %d", len(sender.sent[0].Readings), MaxReadingsPerRequest)
+	}
+	if n, _ := c.Count(); n != 20 {
+		t.Errorf("pending = %d, want 20", n)
+	}
+}
+
+func TestEngine_SenderWithoutConnection_IdleGatewayIsNotOffline(t *testing.T) {
+	engine := NewEngine(&mockCache{}, &senderOnly{}, EngineConfig{GatewayID: "gw-001", CompanyID: "comp-123", BatchSize: 100})
+
+	if err := engine.syncOnce(context.Background()); err != nil {
+		t.Fatalf("syncOnce: %v", err)
+	}
+	if !engine.GetStats().IsConnected {
+		t.Error("IsConnected = false for an idle gateway with no failed request, want true")
+	}
+}

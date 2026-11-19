@@ -33,6 +33,10 @@ type connectionManager interface {
 	Reconnect() error
 }
 
+// MaxReadingsPerRequest is the most readings the VPS accepts in one sync
+// request; larger batches are rejected whole with 400.
+const MaxReadingsPerRequest = 500
+
 // rejectedIndex matches a per-reading rejection: "reading[<index>]: <reason>".
 var rejectedIndex = regexp.MustCompile(`^reading\[(\d+)\]:`)
 
@@ -95,9 +99,11 @@ func NewEngine(cache Cache, client Sender, config EngineConfig) *Engine {
 		config: config,
 		cache:  cache,
 		client: client,
-		stopCh: make(chan struct{}),
-		ctx:    ctx,
-		cancel: cancel,
+		// No request has failed yet: an idle gateway is not offline.
+		lastSyncOK: true,
+		stopCh:     make(chan struct{}),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 }
 
@@ -229,7 +235,11 @@ func (e *Engine) syncOnce(ctx context.Context) error {
 	}
 
 	// Get unsynced readings
-	readings, err := e.cache.GetUnsynced(e.config.BatchSize)
+	batchSize := e.config.BatchSize
+	if batchSize > MaxReadingsPerRequest {
+		batchSize = MaxReadingsPerRequest
+	}
+	readings, err := e.cache.GetUnsynced(batchSize)
 	if err != nil {
 		return fmt.Errorf("failed to get unsynced: %w", err)
 	}
@@ -281,7 +291,7 @@ func (e *Engine) syncOnce(ctx context.Context) error {
 	// would be rejected again, so they leave the queue too.
 	rejected := rejectedIndexes(resp.Errors, len(ids))
 	delivered := resp.Accepted + resp.Duplicates
-	if delivered < 0 || delivered+rejected != len(ids) {
+	if resp.Accepted < 0 || resp.Duplicates < 0 || delivered+rejected != len(ids) {
 		// The response does not account for every reading: keep them all
 		// pending and retry later rather than guess which ones landed.
 		log.Printf("[Sync] response accounts for %d of %d readings (accepted %d, duplicates %d, rejected %d); retrying later",
@@ -319,16 +329,6 @@ func rejectedIndexes(errs []string, n int) int {
 		}
 	}
 	return len(seen)
-}
-
-// handleSuccess updates stats on successful sync
-func (e *Engine) handleSuccess(count int) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	e.stats.LastSync = time.Now()
-	e.stats.TotalSynced += int64(count)
-	e.retryCount = 0
 }
 
 // handleFailure updates stats on failed sync
