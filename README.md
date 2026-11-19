@@ -10,7 +10,7 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 - **Auto-Detect Configuration**: Binary automatically finds config.yaml in standard locations
 - **TUI Configurator**: Terminal-based configuration with full settings editing
 - **Local Caching**: SQLite-based buffering for offline operation
-- **Automatic Sync**: Batches readings to the cloud via secure WebSocket/HTTP
+- **Automatic Sync**: Batches readings to the cloud over HTTPS (`POST /api/v1/gateway/sync`) with the device token
 - **Multi-Antenna Support**: Connect multiple antennas simultaneously
 - **Per-Antenna Protocol Config**: Configure each antenna protocol independently (`generic` by default)
 - **Web UI**: Built-in web interface for manual tag confirmation
@@ -47,11 +47,11 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 │                  └────────────────┘                          │
 │                                                              │
 └──────────────────────────┬───────────────────────────────────┘
-                           │ HTTPS/WSS
+                           │ HTTPS (device token)
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    Cloud Backend                             │
-│              api.amg-rfid.com/api/v1/rfid/sync              │
+│            api.amg-rfid.com/api/v1/gateway/sync             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -264,7 +264,7 @@ gateway_id: "rpi-gateway-001"
 company_id: "your-company-uuid"
 
 # Cloud backend connection
-cloud_url: "wss://api.your-domain.com/ws"
+cloud_url: "wss://api.your-domain.com/ws"  # Validated but unused: readings sync over HTTPS (vps_api_url)
 gateway_credential_file: "/etc/amg-rfid-gateway/gateway.secret"
 vps_api_url: "https://api.your-domain.com"  # Backend REST API base URL (token endpoint, tool sync)
 
@@ -353,7 +353,7 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 | ------- | ------ | --------- | ------------- |
 | `gateway_id` | string | required | Unique gateway identifier |
 | `company_id` | string | required | Company UUID for authentication |
-| `cloud_url` | string | required | WebSocket URL (wss://) for cloud sync |
+| `cloud_url` | string | required | WebSocket URL (wss://). Still validated, but no longer used: readings sync over HTTPS to `vps_api_url` |
 | `gateway_credential_file` | string | required | Path to a mode 0600 file containing the device secret issued by the backend |
 | `sync_interval` | duration | 30s | How often to sync to cloud |
 | `batch_size` | int | 100 | Readings per sync request |
@@ -532,7 +532,7 @@ The gateway communicates with the cloud backend using these endpoints:
 
 | Endpoint | Method | Description |
 | ---------- | -------- | ------------- |
-| `/api/v1/rfid/sync` | POST | Send batch of readings |
+| `/api/v1/gateway/sync` | POST | Send batch of raw readings (Bearer device token; body = SyncRequest, max 500 readings; per-reading rejections in `errors[]` as `reading[<index>]: <reason>`) |
 | `/api/v1/rfid/pending` | GET | Get pending confirmations |
 | `/api/v1/health/gateways` | GET | Health check |
 | `/metrics` | GET | Prometheus metrics |
