@@ -255,7 +255,7 @@ func TestE2EGatewayToCloud(t *testing.T) {
 			AntennaID: "antenna-1",
 			GatewayID: gatewayID,
 			EPC:       "E200341502001080",
-			RSSI:      201,
+			RSSI:      -55,
 			Timestamp: time.Now(),
 		}
 
@@ -300,7 +300,7 @@ func TestE2EGatewayToCloud(t *testing.T) {
 				AntennaID: fmt.Sprintf("antenna-%d", i%2),
 				GatewayID: gatewayID,
 				EPC:       fmt.Sprintf("E20034150200108%d", i),
-				RSSI:      201 + i*2,
+				RSSI:      -55 - i*2,
 				Timestamp: time.Now().Add(time.Duration(i) * time.Second),
 			}
 			if err := testCache.Store(reading); err != nil {
@@ -336,7 +336,7 @@ func TestE2EGatewayToCloud(t *testing.T) {
 			AntennaID: "antenna-reconnect",
 			GatewayID: gatewayID,
 			EPC:       "E20034150200RECONNECT",
-			RSSI:      201,
+			RSSI:      -55,
 			Timestamp: time.Now(),
 		}
 

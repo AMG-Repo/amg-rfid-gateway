@@ -6,16 +6,17 @@ import (
 )
 
 func TestReading_Validation_RawRSSI_Valid(t *testing.T) {
-	// RSSI can now be 0-255 (raw byte value) per REQ-A008
+	// RSSI is signed integer dBm (<= 0, 0 = unknown) per REQ-A008
 	validReadings := []struct {
 		name string
 		rssi int
 	}{
-		{"zero RSSI", 0},
-		{"low RSSI", 50},
-		{"mid RSSI", 128},
-		{"high RSSI (0xC9 = 201)", 201},
-		{"max RSSI (0xFF = 255)", 255},
+		{"zero RSSI (unknown)", 0},
+		{"strongest RSSI -1", -1},
+		{"generic 0xC9 = -55 dBm", -55},
+		{"chainway -66 dBm", -66},
+		{"generic 0x80 = -128 dBm", -128},
+		{"chainway floor -199 dBm", -199},
 	}
 
 	for _, tc := range validReadings {
@@ -36,14 +37,15 @@ func TestReading_Validation_RawRSSI_Valid(t *testing.T) {
 }
 
 func TestReading_Validation_RawRSSI_Invalid(t *testing.T) {
-	// RSSI must be >= 0 (no negative values when storing raw bytes)
+	// RSSI must be <= 0 dBm (positive values are the retired raw/magnitude scale)
 	invalidReadings := []struct {
 		name string
 		rssi int
 	}{
-		{"negative RSSI -1", -1},
-		{"negative RSSI -50", -50},
-		{"negative RSSI -120", -120},
+		{"positive RSSI 1", 1},
+		{"positive RSSI 55", 55},
+		{"old raw byte 201", 201},
+		{"old raw byte 255", 255},
 	}
 
 	for _, tc := range invalidReadings {
@@ -69,7 +71,7 @@ func TestReading_Validation_GatewayIDPopulated(t *testing.T) {
 		AntennaID: "ANT-001",
 		GatewayID: "gw-pi5-001",
 		EPC:       "E200341502001080220A0C64",
-		RSSI:      201,
+		RSSI:      -55,
 		Timestamp: time.Now(),
 	}
 

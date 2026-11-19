@@ -9,7 +9,7 @@ import (
 
 func sessionReading() Reading {
 	first := time.Date(2026, 11, 19, 19, 0, 0, 0, time.UTC)
-	return Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "E280", RSSI: 60, Timestamp: first}
+	return Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "E280", RSSI: -60, Timestamp: first}
 }
 
 func TestReading_JSON_OmitsSessionFieldsWhenUnset(t *testing.T) {

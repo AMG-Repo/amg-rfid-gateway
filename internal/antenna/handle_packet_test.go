@@ -64,7 +64,7 @@ func TestHandlePacket_UIIData(t *testing.T) {
 		0x00,       // ANT
 		0x30, 0x00, // PC = 0x3000
 		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x66, // EPC
-		0xC9, // RSSI = 201
+		0xC9, // RSSI = -55 dBm
 	}
 	// Calculate checksum
 	checksum := calculateTestChecksum(packet[:len(packet)])
@@ -94,8 +94,8 @@ func TestHandlePacket_UIIData(t *testing.T) {
 	if reading.EPC != "E2003411B802011383258566" {
 		t.Errorf("expected EPC 'E2003411B802011383258566', got '%s'", reading.EPC)
 	}
-	if reading.RSSI != 201 {
-		t.Errorf("expected RSSI 201, got %d", reading.RSSI)
+	if reading.RSSI != -55 {
+		t.Errorf("expected RSSI -55, got %d", reading.RSSI)
 	}
 
 	// Verify manager stats
@@ -106,8 +106,8 @@ func TestHandlePacket_UIIData(t *testing.T) {
 	if manager.lastTagEPC != "E2003411B802011383258566" {
 		t.Errorf("expected lastTagEPC 'E2003411B802011383258566', got '%s'", manager.lastTagEPC)
 	}
-	if manager.lastTagRSSI != 201 {
-		t.Errorf("expected lastTagRSSI 201, got %d", manager.lastTagRSSI)
+	if manager.lastTagRSSI != -55 {
+		t.Errorf("expected lastTagRSSI -55, got %d", manager.lastTagRSSI)
 	}
 	manager.mu.RUnlock()
 
@@ -468,7 +468,7 @@ func TestHandlePacket_UsesParseAntennaData(t *testing.T) {
 		0x7c, 0xff, 0xff, 0x20, 0x02, 0x10,
 		0x00, 0x30, 0x00,
 		0xE2, 0x00, 0x34, 0x11, 0xB8, 0x02, 0x01, 0x13, 0x83, 0x25, 0x85, 0x66,
-		0xC9, // RSSI = 201
+		0xC9, // RSSI = -55 dBm
 	}
 	checksum := calculateTestChecksum(packet[:len(packet)])
 	packet = append(packet, checksum)
@@ -486,8 +486,8 @@ func TestHandlePacket_UsesParseAntennaData(t *testing.T) {
 	reading := mockCache.stored[0]
 	mockCache.mu.Unlock()
 
-	if reading.RSSI != 201 {
-		t.Errorf("expected RSSI 201 (from ParseAntennaData), got %d", reading.RSSI)
+	if reading.RSSI != -55 {
+		t.Errorf("expected RSSI -55 (from ParseAntennaData), got %d", reading.RSSI)
 	}
 }
 
@@ -506,7 +506,7 @@ func TestHandlePacket_ProtocolDispatch(t *testing.T) {
 			protocol:     config.ProtocolGeneric,
 			wantStored:   1,
 			wantLastEPC:  "E2003411B802011383258566",
-			wantRSSI:     201,
+			wantRSSI:     -55,
 			wantActivity: true,
 		},
 		{

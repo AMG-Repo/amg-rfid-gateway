@@ -25,7 +25,7 @@ func TestSQLite_Store_ValidReading(t *testing.T) {
 	reading := models.Reading{
 		AntennaID: "ant-1",
 		EPC:       "E200341502001080",
-		RSSI:      201,
+		RSSI:      -55,
 		Timestamp: time.Now(),
 	}
 
@@ -49,7 +49,7 @@ func TestSQLite_Store_InvalidReading(t *testing.T) {
 	reading := models.Reading{
 		AntennaID: "ant-1",
 		EPC:       "", // INVALID
-		RSSI:      201,
+		RSSI:      -55,
 		Timestamp: time.Now(),
 	}
 
@@ -74,7 +74,7 @@ func TestSQLite_Store_CacheClosed(t *testing.T) {
 	reading := models.Reading{
 		AntennaID: "ant-1",
 		EPC:       "E200341502001080",
-		RSSI:      201,
+		RSSI:      -55,
 		Timestamp: time.Now(),
 	}
 
@@ -99,7 +99,7 @@ func TestSQLite_GetUnsynced(t *testing.T) {
 		reading := models.Reading{
 			AntennaID: "ant-1",
 			EPC:       "EPC-" + string(rune('A'+i)),
-			RSSI:      201,
+			RSSI:      -55,
 			Timestamp: time.Now(),
 		}
 		if err := cache.Store(reading); err != nil {
@@ -137,7 +137,7 @@ func TestSQLite_MarkSynced(t *testing.T) {
 	reading := models.Reading{
 		AntennaID: "ant-1",
 		EPC:       "EPC-TEST",
-		RSSI:      201,
+		RSSI:      -55,
 		Timestamp: time.Now(),
 	}
 	if err := cache.Store(reading); err != nil {
@@ -191,7 +191,7 @@ func TestSQLite_Count(t *testing.T) {
 	reading := models.Reading{
 		AntennaID: "ant-1",
 		EPC:       "EPC-TEST",
-		RSSI:      201,
+		RSSI:      -55,
 		Timestamp: time.Now(),
 	}
 	if err := cache.Store(reading); err != nil {
@@ -236,7 +236,7 @@ func TestSQLite_ConcurrentStore(t *testing.T) {
 				reading := models.Reading{
 					AntennaID: "ant-1",
 					EPC:       "EPC-" + string(rune('A'+goroutineID)) + "-" + string(rune('0'+j)),
-					RSSI:      201,
+					RSSI:      -55,
 					Timestamp: time.Now(),
 				}
 				if err := cache.Store(reading); err != nil {
@@ -1229,7 +1229,7 @@ func TestSQLite_StoresAndReturnsSessionFields(t *testing.T) {
 	defer cache.Close()
 
 	first := time.Date(2026, 11, 19, 19, 0, 0, 0, time.UTC)
-	r := models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "E280", RSSI: 60, Timestamp: first,
+	r := models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "E280", RSSI: -60, Timestamp: first,
 		LastSeen: first.Add(4 * time.Second), ReadCount: 312}
 	if err := cache.Store(r); err != nil {
 		t.Fatalf("Store: %v", err)
@@ -1258,7 +1258,7 @@ func TestSQLite_MigratesQueueWithoutSessionColumns(t *testing.T) {
 		id INTEGER PRIMARY KEY AUTOINCREMENT, antenna_id TEXT NOT NULL, gateway_id TEXT NOT NULL,
 		epc TEXT NOT NULL, rssi INTEGER NOT NULL, timestamp DATETIME NOT NULL,
 		synced BOOLEAN DEFAULT 0, retry_count INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
-		INSERT INTO pending_readings (antenna_id, gateway_id, epc, rssi, timestamp) VALUES ('almacen', 'gw', 'OLD', 50, '2026-11-19 12:00:00.5 -0600 CST');`)
+		INSERT INTO pending_readings (antenna_id, gateway_id, epc, rssi, timestamp) VALUES ('almacen', 'gw', 'OLD', -50, '2026-11-19 12:00:00.5 -0600 CST');`)
 	db.Close()
 	if err != nil {
 		t.Fatalf("seed old schema: %v", err)

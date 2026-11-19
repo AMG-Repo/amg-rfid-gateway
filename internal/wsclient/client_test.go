@@ -258,7 +258,7 @@ func TestClient_SyncRequest(t *testing.T) {
 			{
 				AntennaID: "ant-1",
 				EPC:       "E200341502001080",
-				RSSI:      201,
+				RSSI:      -55,
 				Timestamp: time.Now(),
 			},
 		},

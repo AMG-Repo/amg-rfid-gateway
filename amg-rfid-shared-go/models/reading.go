@@ -34,9 +34,9 @@ func (r Reading) Validate() error {
 		return errors.New("epc cannot be empty")
 	}
 
-	// NEGATIVE: RSSI must be >= 0 (raw byte value 0-255) per REQ-A008
-	if r.RSSI < 0 {
-		return errors.New("rssi cannot be negative")
+	// NEGATIVE: RSSI is signed integer dBm and must be <= 0 (0 = unknown) per REQ-A008
+	if r.RSSI > 0 {
+		return errors.New("rssi must be <= 0 dBm")
 	}
 
 	// NEGATIVE: Timestamp cannot be zero

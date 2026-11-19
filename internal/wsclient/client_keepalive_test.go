@@ -130,8 +130,8 @@ func TestSendSyncRequest_SkipsServerEvents(t *testing.T) {
 		GatewayID: "gw-1",
 		CompanyID: "amg",
 		Readings: []models.Reading{
-			{EPC: "E2801160600002", AntennaID: "ant-1", RSSI: 50, Timestamp: time.Now(), GatewayID: "gw-1"},
-			{EPC: "E2801160600003", AntennaID: "ant-1", RSSI: 51, Timestamp: time.Now(), GatewayID: "gw-1"},
+			{EPC: "E2801160600002", AntennaID: "ant-1", RSSI: -50, Timestamp: time.Now(), GatewayID: "gw-1"},
+			{EPC: "E2801160600003", AntennaID: "ant-1", RSSI: -51, Timestamp: time.Now(), GatewayID: "gw-1"},
 		},
 		Timestamp: time.Now(),
 	}

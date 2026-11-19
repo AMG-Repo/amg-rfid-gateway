@@ -10,7 +10,7 @@ func TestParseAntennaData_CompletePacket(t *testing.T) {
 	// ANT: 0x00
 	// PC: 0x30 0x00 (big-endian) = 0x3000 -> length bits = 6 words = 12 EPC bytes = 24 hex chars
 	// EPC: 0xE2 0x00 0x34 0x11 0xB8 0x02 0x01 0x13 0x83 0x25 0x85 0x66
-	// RSSI: 0xC9 (201 decimal)
+	// RSSI: 0xC9 (raw byte; -55 dBm as int8)
 	data := []byte{
 		0x00,       // ANT
 		0x30, 0x00, // PC (big-endian)
@@ -138,12 +138,34 @@ func TestParsedAntennaData_ToReading(t *testing.T) {
 		t.Errorf("expected EPC 'E2003411B802011383258566', got '%s'", reading.EPC)
 	}
 
-	// RSSI should be raw byte value as positive int (0xC9 = 201)
-	if reading.RSSI != 201 {
-		t.Errorf("expected RSSI 201, got %d", reading.RSSI)
+	// RSSI is converted to signed dBm (0xC9 = -55)
+	if reading.RSSI != -55 {
+		t.Errorf("expected RSSI -55, got %d", reading.RSSI)
 	}
 
 	if reading.Timestamp.IsZero() {
 		t.Error("expected non-zero timestamp")
+	}
+}
+
+func TestRSSIByteToDBm(t *testing.T) {
+	tests := []struct {
+		name string
+		b    byte
+		want int
+	}{
+		{"0xC9 is -55 dBm", 0xC9, -55},
+		{"0x80 is -128 dBm", 0x80, -128},
+		{"0xFF is -1 dBm", 0xFF, -1},
+		{"0x00 is unknown", 0x00, 0},
+		{"0x01 positive dBm is unknown", 0x01, 0},
+		{"0x7F positive dBm is unknown", 0x7F, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := RSSIByteToDBm(tt.b); got != tt.want {
+				t.Errorf("RSSIByteToDBm(0x%02X) = %d, want %d", tt.b, got, tt.want)
+			}
+		})
 	}
 }

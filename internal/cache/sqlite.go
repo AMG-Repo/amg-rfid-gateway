@@ -118,6 +118,12 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 		return nil, fmt.Errorf("failed to migrate reading session columns: %w", err)
 	}
 
+	// RSSI as signed dBm: convert positive magnitudes queued by older gateways
+	if err := migrateSignedRSSI(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate rssi to signed dBm: %w", err)
+	}
+
 	// HAPPY PATH: Create cache instance with buffered channel
 	cache := &SQLite{
 		db:       db,
@@ -654,6 +660,23 @@ func migrateReadingSessionColumns(db *sql.DB) error {
 		if _, err := db.Exec(`ALTER TABLE pending_readings ADD COLUMN read_count INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// migrateSignedRSSI converts pending_readings rows queued before rssi became
+// signed dBm (larger = stronger, 0 = unknown) from the old positive magnitude.
+// Assumption: queued rows come from Chainway, whose old rssi was the dBm
+// magnitude (66 means -66 dBm); the only deployed gateway is a Chainway UR4.
+// It is idempotent: new rows are always <= 0, so a second run matches nothing,
+// and unknown (0) or already signed rows are never touched.
+func migrateSignedRSSI(db *sql.DB) error {
+	res, err := db.Exec(`UPDATE pending_readings SET rssi = -rssi WHERE rssi > 0`)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		fmt.Fprintf(os.Stderr, "[cache] converted %d queued readings to signed dBm rssi\n", n)
 	}
 	return nil
 }
