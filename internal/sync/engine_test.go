@@ -500,8 +500,11 @@ func TestEngine_SyncOnce_CapsBatchAtServerLimit(t *testing.T) {
 	if err := engine.syncOnce(context.Background()); err != nil {
 		t.Fatalf("syncOnce: %v", err)
 	}
-	if len(sender.sent) != 1 || len(sender.sent[0].Readings) != MaxReadingsPerRequest {
-		t.Fatalf("sent %d readings, want %d", len(sender.sent[0].Readings), MaxReadingsPerRequest)
+	if len(sender.sent) != 1 {
+		t.Fatalf("requests sent = %d, want 1", len(sender.sent))
+	}
+	if got := len(sender.sent[0].Readings); got != MaxReadingsPerRequest {
+		t.Fatalf("sent %d readings, want %d", got, MaxReadingsPerRequest)
 	}
 	if n, _ := c.Count(); n != 20 {
 		t.Errorf("pending = %d, want 20", n)
