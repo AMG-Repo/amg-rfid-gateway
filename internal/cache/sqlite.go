@@ -112,6 +112,12 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 		return nil, fmt.Errorf("failed to migrate kanban tables: %w", err)
 	}
 
+	// Reading sessions: last_seen and read_count on queued readings (additive)
+	if err := migrateReadingSessionColumns(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate reading session columns: %w", err)
+	}
+
 	// HAPPY PATH: Create cache instance with buffered channel
 	cache := &SQLite{
 		db:       db,
@@ -615,6 +621,43 @@ func migrateNullableFields(db *sql.DB) error {
 // kanbans and tag_kanban_links are a read-only copy of VPS data rebuilt on
 // every sync; unassigned_tags is the local inbox of reads with no kanban.
 // It is idempotent - safe to run multiple times.
+// migrateReadingSessionColumns adds last_seen and read_count to
+// pending_readings when missing. Existing rows keep NULL / 0: plain readings.
+func migrateReadingSessionColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(pending_readings)`)
+	if err != nil {
+		return err
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid, notNull, pk int
+			name, typ        string
+			dflt             sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		have[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !have["last_seen"] {
+		if _, err := db.Exec(`ALTER TABLE pending_readings ADD COLUMN last_seen DATETIME`); err != nil {
+			return err
+		}
+	}
+	if !have["read_count"] {
+		if _, err := db.Exec(`ALTER TABLE pending_readings ADD COLUMN read_count INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func migrateKanbanTables(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS kanbans (
@@ -783,8 +826,8 @@ func (c *SQLite) flushOnce(readings []models.Reading) error {
 
 	stmt, err := tx.Prepare(`
 		INSERT INTO pending_readings 
-		(antenna_id, gateway_id, epc, rssi, timestamp, synced, retry_count)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		(antenna_id, gateway_id, epc, rssi, timestamp, synced, retry_count, last_seen, read_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare statement: %w", err)
@@ -801,6 +844,8 @@ func (c *SQLite) flushOnce(readings []models.Reading) error {
 			r.Timestamp,
 			false,
 			0,
+			sessionLastSeen(r),
+			r.ReadCount,
 		)
 		if err != nil {
 			failedCount++
@@ -822,7 +867,7 @@ func (c *SQLite) flushOnce(readings []models.Reading) error {
 // GetUnsynced retrieves unsynced readings from the cache.
 func (c *SQLite) GetUnsynced(limit int) ([]PendingReading, error) {
 	rows, err := c.db.Query(`
-		SELECT id, antenna_id, gateway_id, epc, rssi, timestamp, retry_count
+		SELECT id, antenna_id, gateway_id, epc, rssi, timestamp, retry_count, last_seen, read_count
 		FROM pending_readings
 		WHERE synced = 0
 		ORDER BY timestamp ASC
@@ -836,6 +881,7 @@ func (c *SQLite) GetUnsynced(limit int) ([]PendingReading, error) {
 	var readings []PendingReading
 	for rows.Next() {
 		var pr PendingReading
+		var lastSeen sql.NullTime
 		err := rows.Scan(
 			&pr.ID,
 			&pr.AntennaID,
@@ -844,7 +890,12 @@ func (c *SQLite) GetUnsynced(limit int) ([]PendingReading, error) {
 			&pr.RSSI,
 			&pr.Timestamp,
 			&pr.RetryCount,
+			&lastSeen,
+			&pr.ReadCount,
 		)
+		if lastSeen.Valid {
+			pr.LastSeen = lastSeen.Time
+		}
 		if err != nil {
 			// Log scan error but continue processing other rows
 			// We use fmt.Printf here since we don't have access to a logger in this context
@@ -962,4 +1013,12 @@ func (c *SQLite) Close() error {
 	close(c.readings)
 
 	return c.db.Close()
+}
+
+// sessionLastSeen stores NULL for a plain reading, so it reads back as zero.
+func sessionLastSeen(r models.Reading) any {
+	if r.LastSeen.IsZero() {
+		return nil
+	}
+	return r.LastSeen
 }

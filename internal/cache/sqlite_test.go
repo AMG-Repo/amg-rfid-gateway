@@ -1220,3 +1220,60 @@ func TestSQLite_GetUnsynced_ParsesStoredTimeStringWithMonotonicSuffix(t *testing
 		t.Errorf("Timestamp = %v, want %v", got[0].Timestamp, want)
 	}
 }
+
+func TestSQLite_StoresAndReturnsSessionFields(t *testing.T) {
+	cache, err := NewSQLite(filepath.Join(t.TempDir(), "cache.db"))
+	if err != nil {
+		t.Fatalf("NewSQLite: %v", err)
+	}
+	defer cache.Close()
+
+	first := time.Date(2026, 11, 19, 19, 0, 0, 0, time.UTC)
+	r := models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "E280", RSSI: 60, Timestamp: first,
+		LastSeen: first.Add(4 * time.Second), ReadCount: 312}
+	if err := cache.Store(r); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if err := cache.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	got, err := cache.GetUnsynced(10)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("GetUnsynced = %v, %v; want 1 row", got, err)
+	}
+	if !got[0].LastSeen.Equal(r.LastSeen) || got[0].ReadCount != 312 {
+		t.Errorf("session fields = last_seen %v, read_count %d; want %v, 312", got[0].LastSeen, got[0].ReadCount, r.LastSeen)
+	}
+}
+
+// A queue created by an earlier gateway has no session columns: it is migrated
+// in place and its rows read back as plain readings (no last_seen, read_count 0).
+func TestSQLite_MigratesQueueWithoutSessionColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE pending_readings (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, antenna_id TEXT NOT NULL, gateway_id TEXT NOT NULL,
+		epc TEXT NOT NULL, rssi INTEGER NOT NULL, timestamp DATETIME NOT NULL,
+		synced BOOLEAN DEFAULT 0, retry_count INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP);
+		INSERT INTO pending_readings (antenna_id, gateway_id, epc, rssi, timestamp) VALUES ('almacen', 'gw', 'OLD', 50, '2026-11-19 12:00:00.5 -0600 CST');`)
+	db.Close()
+	if err != nil {
+		t.Fatalf("seed old schema: %v", err)
+	}
+
+	cache, err := NewSQLite(path)
+	if err != nil {
+		t.Fatalf("NewSQLite on old schema: %v", err)
+	}
+	defer cache.Close()
+	got, err := cache.GetUnsynced(10)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("GetUnsynced = %v, %v; want the old row", got, err)
+	}
+	if got[0].EPC != "OLD" || !got[0].LastSeen.IsZero() || got[0].ReadCount != 0 {
+		t.Errorf("old row = %+v; want EPC OLD, zero last_seen, read_count 0", got[0])
+	}
+}

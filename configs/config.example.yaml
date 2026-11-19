@@ -15,6 +15,10 @@ gateway_credential_file: "/etc/amg-rfid-gateway/gateway.secret"
 # Synchronization settings
 sync_interval: 30s
 batch_size: 100
+# Reading sessions: repeated reads of one tag are merged and uploaded once
+# the tag goes unread for reading_session_idle, or after reading_session_max.
+reading_session_idle: 5s
+reading_session_max: 60s
 max_retries: 5
 
 # Health and metrics endpoint (loopback-only by default; use an IP literal)

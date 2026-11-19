@@ -14,6 +14,11 @@ type Reading struct {
 	Timestamp  time.Time `json:"timestamp"`
 	Synced     bool      `json:"synced"`
 	RetryCount int       `json:"retry_count"`
+	// LastSeen and ReadCount describe a reading session: Timestamp is the first
+	// read, LastSeen the last one, ReadCount how many reads were merged. Both are
+	// omitted for a plain reading.
+	LastSeen  time.Time `json:"last_seen,omitzero"`
+	ReadCount int       `json:"read_count,omitempty"`
 }
 
 // Validate checks that the reading has valid data.
@@ -37,6 +42,16 @@ func (r Reading) Validate() error {
 	// NEGATIVE: Timestamp cannot be zero
 	if r.Timestamp.IsZero() {
 		return errors.New("timestamp cannot be zero")
+	}
+
+	// NEGATIVE: A session cannot end before it starts
+	if !r.LastSeen.IsZero() && r.LastSeen.Before(r.Timestamp) {
+		return errors.New("last_seen cannot be before timestamp")
+	}
+
+	// NEGATIVE: ReadCount cannot be negative (0 means a plain reading)
+	if r.ReadCount < 0 {
+		return errors.New("read_count cannot be negative")
 	}
 
 	// HAPPY PATH: All validations passed
