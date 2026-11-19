@@ -3,6 +3,7 @@ package readingsession
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -215,9 +216,9 @@ func TestAggregator_KeepsSessionWhenTheQueueRejectsIt(t *testing.T) {
 	}
 }
 
-func TestAggregator_RunFlushesIdleSessionsAndAllOnStop(t *testing.T) {
-	next := &recordingStore{}
-	a := New(next, 50*time.Millisecond, time.Minute)
+func TestAggregator_RunFlushesIdleSessionsAndStopsOnCancel(t *testing.T) {
+	q := &failingQueue{}
+	a := New(q, 50*time.Millisecond, time.Minute)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -225,13 +226,12 @@ func TestAggregator_RunFlushesIdleSessionsAndAllOnStop(t *testing.T) {
 		close(done)
 	}()
 
-	now := time.Now()
-	mustStore(t, a, models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "IDLE", RSSI: 60, Timestamp: now})
+	mustStore(t, a, models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "IDLE", RSSI: 60, Timestamp: time.Now()})
 	deadline := time.Now().Add(2 * time.Second)
-	for len(next.all()) == 0 && time.Now().Before(deadline) {
+	for len(q.all()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if n := len(next.all()); n != 1 {
+	if n := len(q.all()); n != 1 {
 		t.Fatalf("Run stored %d idle sessions; want 1", n)
 	}
 
@@ -242,8 +242,126 @@ func TestAggregator_RunFlushesIdleSessionsAndAllOnStop(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after cancel")
 	}
+	// Shutdown queues the still-open session through ShutdownQueue (main.go).
+	if err := ShutdownQueue(a, q); err != nil {
+		t.Fatal(err)
+	}
+	got := q.all()
+	if len(got) != 2 || got[1].EPC != "OPEN" || !q.flushed {
+		t.Errorf("after shutdown stored %+v (flushed %v); want the open session queued and the buffer flushed", got, q.flushed)
+	}
+}
+
+func TestAggregator_StartsNewSessionWhenTheGapReachesIdle(t *testing.T) {
+	next := &recordingStore{}
+	a := New(next, 5*time.Second, 60*time.Second)
+	mustStore(t, a, read("E1", "almacen", 0, 60))
+	mustStore(t, a, read("E1", "almacen", time.Second, 60))
+	// 5.1 s of silence, but no FlushIdle tick ran in between.
+	mustStore(t, a, read("E1", "almacen", 6100*time.Millisecond, 60))
+
+	if err := a.FlushAll(); err != nil {
+		t.Fatal(err)
+	}
 	got := next.all()
-	if len(got) != 2 || got[1].EPC != "OPEN" {
-		t.Errorf("after stop stored %+v; want the open session flushed", got)
+	if len(got) != 2 {
+		t.Fatalf("stored %d sessions; want 2 (the gap closes the first)", len(got))
+	}
+	if got[0].ReadCount != 2 || !got[0].LastSeen.Equal(t0.Add(time.Second)) || got[1].ReadCount != 1 {
+		t.Errorf("sessions = %+v", got)
+	}
+}
+
+func TestAggregator_StoreAcceptsReadsWhileTheQueueRejectsARolledOverSession(t *testing.T) {
+	next := &recordingStore{err: errors.New("cache is closed")}
+	a := New(next, 5*time.Second, 60*time.Second)
+	mustStore(t, a, read("E1", "almacen", 0, 60))
+	// At max age the old session rolls over; the queue is failing, but the new
+	// raw read must still be accepted (handlers publish it only on success).
+	if err := a.Store(read("E1", "almacen", 60*time.Second, 61)); err != nil {
+		t.Fatalf("Store returned %v while rolling over; want nil", err)
+	}
+
+	next.mu.Lock()
+	next.err = nil
+	next.mu.Unlock()
+	if err := a.FlushAll(); err != nil {
+		t.Fatal(err)
+	}
+	got := next.all()
+	if len(got) != 2 || !got[0].Timestamp.Equal(t0) || !got[1].Timestamp.Equal(t0.Add(60*time.Second)) {
+		t.Errorf("stored %+v; want the rolled-over session and the new one", got)
+	}
+}
+
+func TestAggregator_SessionsCarryWallClockTimesOnly(t *testing.T) {
+	next := &recordingStore{}
+	a := New(next, 5*time.Second, 60*time.Second)
+	now := time.Now() // carries a monotonic reading
+	mustStore(t, a, models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "E1", RSSI: 60, Timestamp: now})
+	mustStore(t, a, models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "E1", RSSI: 60, Timestamp: now.Add(time.Second)})
+	if err := a.FlushAll(); err != nil {
+		t.Fatal(err)
+	}
+	s := next.all()[0]
+	if strings.Contains(s.Timestamp.String(), "m=") || strings.Contains(s.LastSeen.String(), "m=") {
+		t.Errorf("session keeps monotonic readings (comparisons would not match the stored wall clock): %v / %v", s.Timestamp, s.LastSeen)
+	}
+	if s.LastSeen.Before(s.Timestamp) {
+		t.Errorf("last_seen %v before timestamp %v", s.LastSeen, s.Timestamp)
+	}
+}
+
+func TestAggregator_ClosesSessionBeforeReadCountLimit(t *testing.T) {
+	old := maxReadCount
+	maxReadCount = 3
+	defer func() { maxReadCount = old }()
+
+	next := &recordingStore{}
+	a := New(next, 5*time.Second, 60*time.Second)
+	for i := 0; i < 4; i++ {
+		mustStore(t, a, read("E1", "almacen", time.Duration(i)*time.Millisecond, 60))
+	}
+	if err := a.FlushAll(); err != nil {
+		t.Fatal(err)
+	}
+	got := next.all()
+	if len(got) != 2 || got[0].ReadCount != 3 || got[1].ReadCount != 1 {
+		t.Errorf("sessions = %+v; want counts 3 and 1", got)
+	}
+}
+
+type failingQueue struct {
+	recordingStore
+	failEPC string
+	flushed bool
+}
+
+func (q *failingQueue) Store(r models.Reading) error {
+	if r.EPC == q.failEPC {
+		return errors.New("rejected")
+	}
+	return q.recordingStore.Store(r)
+}
+
+func (q *failingQueue) Flush() error {
+	q.flushed = true
+	return nil
+}
+
+func TestShutdownQueue_FlushesTheQueueEvenWhenASessionFails(t *testing.T) {
+	q := &failingQueue{failEPC: "BAD"}
+	a := New(q, 5*time.Second, 60*time.Second)
+	mustStore(t, a, read("GOOD", "almacen", 0, 60))
+	mustStore(t, a, read("BAD", "almacen", 0, 60))
+
+	if err := ShutdownQueue(a, q); err == nil {
+		t.Error("ShutdownQueue hid the failed session")
+	}
+	if !q.flushed {
+		t.Error("queue buffer not flushed after a partial failure; queued sessions could be lost on Close")
+	}
+	if got := q.all(); len(got) != 1 || got[0].EPC != "GOOD" {
+		t.Errorf("queued %+v; want GOOD", got)
 	}
 }
