@@ -295,7 +295,7 @@ type ParsedAntennaData struct {
 	AntennaNum byte   // ANT byte (0x00, 0x01, etc.)
 	PC         uint16 // Protocol Control (2 bytes, big-endian)
 	EPC        string // Electronic Product Code (hex string, no 003000 prefix)
-	RSSI       byte   // Raw RSSI byte (e.g., 0xC9 = 201)
+	RSSI       byte   // Raw RSSI byte (e.g., 0xC9); see RSSIByteToDBm
 	RawHex     string // Full raw hex for debugging
 }
 
@@ -349,8 +349,20 @@ func (p *ParsedAntennaData) ToReading(antennaID, gatewayID string) models.Readin
 		AntennaID: antennaID,
 		GatewayID: gatewayID,
 		EPC:       p.EPC,
-		RSSI:      int(p.RSSI), // Raw byte value as positive int (0-255)
+		RSSI:      RSSIByteToDBm(p.RSSI),
 		Timestamp: time.Now(),
 		Synced:    false,
 	}
+}
+
+// RSSIByteToDBm converts a generic-protocol RSSI byte to signed integer dBm by
+// reading it as int8 (0xC9 -> -55, 0x80 -> -128, 0xFF -> -1). 0x00 and bytes
+// that would decode to a positive dBm (0x01-0x7F) return 0 (unknown).
+// Assumption: the int8 encoding is not yet verified against a real generic reader.
+func RSSIByteToDBm(b byte) int {
+	dbm := int(int8(b))
+	if dbm > 0 {
+		return 0
+	}
+	return dbm
 }

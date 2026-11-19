@@ -20,7 +20,7 @@ func TestShutdownSequence_PersistsOpenSessions(t *testing.T) {
 	a := New(cache, 5*time.Second, time.Minute)
 	now := time.Now()
 	for i := 0; i < 3; i++ {
-		r := models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "E1", RSSI: 60 + i, Timestamp: now.Add(time.Duration(i) * time.Millisecond)}
+		r := models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "E1", RSSI: -62 + i, Timestamp: now.Add(time.Duration(i) * time.Millisecond)}
 		if err := a.Store(r); err != nil {
 			t.Fatal(err)
 		}
@@ -42,7 +42,7 @@ func TestShutdownSequence_PersistsOpenSessions(t *testing.T) {
 	if err != nil || len(got) != 1 {
 		t.Fatalf("after restart GetUnsynced = %v, %v; want 1 session", got, err)
 	}
-	if got[0].ReadCount != 3 || got[0].RSSI != 62 {
-		t.Errorf("session = count %d rssi %d; want 3, 62", got[0].ReadCount, got[0].RSSI)
+	if got[0].ReadCount != 3 || got[0].RSSI != -60 {
+		t.Errorf("session = count %d rssi %d; want 3, -60", got[0].ReadCount, got[0].RSSI)
 	}
 }

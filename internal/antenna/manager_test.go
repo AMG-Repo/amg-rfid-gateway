@@ -217,7 +217,7 @@ func TestAntennaManager_GetStatusAfterData(t *testing.T) {
 	manager.readingCount = 5
 	manager.errorCount = 2
 	manager.lastTagEPC = "E2003411B802011383258566"
-	manager.lastTagRSSI = 201
+	manager.lastTagRSSI = -55
 	manager.lastPacketTime = time.Now()
 	manager.isAutoReading = true
 	manager.mu.Unlock()
@@ -236,8 +236,8 @@ func TestAntennaManager_GetStatusAfterData(t *testing.T) {
 		t.Errorf("expected LastTagEPC 'E2003411B802011383258566', got '%s'", status.LastTagEPC)
 	}
 
-	if status.LastTagRSSI != 201 {
-		t.Errorf("expected LastTagRSSI 201, got %d", status.LastTagRSSI)
+	if status.LastTagRSSI != -55 {
+		t.Errorf("expected LastTagRSSI -55, got %d", status.LastTagRSSI)
 	}
 
 	if !status.AutoReading {

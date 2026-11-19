@@ -50,9 +50,9 @@ func TestAggregator_MergesReadsOfOneTagIntoOneSession(t *testing.T) {
 	next := &recordingStore{}
 	a := New(next, 5*time.Second, 60*time.Second)
 
-	mustStore(t, a, read("E1", "almacen", 0, 60))
-	mustStore(t, a, read("E1", "almacen", 1*time.Second, 72))
-	mustStore(t, a, read("E1", "almacen", 2*time.Second, 65))
+	mustStore(t, a, read("E1", "almacen", 0, -60))
+	mustStore(t, a, read("E1", "almacen", 1*time.Second, -52))
+	mustStore(t, a, read("E1", "almacen", 2*time.Second, -65))
 
 	if got := next.all(); len(got) != 0 {
 		t.Fatalf("stored %d readings while the tag is still being read; want 0", len(got))
@@ -65,8 +65,8 @@ func TestAggregator_MergesReadsOfOneTagIntoOneSession(t *testing.T) {
 		t.Fatalf("stored %d readings; want 1 session", len(got))
 	}
 	s := got[0]
-	if !s.Timestamp.Equal(t0) || !s.LastSeen.Equal(t0.Add(2*time.Second)) || s.ReadCount != 3 || s.RSSI != 72 {
-		t.Errorf("session = first %v last %v count %d rssi %d; want first t0, last t0+2s, count 3, rssi 72",
+	if !s.Timestamp.Equal(t0) || !s.LastSeen.Equal(t0.Add(2*time.Second)) || s.ReadCount != 3 || s.RSSI != -52 {
+		t.Errorf("session = first %v last %v count %d rssi %d; want first t0, last t0+2s, count 3, rssi -52 (strongest)",
 			s.Timestamp, s.LastSeen, s.ReadCount, s.RSSI)
 	}
 	if s.EPC != "E1" || s.AntennaID != "almacen" || s.GatewayID != "gw" {
@@ -80,8 +80,8 @@ func TestAggregator_MergesReadsOfOneTagIntoOneSession(t *testing.T) {
 func TestAggregator_KeepsSessionOpenUntilIdleElapses(t *testing.T) {
 	next := &recordingStore{}
 	a := New(next, 5*time.Second, 60*time.Second)
-	mustStore(t, a, read("E1", "almacen", 0, 60))
-	mustStore(t, a, read("E1", "almacen", 3*time.Second, 60))
+	mustStore(t, a, read("E1", "almacen", 0, -60))
+	mustStore(t, a, read("E1", "almacen", 3*time.Second, -60))
 
 	// 4.9 s after the last read: still open.
 	if err := a.FlushIdle(t0.Add(7900 * time.Millisecond)); err != nil {
@@ -102,10 +102,10 @@ func TestAggregator_KeepsSessionOpenUntilIdleElapses(t *testing.T) {
 func TestAggregator_SeparatesTagsAndAntennas(t *testing.T) {
 	next := &recordingStore{}
 	a := New(next, 5*time.Second, 60*time.Second)
-	mustStore(t, a, read("E1", "entrada", 0, 60))
-	mustStore(t, a, read("E1", "salida", 0, 61))
-	mustStore(t, a, read("E2", "entrada", 0, 62))
-	mustStore(t, a, read("E1", "entrada", time.Second, 63))
+	mustStore(t, a, read("E1", "entrada", 0, -60))
+	mustStore(t, a, read("E1", "salida", 0, -61))
+	mustStore(t, a, read("E2", "entrada", 0, -62))
+	mustStore(t, a, read("E1", "entrada", time.Second, -63))
 
 	if err := a.FlushIdle(t0.Add(10 * time.Second)); err != nil {
 		t.Fatal(err)
@@ -128,7 +128,7 @@ func TestAggregator_ClosesSessionAfterMaxAndStartsANewOne(t *testing.T) {
 	a := New(next, 5*time.Second, 60*time.Second)
 	// One read per second for 65 s: the tag never goes idle.
 	for s := 0; s <= 65; s++ {
-		mustStore(t, a, read("E1", "almacen", time.Duration(s)*time.Second, 60))
+		mustStore(t, a, read("E1", "almacen", time.Duration(s)*time.Second, -60))
 		if err := a.FlushIdle(t0.Add(time.Duration(s) * time.Second)); err != nil {
 			t.Fatal(err)
 		}
@@ -154,7 +154,7 @@ func TestAggregator_ClosesSessionAfterMaxAndStartsANewOne(t *testing.T) {
 func TestAggregator_FlushIdleClosesSessionAtMaxEvenWithoutNewReads(t *testing.T) {
 	next := &recordingStore{}
 	a := New(next, 120*time.Second, 60*time.Second)
-	mustStore(t, a, read("E1", "almacen", 0, 60))
+	mustStore(t, a, read("E1", "almacen", 0, -60))
 	if err := a.FlushIdle(t0.Add(60 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -166,8 +166,8 @@ func TestAggregator_FlushIdleClosesSessionAtMaxEvenWithoutNewReads(t *testing.T)
 func TestAggregator_FlushAllStoresOpenSessions(t *testing.T) {
 	next := &recordingStore{}
 	a := New(next, 5*time.Second, 60*time.Second)
-	mustStore(t, a, read("E1", "almacen", 0, 60))
-	mustStore(t, a, read("E2", "almacen", 0, 60))
+	mustStore(t, a, read("E1", "almacen", 0, -60))
+	mustStore(t, a, read("E2", "almacen", 0, -60))
 
 	if err := a.FlushAll(); err != nil {
 		t.Fatalf("FlushAll: %v", err)
@@ -186,7 +186,7 @@ func TestAggregator_FlushAllStoresOpenSessions(t *testing.T) {
 func TestAggregator_RejectsInvalidReadingWithoutOpeningASession(t *testing.T) {
 	next := &recordingStore{}
 	a := New(next, 5*time.Second, 60*time.Second)
-	if err := a.Store(models.Reading{AntennaID: "almacen", GatewayID: "gw", RSSI: 60, Timestamp: t0}); err == nil {
+	if err := a.Store(models.Reading{AntennaID: "almacen", GatewayID: "gw", RSSI: -60, Timestamp: t0}); err == nil {
 		t.Fatal("Store accepted a reading without EPC")
 	}
 	if err := a.FlushAll(); err != nil {
@@ -200,7 +200,7 @@ func TestAggregator_RejectsInvalidReadingWithoutOpeningASession(t *testing.T) {
 func TestAggregator_KeepsSessionWhenTheQueueRejectsIt(t *testing.T) {
 	next := &recordingStore{err: errors.New("cache is closed")}
 	a := New(next, 5*time.Second, 60*time.Second)
-	mustStore(t, a, read("E1", "almacen", 0, 60))
+	mustStore(t, a, read("E1", "almacen", 0, -60))
 
 	if err := a.FlushIdle(t0.Add(10 * time.Second)); err == nil {
 		t.Fatal("FlushIdle hid the queue error")
@@ -226,7 +226,7 @@ func TestAggregator_RunFlushesIdleSessionsAndStopsOnCancel(t *testing.T) {
 		close(done)
 	}()
 
-	mustStore(t, a, models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "IDLE", RSSI: 60, Timestamp: time.Now()})
+	mustStore(t, a, models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "IDLE", RSSI: -60, Timestamp: time.Now()})
 	deadline := time.Now().Add(2 * time.Second)
 	for len(q.all()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
@@ -235,7 +235,7 @@ func TestAggregator_RunFlushesIdleSessionsAndStopsOnCancel(t *testing.T) {
 		t.Fatalf("Run stored %d idle sessions; want 1", n)
 	}
 
-	mustStore(t, a, models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "OPEN", RSSI: 60, Timestamp: time.Now()})
+	mustStore(t, a, models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "OPEN", RSSI: -60, Timestamp: time.Now()})
 	cancel()
 	select {
 	case <-done:
@@ -255,10 +255,10 @@ func TestAggregator_RunFlushesIdleSessionsAndStopsOnCancel(t *testing.T) {
 func TestAggregator_StartsNewSessionWhenTheGapReachesIdle(t *testing.T) {
 	next := &recordingStore{}
 	a := New(next, 5*time.Second, 60*time.Second)
-	mustStore(t, a, read("E1", "almacen", 0, 60))
-	mustStore(t, a, read("E1", "almacen", time.Second, 60))
+	mustStore(t, a, read("E1", "almacen", 0, -60))
+	mustStore(t, a, read("E1", "almacen", time.Second, -60))
 	// 5.1 s of silence, but no FlushIdle tick ran in between.
-	mustStore(t, a, read("E1", "almacen", 6100*time.Millisecond, 60))
+	mustStore(t, a, read("E1", "almacen", 6100*time.Millisecond, -60))
 
 	if err := a.FlushAll(); err != nil {
 		t.Fatal(err)
@@ -275,10 +275,10 @@ func TestAggregator_StartsNewSessionWhenTheGapReachesIdle(t *testing.T) {
 func TestAggregator_StoreAcceptsReadsWhileTheQueueRejectsARolledOverSession(t *testing.T) {
 	next := &recordingStore{err: errors.New("cache is closed")}
 	a := New(next, 5*time.Second, 60*time.Second)
-	mustStore(t, a, read("E1", "almacen", 0, 60))
+	mustStore(t, a, read("E1", "almacen", 0, -60))
 	// At max age the old session rolls over; the queue is failing, but the new
 	// raw read must still be accepted (handlers publish it only on success).
-	if err := a.Store(read("E1", "almacen", 60*time.Second, 61)); err != nil {
+	if err := a.Store(read("E1", "almacen", 60*time.Second, -61)); err != nil {
 		t.Fatalf("Store returned %v while rolling over; want nil", err)
 	}
 
@@ -298,8 +298,8 @@ func TestAggregator_SessionsCarryWallClockTimesOnly(t *testing.T) {
 	next := &recordingStore{}
 	a := New(next, 5*time.Second, 60*time.Second)
 	now := time.Now() // carries a monotonic reading
-	mustStore(t, a, models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "E1", RSSI: 60, Timestamp: now})
-	mustStore(t, a, models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "E1", RSSI: 60, Timestamp: now.Add(time.Second)})
+	mustStore(t, a, models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "E1", RSSI: -60, Timestamp: now})
+	mustStore(t, a, models.Reading{AntennaID: "almacen", GatewayID: "gw", EPC: "E1", RSSI: -60, Timestamp: now.Add(time.Second)})
 	if err := a.FlushAll(); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestAggregator_ClosesSessionBeforeReadCountLimit(t *testing.T) {
 	next := &recordingStore{}
 	a := New(next, 5*time.Second, 60*time.Second)
 	for i := 0; i < 4; i++ {
-		mustStore(t, a, read("E1", "almacen", time.Duration(i)*time.Millisecond, 60))
+		mustStore(t, a, read("E1", "almacen", time.Duration(i)*time.Millisecond, -60))
 	}
 	if err := a.FlushAll(); err != nil {
 		t.Fatal(err)
@@ -352,8 +352,8 @@ func (q *failingQueue) Flush() error {
 func TestShutdownQueue_FlushesTheQueueEvenWhenASessionFails(t *testing.T) {
 	q := &failingQueue{failEPC: "BAD"}
 	a := New(q, 5*time.Second, 60*time.Second)
-	mustStore(t, a, read("GOOD", "almacen", 0, 60))
-	mustStore(t, a, read("BAD", "almacen", 0, 60))
+	mustStore(t, a, read("GOOD", "almacen", 0, -60))
+	mustStore(t, a, read("BAD", "almacen", 0, -60))
 
 	if err := ShutdownQueue(a, q); err == nil {
 		t.Error("ShutdownQueue hid the failed session")
@@ -403,7 +403,7 @@ func (q *orderedQueue) log() []string {
 func TestShutdownQueue_WaitsForAnInFlightTick(t *testing.T) {
 	q := &orderedQueue{slowEPC: "SLOW", entered: make(chan struct{}), release: make(chan struct{})}
 	a := New(q, 5*time.Second, 60*time.Second)
-	mustStore(t, a, read("SLOW", "almacen", 0, 60))
+	mustStore(t, a, read("SLOW", "almacen", 0, -60))
 
 	tickDone := make(chan error, 1)
 	go func() { tickDone <- a.FlushIdle(t0.Add(10 * time.Second)) }()
@@ -434,7 +434,7 @@ func TestAggregator_ReadsAfterShutdownGoStraightToTheQueue(t *testing.T) {
 	if err := ShutdownQueue(a, q); err != nil {
 		t.Fatal(err)
 	}
-	mustStore(t, a, read("LATE", "almacen", 0, 60))
+	mustStore(t, a, read("LATE", "almacen", 0, -60))
 	got := q.all()
 	if len(got) != 1 || got[0].EPC != "LATE" {
 		t.Fatalf("late read queued as %+v; want it queued immediately", got)
@@ -447,8 +447,8 @@ func TestAggregator_ReadsAfterShutdownGoStraightToTheQueue(t *testing.T) {
 func TestAggregator_BackwardWallClockKeepsLastSeenAfterTimestamp(t *testing.T) {
 	next := &recordingStore{}
 	a := New(next, 5*time.Second, 60*time.Second)
-	mustStore(t, a, read("E1", "almacen", 0, 60))
-	mustStore(t, a, read("E1", "almacen", -30*time.Second, 61)) // clock stepped back
+	mustStore(t, a, read("E1", "almacen", 0, -60))
+	mustStore(t, a, read("E1", "almacen", -30*time.Second, -61)) // clock stepped back
 	if err := a.FlushAll(); err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +473,7 @@ func TestAggregator_RetryListIsCapped(t *testing.T) {
 	next := &recordingStore{err: errors.New("cache is closed")}
 	a := New(next, 5*time.Second, 60*time.Second)
 	for i := 0; i < 4; i++ {
-		mustStore(t, a, read("E1", "almacen", time.Duration(i)*time.Minute, 60))
+		mustStore(t, a, read("E1", "almacen", time.Duration(i)*time.Minute, -60))
 	}
 	_ = a.FlushIdle(t0.Add(10 * time.Minute)) // fails; sessions go to the retry list
 
@@ -499,7 +499,7 @@ func TestAggregator_TickAfterShutdownQueuesNothing(t *testing.T) {
 	next := &recordingStore{err: errors.New("cache is closed")}
 	q := &failingQueue{}
 	a := New(next, 5*time.Second, 60*time.Second)
-	mustStore(t, a, read("E1", "almacen", 0, 60))
+	mustStore(t, a, read("E1", "almacen", 0, -60))
 
 	_ = ShutdownQueue(a, q) // the final flush fails; E1 lands on the retry list
 

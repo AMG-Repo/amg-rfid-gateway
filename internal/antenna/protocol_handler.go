@@ -167,11 +167,11 @@ func (ChainwayProtocolHandler) HandleFrame(ctx PacketContext, frame []byte) erro
 	if loc, ok := ctx.PortLocations[tag.Antenna]; ok && loc != "" {
 		antennaID = loc
 	}
-	// The shared Reading contract (REQ-A008) only accepts RSSI >= 0, so store
-	// the dBm magnitude: -92.9 dBm -> 93. 0 still means unknown.
+	// The shared Reading contract (REQ-A008) stores signed integer dBm:
+	// -92.9 dBm -> -93. 0 means unknown.
 	rssi := 0
 	if tag.RSSIValid {
-		rssi = int(math.Round(math.Abs(tag.RSSI)))
+		rssi = int(math.Round(tag.RSSI))
 	}
 	reading := models.Reading{
 		AntennaID: antennaID,

@@ -35,11 +35,11 @@ func TestReading_Validation_EmptyEPC(t *testing.T) {
 }
 
 func TestReading_Validation_InvalidRSSI(t *testing.T) {
-	// NEGATIVE: RSSI cannot be less than -100
+	// NEGATIVE: RSSI is dBm and cannot be positive
 	r := Reading{
 		AntennaID: "ANT-001",
 		EPC:       "E200341502001080220A0C64",
-		RSSI:      -150,
+		RSSI:      55,
 		Timestamp: time.Now(),
 	}
 
@@ -68,7 +68,7 @@ func TestReading_Validation_Valid(t *testing.T) {
 		AntennaID:  "ANT-001",
 		GatewayID:  "rpi-001",
 		EPC:        "E200341502001080220A0C64",
-		RSSI:       201, // Raw byte value (0xC9) per REQ-A008
+		RSSI:       -55, // Signed dBm (0xC9) per REQ-A008
 		Timestamp:  time.Now(),
 		Synced:     false,
 		RetryCount: 0,
@@ -85,7 +85,7 @@ func TestReading_JSONMarshal(t *testing.T) {
 		AntennaID:  "ANT-001",
 		GatewayID:  "rpi-001",
 		EPC:        "E200341502001080220A0C64",
-		RSSI:       201, // Raw byte value (0xC9) per REQ-A008
+		RSSI:       -55, // Signed dBm (0xC9) per REQ-A008
 		Timestamp:  now,
 		Synced:     true,
 		RetryCount: 2,
@@ -108,8 +108,8 @@ func TestReading_JSONMarshal(t *testing.T) {
 	if result["epc"] != "E200341502001080220A0C64" {
 		t.Errorf("expected epc 'E200341502001080220A0C64', got %v", result["epc"])
 	}
-	if result["rssi"] != float64(201) {
-		t.Errorf("expected rssi 201, got %v", result["rssi"])
+	if result["rssi"] != float64(-55) {
+		t.Errorf("expected rssi -55, got %v", result["rssi"])
 	}
 }
 
@@ -118,7 +118,7 @@ func TestReading_JSONUnmarshal(t *testing.T) {
 		"antenna_id": "ANT-002",
 		"gateway_id": "rpi-002",
 		"epc": "E200341502001080220A0C65",
-		"rssi": 201,
+		"rssi": -55,
 		"timestamp": "2026-04-10T12:30:00Z",
 		"synced": true,
 		"retry_count": 3
@@ -138,8 +138,8 @@ func TestReading_JSONUnmarshal(t *testing.T) {
 	if r.EPC != "E200341502001080220A0C65" {
 		t.Errorf("expected EPC 'E200341502001080220A0C65', got %s", r.EPC)
 	}
-	if r.RSSI != 201 {
-		t.Errorf("expected RSSI 201, got %d", r.RSSI)
+	if r.RSSI != -55 {
+		t.Errorf("expected RSSI -55, got %d", r.RSSI)
 	}
 	if !r.Synced {
 		t.Error("expected Synced to be true")

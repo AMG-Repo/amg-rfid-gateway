@@ -58,7 +58,7 @@ func TestSyncRequest_Validation_Valid(t *testing.T) {
 			{
 				AntennaID: "ANT-001",
 				EPC:       "E200341502001080220A0C64",
-				RSSI:      201, // Raw byte value (0xC9) per REQ-A008
+				RSSI:      -55, // Signed dBm (0xC9) per REQ-A008
 				Timestamp: now,
 			},
 		},
@@ -79,7 +79,7 @@ func TestSyncRequest_JSONMarshal(t *testing.T) {
 			{
 				AntennaID: "ANT-001",
 				EPC:       "E200341502001080220A0C64",
-				RSSI:      201, // Raw byte value (0xC9) per REQ-A008
+				RSSI:      -55, // Signed dBm (0xC9) per REQ-A008
 				Timestamp: now,
 			},
 		},
@@ -117,7 +117,7 @@ func TestSyncRequest_JSONUnmarshal(t *testing.T) {
 			{
 				"antenna_id": "ANT-002",
 				"epc": "E200341502001080220A0C65",
-				"rssi": 201,
+				"rssi": -55,
 				"timestamp": "2026-04-10T12:30:00Z"
 			}
 		],

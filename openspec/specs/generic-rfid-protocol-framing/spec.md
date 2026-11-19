@@ -68,7 +68,7 @@ For response frames, the antenna pipeline MUST read `RTN` at byte index 4, `LENG
 - GIVEN `CCFFFF200210003000E2003411B802011383258566C983`
 - WHEN parsed and decoded using canonical indexes
 - THEN `CID1=0x20`, `RTN=0x02`, `LENGTH=0x10`
-- AND decoded `EPC=E2003411B802011383258566` with `RSSI=201`
+- AND decoded `EPC=E2003411B802011383258566` with `RSSI=-55`
 
 #### Scenario: PC length controls EPC size
 
