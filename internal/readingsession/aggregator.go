@@ -129,23 +129,28 @@ func (a *Aggregator) addClosing(rs ...models.Reading) {
 
 // FlushIdle queues every closed session plus every open session whose tag has
 // not been read for idle, or that has been open for max, as of now. Sessions
-// the queue rejects are kept and retried on the next call.
+// the queue rejects are kept and retried on the next call. After
+// ShutdownQueue it does nothing: only the final flush may touch the queue.
 func (a *Aggregator) FlushIdle(now time.Time) error {
-	return a.flush(func(s *session) bool {
+	return a.flush(false, func(s *session) bool {
 		return now.Sub(s.lastAt) >= a.idle || now.Sub(s.firstAt) >= a.max
 	})
 }
 
 // FlushAll queues every session (shutdown).
 func (a *Aggregator) FlushAll() error {
-	return a.flush(func(*session) bool { return true })
+	return a.flush(true, func(*session) bool { return true })
 }
 
-func (a *Aggregator) flush(closed func(*session) bool) error {
+func (a *Aggregator) flush(final bool, closed func(*session) bool) error {
 	a.flushMu.Lock()
 	defer a.flushMu.Unlock()
 
 	a.mu.Lock()
+	if a.stopped && !final {
+		a.mu.Unlock()
+		return nil
+	}
 	batch := a.closing
 	a.closing = nil
 	for k, s := range a.open {

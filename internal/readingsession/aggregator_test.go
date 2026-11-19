@@ -491,3 +491,25 @@ func TestAggregator_RetryListIsCapped(t *testing.T) {
 		t.Errorf("kept %v and %v; want the two newest sessions in order", got[0].Timestamp, got[1].Timestamp)
 	}
 }
+
+// On the shutdown timeout path the ticker may still be alive: once
+// ShutdownQueue ran, a later tick must not queue anything (the cache may be
+// draining or closed).
+func TestAggregator_TickAfterShutdownQueuesNothing(t *testing.T) {
+	next := &recordingStore{err: errors.New("cache is closed")}
+	q := &failingQueue{}
+	a := New(next, 5*time.Second, 60*time.Second)
+	mustStore(t, a, read("E1", "almacen", 0, 60))
+
+	_ = ShutdownQueue(a, q) // the final flush fails; E1 lands on the retry list
+
+	next.mu.Lock()
+	next.err = nil
+	next.mu.Unlock()
+	if err := a.FlushIdle(t0.Add(10 * time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got := next.all(); len(got) != 0 {
+		t.Errorf("a tick after shutdown queued %+v; want nothing", got)
+	}
+}
