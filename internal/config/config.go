@@ -93,6 +93,11 @@ type GatewayConfig struct {
 	SyncToolsInterval         time.Duration `yaml:"sync_tools_interval"`
 	ConfirmationRetryInterval time.Duration `yaml:"confirmation_retry_interval"`
 
+	// Reading sessions: repeated reads of one tag are merged and queued once
+	// the tag goes unread for ReadingSessionIdle, or after ReadingSessionMax.
+	ReadingSessionIdle time.Duration `yaml:"reading_session_idle"`
+	ReadingSessionMax  time.Duration `yaml:"reading_session_max"`
+
 	// Queue cap configuration (REQ-S004)
 	// Use pointers to distinguish between "not set" (nil) and "set to 0" (unlimited)
 	MaxPendingConfirmations *int `yaml:"max_pending_confirmations,omitempty"` // nil = default 10000, 0 = unlimited
@@ -241,6 +246,17 @@ func (c *GatewayConfig) Validate() error {
 		if err := c.Antennas[i].Validate(); err != nil {
 			return fmt.Errorf("antenna %q is invalid: %w", c.Antennas[i].ID, err)
 		}
+	}
+
+	// NEGATIVE: reading session windows must be positive and max >= idle
+	if c.ReadingSessionIdle < 0 {
+		return errors.New("reading_session_idle must be positive")
+	}
+	if c.ReadingSessionMax < 0 {
+		return errors.New("reading_session_max must be positive")
+	}
+	if c.ReadingSessionIdle > 0 && c.ReadingSessionMax > 0 && c.ReadingSessionMax < c.ReadingSessionIdle {
+		return errors.New("reading_session_max must be at least reading_session_idle")
 	}
 
 	// HAPPY PATH: All validations passed
@@ -732,6 +748,12 @@ func (c *GatewayConfig) ApplyDefaults() {
 	}
 	if c.ConfirmationRetryInterval == 0 {
 		c.ConfirmationRetryInterval = 30 * time.Second
+	}
+	if c.ReadingSessionIdle == 0 {
+		c.ReadingSessionIdle = 5 * time.Second
+	}
+	if c.ReadingSessionMax == 0 {
+		c.ReadingSessionMax = 60 * time.Second
 	}
 
 	// Queue cap defaults (REQ-S004)

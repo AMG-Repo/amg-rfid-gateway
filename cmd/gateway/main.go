@@ -26,6 +26,7 @@ import (
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/monitoring"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/rawtcp"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/readingsession"
 	syncpkg "github.com/amg-rfid/amg-rfid-gateway/internal/sync"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/tui"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/verify"
@@ -84,6 +85,18 @@ func main() {
 	}
 	defer cacheStore.Close()
 	log.Println("Cache initialized")
+
+	// Merge repeated reads of one tag into reading sessions before they reach
+	// the upload queue; the event bus and stats still see every raw read.
+	sessions := readingsession.New(cacheStore, cfg.ReadingSessionIdle, cfg.ReadingSessionMax)
+	sessionsCtx, sessionsCancel := context.WithCancel(context.Background())
+	defer sessionsCancel()
+	sessionsDone := make(chan struct{})
+	go func() {
+		sessions.Run(sessionsCtx, time.Second)
+		close(sessionsDone)
+	}()
+	log.Printf("Reading sessions: idle %s, max %s", cfg.ReadingSessionIdle, cfg.ReadingSessionMax)
 
 	// Initialize event bus
 	eventBus := events.NewEventBus(1000)
@@ -183,7 +196,7 @@ func main() {
 		antennaWg.Add(1)
 		go func(antenna config.AntennaConfig) {
 			defer antennaWg.Done()
-			runAntennaWithReconnect(antennaCtx, antenna, cacheStore, healthMonitor, cfg, antennaProvider, eventBus)
+			runAntennaWithReconnect(antennaCtx, antenna, sessions, healthMonitor, cfg, antennaProvider, eventBus)
 		}(ant)
 	}
 
@@ -269,6 +282,19 @@ func main() {
 		log.Println("All antennas stopped")
 	case <-ctx.Done():
 		log.Println("Shutdown timeout, forcing exit")
+	}
+
+	// Antennas are stopped: queue the reading sessions still open.
+	sessionsCancel()
+	select {
+	case <-sessionsDone:
+	case <-ctx.Done():
+		log.Println("Shutdown timeout while stopping reading sessions")
+	}
+	if err := readingsession.ShutdownQueue(sessions, cacheStore); err != nil {
+		log.Printf("Warning: failed to queue open reading sessions: %v", err)
+	} else {
+		log.Println("Open reading sessions queued")
 	}
 
 	log.Println("Gateway stopped")
@@ -373,7 +399,7 @@ type connGetter interface {
 }
 
 // runAntenna runs a single antenna client using AntennaManager
-func runAntenna(ctx context.Context, antennaCfg config.AntennaConfig, cacheStore *cachepkg.SQLite, monitor *health.Monitor, gwCfg *config.GatewayConfig, antennaProvider *antenna.AntennaManagerProvider, eventBus *events.EventBus) {
+func runAntenna(ctx context.Context, antennaCfg config.AntennaConfig, store antenna.Cache, monitor *health.Monitor, gwCfg *config.GatewayConfig, antennaProvider *antenna.AntennaManagerProvider, eventBus *events.EventBus) {
 	log.Printf("Starting antenna %s at %s:%d", antennaCfg.ID, antennaCfg.IP, antennaCfg.Port)
 
 	// Update health status as connecting
@@ -398,7 +424,7 @@ func runAntenna(ctx context.Context, antennaCfg config.AntennaConfig, cacheStore
 	log.Printf("Antenna %s connected", antennaCfg.ID)
 
 	// Create and start AntennaManager
-	manager := antenna.NewAntennaManager(client, antennaCfg, gwCfg, cacheStore)
+	manager := antenna.NewAntennaManager(client, antennaCfg, gwCfg, store)
 
 	// Set the connection for data reading
 	manager.SetConn(conn)
@@ -430,7 +456,7 @@ func runAntenna(ctx context.Context, antennaCfg config.AntennaConfig, cacheStore
 
 // runAntennaWithReconnect wraps runAntenna with exponential backoff reconnection.
 // Reconnects on connection loss with backoff: 1s → 2s → 4s → 8s → 16s → 30s (max)
-func runAntennaWithReconnect(ctx context.Context, antennaCfg config.AntennaConfig, cacheStore *cachepkg.SQLite, monitor *health.Monitor, gwCfg *config.GatewayConfig, antennaProvider *antenna.AntennaManagerProvider, eventBus *events.EventBus) {
+func runAntennaWithReconnect(ctx context.Context, antennaCfg config.AntennaConfig, store antenna.Cache, monitor *health.Monitor, gwCfg *config.GatewayConfig, antennaProvider *antenna.AntennaManagerProvider, eventBus *events.EventBus) {
 	attempt := 0
 
 	for {
@@ -442,7 +468,7 @@ func runAntennaWithReconnect(ctx context.Context, antennaCfg config.AntennaConfi
 		}
 
 		// Run the antenna (this blocks until connection drops or context cancelled)
-		runAntenna(ctx, antennaCfg, cacheStore, monitor, gwCfg, antennaProvider, eventBus)
+		runAntenna(ctx, antennaCfg, store, monitor, gwCfg, antennaProvider, eventBus)
 
 		// Check if context was cancelled
 		select {

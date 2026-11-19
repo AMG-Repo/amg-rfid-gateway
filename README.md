@@ -11,6 +11,7 @@ This gateway acts as a bridge between RFID antennas (using raw TCP protocol) and
 - **TUI Configurator**: Terminal-based configuration with full settings editing
 - **Local Caching**: SQLite-based buffering for offline operation
 - **Automatic Sync**: Batches readings to the cloud over HTTPS (`POST /api/v1/gateway/sync`) with the device token
+- **Reading Sessions**: Repeated reads of one tag on one antenna are merged into a single session (first read, last read, read count, max RSSI) that is uploaded once the tag goes unread for `reading_session_idle` (default 5s) or after `reading_session_max` (default 60s); the local panel and movement detection still see every read
 - **Multi-Antenna Support**: Connect multiple antennas simultaneously
 - **Per-Antenna Protocol Config**: Configure each antenna protocol independently (`generic` by default)
 - **Web UI**: Built-in web interface for manual tag confirmation
@@ -271,6 +272,8 @@ vps_api_url: "https://api.your-domain.com"  # Backend REST API base URL (token e
 # Synchronization settings
 sync_interval: 30s
 batch_size: 100
+reading_session_idle: 5s   # queue a tag session after 5s without reading it
+reading_session_max: 60s   # queue it after 60s even if the tag is still read
 max_retries: 5
 
 # Health check endpoint port
@@ -357,6 +360,8 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 | `gateway_credential_file` | string | required | Path to a mode 0600 file containing the device secret issued by the backend |
 | `sync_interval` | duration | 30s | How often to sync to cloud |
 | `batch_size` | int | 100 | Readings per sync request |
+| `reading_session_idle` | duration | 5s | A tag session is closed and queued after this long without reading the tag |
+| `reading_session_max` | duration | 60s | A tag session still being read is closed and queued after this long (must be >= `reading_session_idle`) |
 | `max_retries` | int | 5 | Max retry attempts for failed syncs |
 | `health_port` | int | 8080 | HTTP port for health/metrics |
 | `data_path` | string | ./data | SQLite database location |
