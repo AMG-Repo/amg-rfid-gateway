@@ -106,9 +106,8 @@ func TestToolsSync_KanbanLinksAndCatalogCachedOnSync(t *testing.T) {
 	if len(catalogs[0]) != 2 || catalogs[0][1].Code != "TOY-1" {
 		t.Errorf("expected catalog of 2 kanbans, got %+v", catalogs[0])
 	}
-	if !ts.IsVPSOnline() {
-		t.Error("expected VPS online after sync")
-	}
+	// The catalog is cached just before the sync marks the VPS online (#137).
+	waitFor(t, "VPS online after sync", ts.IsVPSOnline)
 }
 
 // The cloud endpoint may not exist yet (404) or fail: tools/users sync must still succeed.
