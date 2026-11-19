@@ -119,3 +119,26 @@ func TestSendSyncRequest_NonSuccessStatusIsAnError(t *testing.T) {
 		})
 	}
 }
+
+// The VPS rejects a reading without rssi ("rssi is required"), so a zero
+// RSSI must still be serialized.
+func TestSendSyncRequest_AlwaysSendsRSSIEvenWhenZero(t *testing.T) {
+	var raw map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"success":true,"accepted":1}`))
+	}))
+	defer server.Close()
+
+	req := syncRequestFixture()
+	req.Readings[0].RSSI = 0
+	if _, err := NewVPSClient(server.URL, 5*time.Second, StaticToken("tok")).SendSyncRequest(req); err != nil {
+		t.Fatalf("SendSyncRequest: %v", err)
+	}
+	reading := raw["readings"].([]any)[0].(map[string]any)
+	if rssi, ok := reading["rssi"]; !ok || rssi != float64(0) {
+		t.Errorf("reading rssi = %v (present %v); want 0 serialized", rssi, ok)
+	}
+}
