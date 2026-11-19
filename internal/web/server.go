@@ -189,10 +189,11 @@ func (s *Server) Stop(ctx context.Context) error {
 		s.recorderCancel()
 	}
 
-	// Close all SSE clients
+	// Close all SSE clients through the bus, which owns the channels: it
+	// closes each one once, so the handler's deferred Unsubscribe is a no-op.
 	s.mu.Lock()
 	for ch := range s.sseClients {
-		close(ch)
+		s.eventBus.Unsubscribe(ch)
 		delete(s.sseClients, ch)
 	}
 	s.mu.Unlock()
