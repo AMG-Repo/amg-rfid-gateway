@@ -356,15 +356,9 @@ func TestToolsSync_SyncToolsAndUsers(t *testing.T) {
 		t.Fatal("Timeout waiting for users upsert")
 	}
 
-	// Small delay to allow setVPSOnline(true) to complete after UpsertUsers returns.
-	// This prevents a race condition where the channel send (buffered, non-blocking)
-	// returns before performSync() has called setVPSOnline(true).
-	time.Sleep(10 * time.Millisecond)
-
-	// Check VPS is marked as online
-	if !ts.IsVPSOnline() {
-		t.Error("VPS should be marked as online after successful sync")
-	}
+	// UpsertUsers signals before performSync() calls setVPSOnline(true), so wait
+	// for it instead of asserting right away.
+	waitFor(t, "VPS online after successful sync", ts.IsVPSOnline)
 }
 
 // TestToolsSync_VPSOffline tests behavior when VPS is unreachable
