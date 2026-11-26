@@ -72,7 +72,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 			retry_count INTEGER DEFAULT 0,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced_at DATETIME,
-			next_attempt_at DATETIME
+			next_attempt_at DATETIME,
+			confirmation_id TEXT,
+			occurred_at TEXT
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_tool_tags_uii ON tool_tags(uii);

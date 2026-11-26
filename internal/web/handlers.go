@@ -11,6 +11,7 @@ import (
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 	syncpkg "github.com/amg-rfid/amg-rfid-gateway/internal/sync"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/uuidutil"
 )
 
 const (
@@ -186,6 +187,12 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Identify this confirmation once: the online send, the local record and
+	// every retry of the queued row carry the same id and instant, so the VPS
+	// dedupes replays.
+	confirmationID := uuidutil.NewV4()
+	occurredAt := time.Now().UTC()
+
 	// Try VPS first (online mode)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -199,13 +206,12 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		if antennaID == "" {
 			antennaID = "manual"
 		}
-		sentAt := time.Now()
-		err := s.vpsClient.SendConfirmationV2(s.companyID, req.UII, req.Action, antennaID)
+		err := s.vpsClient.SendIdempotentConfirmation(s.companyID, req.UII, req.Action, antennaID, confirmationID, occurredAt)
 		if err == nil {
 			// Keep a local record as already synced. The VPS has the confirmation,
 			// so a failure here is logged and never fails the request.
 			s.applyMovementLocation(req.UII, req.Action)
-			if err := s.store.RecordSyncedConfirmation(req.UII, req.Action, antennaID, sentAt); err != nil {
+			if err := s.store.RecordSyncedConfirmationWithID(req.UII, req.Action, antennaID, confirmationID, occurredAt); err != nil {
 				log.Printf("[Web] Failed to record synced confirmation for %s: %v", req.UII, err)
 			}
 			s.jsonResponse(w, ConfirmResponse{
@@ -235,7 +241,7 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get max pending confirmations from config (0 = unlimited)
-	_, err = s.store.CreateConfirmation(req.UII, req.Action, antennaID, time.Now(), s.maxPendingConfirmations())
+	_, err = s.store.CreateConfirmationWithID(req.UII, req.Action, antennaID, confirmationID, occurredAt, s.maxPendingConfirmations())
 	if errors.Is(err, localstore.ErrQueueFull) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInsufficientStorage)

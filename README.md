@@ -545,6 +545,7 @@ The gateway communicates with the cloud backend using these endpoints:
 | Endpoint | Method | Description |
 | ---------- | -------- | ------------- |
 | `/api/v1/gateway/sync` | POST | Send batch of raw readings (Bearer device token; body = SyncRequest, max 500 readings; per-reading rejections in `errors[]` as `reading[<index>]: <reason>`) |
+| `/api/v1/gateway/confirm` | POST | Send a confirmation `{company_id, uii, action, antenna_id, confirmation_id, occurred_at}` (Bearer device token; see Cloud contract) |
 | `/api/v1/rfid/pending` | GET | Get pending confirmations |
 | `/api/v1/health/gateways` | GET | Health check |
 | `/metrics` | GET | Prometheus metrics |
@@ -612,7 +613,9 @@ VPS (for example 400, 404 or 409) is a rejection that resending cannot fix: the 
 *stuck* at once (`stuck_count` in `/api/status`), stays queued and is not sent again until
 `POST /api/confirmations/requeue` (the panel's "Reintentar" button on the "N confirmaciones sin
 enviar" item) resets it. The tick is also `confirmation_retry_interval`, so a due confirmation
-may wait for the next tick.
+may wait for the next tick. Every retry and requeue resends the same `confirmation_id` and
+`occurred_at`, so a send the VPS applied but whose answer was lost comes back as a `200` replay
+and is marked synced, never recorded twice.
 
 **`POST /api/confirm`** keeps its request and response shape; `message` is in Spanish
 (`Confirmación enviada al VPS` online, `Confirmación guardada localmente (modo sin conexión)`
@@ -652,10 +655,21 @@ The gateway expects these (additive) VPS changes; a VPS without them keeps worki
   fetched on every sync (best effort: a failure is logged and does not fail the sync).
 - `POST /api/v1/gateway/tags/assign` with `{company_id, uii, kanban_code, antenna_id}` returns
   `200 {uii, kanban}`, `404 {error: kanban_not_found}`, `409 {error: uii_assigned, current_kanban}` or `400`.
+- `POST /api/v1/gateway/confirm` takes two optional fields (issue #146): `confirmation_id`, a UUID
+  generated once when the operator confirms, and `occurred_at`, that instant in UTC
+  (RFC3339Nano). Both are identical on the online send and on every retry or requeue, so the VPS
+  answers a replay of an applied confirmation with the same `200` body instead of recording a
+  second movement. `409 {"error":"confirmation_id_conflict"}` (same id, other uii/action) and
+  `400 {"error":"invalid_confirmation_id"|"invalid_occurred_at"|"occurred_at_out_of_range"}`
+  (at most 5 min in the future, 30 days in the past) are rejections: the confirmation is stuck
+  until requeued. A VPS without the fields ignores them.
 
 On startup the SQLite cache gains three tables (`kanbans`, `tag_kanban_links`, `unassigned_tags`)
-through an idempotent migration. `pending_confirmations` only gains a nullable `synced_at`
-column (idempotent), so queued confirmations survive the upgrade; the kanban tables are rebuilt
+through an idempotent migration. `pending_confirmations` only gains nullable columns
+(`synced_at`, `confirmation_id`, `occurred_at`, all idempotent), so queued confirmations survive
+the upgrade. Unsynced rows queued before `confirmation_id` existed get a random UUID once (kept on
+later starts; unique index on non-null ids); their `occurred_at` stays empty and is
+omitted on send, so the VPS stamps those movements as before. Synced rows are left as they are; the kanban tables are rebuilt
 from the next sync.
 
 ## Shared Module (amg-rfid-shared-go)

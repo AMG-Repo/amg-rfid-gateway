@@ -23,6 +23,7 @@ type mockVPSClient struct {
 	fetchUsersFunc    func(companyID string) ([]localstore.User, error)
 	sendConfirmFunc   func(companyID, uii, action string) error
 	sendConfirmV2Func func(companyID, uii, action, antennaID string) error
+	sendConfirmIDFunc func(companyID, uii, action, antennaID, confirmationID string, occurredAt time.Time) error
 	callCount         atomic.Int32
 }
 
@@ -64,6 +65,16 @@ func (m *mockVPSClient) SendConfirmationV2(companyID, uii, action, antennaID str
 		return m.sendConfirmV2Func(companyID, uii, action, antennaID)
 	}
 	return nil
+}
+
+// SendIdempotentConfirmation falls back to sendConfirmV2Func so tests that
+// only care about the legacy fields keep working.
+func (m *mockVPSClient) SendIdempotentConfirmation(companyID, uii, action, antennaID, confirmationID string, occurredAt time.Time) error {
+	if m.sendConfirmIDFunc != nil {
+		m.callCount.Add(1)
+		return m.sendConfirmIDFunc(companyID, uii, action, antennaID, confirmationID, occurredAt)
+	}
+	return m.SendConfirmationV2(companyID, uii, action, antennaID)
 }
 
 // mockLocalStore is a mock implementation for testing

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/amg-rfid/amg-rfid-gateway/internal/uuidutil"
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
 	_ "modernc.org/sqlite"
 )
@@ -201,7 +202,9 @@ func createTables(db *sql.DB) error {
 				retry_count INTEGER DEFAULT 0,
 				created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 				synced_at DATETIME,
-				next_attempt_at DATETIME
+				next_attempt_at DATETIME,
+				confirmation_id TEXT,
+				occurred_at TEXT
 			);
 
 			CREATE INDEX IF NOT EXISTS idx_users_rfid ON users(rfid_tag);
@@ -276,7 +279,9 @@ func createTables(db *sql.DB) error {
 			retry_count INTEGER DEFAULT 0,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced_at DATETIME,
-			next_attempt_at DATETIME
+			next_attempt_at DATETIME,
+			confirmation_id TEXT,
+			occurred_at TEXT
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_tool_tags_uii ON tool_tags(uii);
@@ -377,6 +382,63 @@ func migratePendingConfirmations(db *sql.DB) error {
 		}
 	}
 
+	return migrateConfirmationIdempotency(db)
+}
+
+// migrateConfirmationIdempotency adds confirmation_id (the idempotency key the
+// VPS dedupes replays by) and occurred_at (when the operator confirmed, RFC3339
+// UTC) to pending_confirmations. Unsynced rows queued before the upgrade get a
+// random UUID once, so every resend carries the same id; synced rows and
+// occurred_at stay NULL. It is idempotent - safe to run multiple times.
+func migrateConfirmationIdempotency(db *sql.DB) error {
+	for _, col := range []string{"confirmation_id", "occurred_at"} {
+		var exists bool
+		err := db.QueryRow(`
+			SELECT COUNT(*) > 0 FROM pragma_table_info('pending_confirmations') WHERE name = ?
+		`, col).Scan(&exists)
+		if err != nil {
+			return fmt.Errorf("failed to check %s column: %w", col, err)
+		}
+		if !exists {
+			_, err = db.Exec(`ALTER TABLE pending_confirmations ADD COLUMN ` + col + ` TEXT`)
+			if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("failed to add %s column: %w", col, err)
+			}
+		}
+	}
+
+	rows, err := db.Query(`SELECT id FROM pending_confirmations WHERE synced = 0 AND confirmation_id IS NULL`)
+	if err != nil {
+		return fmt.Errorf("failed to list confirmations without id: %w", err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return fmt.Errorf("failed to scan confirmation id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("failed to list confirmations without id: %w", err)
+	}
+	for _, id := range ids {
+		// The IS NULL guard keeps an id another process assigned meanwhile.
+		_, err := db.Exec(`UPDATE pending_confirmations SET confirmation_id = ? WHERE id = ? AND confirmation_id IS NULL`, uuidutil.NewV4(), id)
+		if err != nil {
+			return fmt.Errorf("failed to assign confirmation_id to %d: %w", id, err)
+		}
+	}
+
+	_, err = db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_confirmation_id
+		ON pending_confirmations(confirmation_id) WHERE confirmation_id IS NOT NULL
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create confirmation_id index: %w", err)
+	}
 	return nil
 }
 
