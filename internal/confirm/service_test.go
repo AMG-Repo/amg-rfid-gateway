@@ -151,15 +151,10 @@ func TestConfirm_QueueFull(t *testing.T) {
 	}
 }
 
-// fakeClaimer records claims and refuses the ones configured.
+// fakeClaimer records manual claims and refuses them unless configured.
 type fakeClaimer struct {
-	auto, manual bool
-	calls        []string
-}
-
-func (f *fakeClaimer) ClaimAuto(uii string, passID uint64) bool {
-	f.calls = append(f.calls, "auto:"+uii)
-	return f.auto
+	manual bool
+	calls  []string
 }
 
 func (f *fakeClaimer) ClaimManual(uii string) bool {
@@ -167,7 +162,11 @@ func (f *fakeClaimer) ClaimManual(uii string) bool {
 	return f.manual
 }
 
-func (f *fakeClaimer) Release(passID uint64) { f.calls = append(f.calls, "release") }
+// errClaimer refuses manual claims with a reason.
+type errClaimer struct{ err error }
+
+func (c errClaimer) ClaimManual(string) bool     { return c.err == nil }
+func (c errClaimer) ClaimManualErr(string) error { return c.err }
 
 func TestConfirm_RefusedClaimWritesNothing(t *testing.T) {
 	store := newStore(t)
@@ -176,11 +175,12 @@ func TestConfirm_RefusedClaimWritesNothing(t *testing.T) {
 	c := &fakeClaimer{}
 	svc := &Service{Store: store, VPS: httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("tok")), CompanyID: "c", Claimer: c}
 
-	if _, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida", Auto: true, PassID: 7}); !errors.Is(err, ErrNotClaimable) {
-		t.Errorf("auto err = %v, want ErrNotClaimable", err)
-	}
 	if _, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida"}); !errors.Is(err, ErrAutoInProgress) {
 		t.Errorf("manual err = %v, want ErrAutoInProgress", err)
+	}
+	svc.Claimer = errClaimer{ErrAlreadyAutoConfirmed}
+	if _, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida"}); !errors.Is(err, ErrAlreadyAutoConfirmed) {
+		t.Errorf("manual err = %v, want ErrAlreadyAutoConfirmed", err)
 	}
 	if n := vps.confirms.Load(); n != 0 {
 		t.Errorf("VPS confirms = %d, want 0", n)
@@ -188,30 +188,27 @@ func TestConfirm_RefusedClaimWritesNothing(t *testing.T) {
 	if q, _ := store.GetUnsyncedConfirmations(10); len(q) != 0 {
 		t.Errorf("queue = %+v, want none", q)
 	}
-	if got := strings.Join(c.calls, ","); got != "auto:E1,manual:E1" {
+	if got := strings.Join(c.calls, ","); got != "manual:E1" {
 		t.Errorf("calls = %s", got)
 	}
 }
 
-func TestConfirm_AutoClaimReleasedAfterSuccessAndFailure(t *testing.T) {
+func TestConfirm_AutoRequestIsNotClaimedAgain(t *testing.T) {
 	store := newStore(t)
 	link(t, store, "E1")
-	c := &fakeClaimer{auto: true, manual: true}
-	svc := &Service{Store: store, CompanyID: "c", MaxPending: 1, Claimer: c}
+	c := &fakeClaimer{}
+	svc := &Service{Store: store, CompanyID: "c", Claimer: c}
 
 	if _, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida", Auto: true, PassID: 1}); err != nil {
-		t.Fatalf("first: %v", err)
+		t.Fatalf("auto: %v", err)
 	}
-	if _, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "entrada", Auto: true, PassID: 2}); !errors.Is(err, ErrQueueFull) {
-		t.Fatalf("second err = %v, want ErrQueueFull", err)
-	}
-	if got := strings.Join(c.calls, ","); got != "auto:E1,release,auto:E1,release" {
-		t.Errorf("calls = %s", got)
+	if len(c.calls) != 0 {
+		t.Errorf("calls = %v, want none: the auto-confirmer claims", c.calls)
 	}
 }
 
 func TestConfirm_UnassignedTagIsNotClaimed(t *testing.T) {
-	c := &fakeClaimer{auto: true, manual: true}
+	c := &fakeClaimer{manual: true}
 	svc := &Service{Store: newStore(t), Claimer: c}
 	if _, err := svc.Confirm(context.Background(), Request{UII: "E9", Action: "entrada"}); !errors.Is(err, ErrNotAssigned) {
 		t.Fatalf("err = %v", err)

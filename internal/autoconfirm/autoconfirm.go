@@ -11,7 +11,6 @@ package autoconfirm
 
 import (
 	"context"
-	"errors"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -26,6 +25,10 @@ import (
 
 // TickInterval is how often Run checks for ended passes.
 const TickInterval = time.Second
+
+// SeedWindow is how far back SeedRecent looks for confirmations made before
+// a restart.
+const SeedWindow = 10 * time.Minute
 
 // confirmQueue bounds the ended passes waiting for the confirm worker; a
 // variable so tests can lower it.
@@ -81,7 +84,13 @@ type Tracker struct {
 	passes map[string]*pass
 	// inFlight maps a tag to the pass of its automatic confirm in progress.
 	inFlight map[string]uint64
-	lastID   uint64
+	// autoDone maps a tag to the pass of its last automatic confirm while the
+	// tag is not read again: a manual confirm then is stale.
+	autoDone map[string]uint64
+	// seeded marks tags confirmed shortly before start: their first pass is
+	// consumed.
+	seeded map[string]bool
+	lastID uint64
 }
 
 var _ confirm.Claimer = (*Tracker)(nil)
@@ -95,6 +104,8 @@ func NewTracker(cfg Config, next Sink, mode *Mode) *Tracker {
 		Now:      time.Now,
 		passes:   make(map[string]*pass),
 		inFlight: make(map[string]uint64),
+		autoDone: make(map[string]uint64),
+		seeded:   make(map[string]bool),
 	}
 }
 
@@ -115,6 +126,7 @@ func (t *Tracker) observe(uii, antenna string, seen time.Time) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	delete(t.autoDone, uii)
 	p := t.passes[uii]
 	if p == nil || seen.Sub(p.lastSeen) >= t.cfg.Idle {
 		p = t.newPass(uii, seen)
@@ -126,58 +138,104 @@ func (t *Tracker) observe(uii, antenna string, seen time.Time) {
 	p.lastAntenna = antenna
 }
 
-// newPass replaces the tag's pass. Callers hold mu.
+// newPass replaces the tag's pass; the first pass of a seeded tag is
+// consumed. Callers hold mu.
 func (t *Tracker) newPass(uii string, seen time.Time) *pass {
 	t.lastID++
-	p := &pass{id: t.lastID, lastSeen: seen}
+	p := &pass{id: t.lastID, lastSeen: seen, consumed: t.seeded[uii]}
+	delete(t.seeded, uii)
 	t.passes[uii] = p
 	return p
+}
+
+// RecentLister lists the confirmations recorded locally.
+type RecentLister interface {
+	ListConfirmationsBetween(start, end time.Time) ([]localstore.HistoryEntry, error)
+}
+
+// SeedRecent marks every tag confirmed (manually or automatically) in the
+// SeedWindow before now: its first pass after start is consumed, so a tag
+// still being read across a restart is not confirmed again. Call it before
+// reads arrive.
+func (t *Tracker) SeedRecent(store RecentLister, now time.Time) error {
+	entries, err := store.ListConfirmationsBetween(now.Add(-SeedWindow), now.Add(SeedWindow))
+	if err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, e := range entries {
+		t.seeded[e.UII] = true
+	}
+	return nil
 }
 
 // ClaimAuto claims pass passID of uii for an automatic confirm: it must still
 // be the tag's current pass, not consumed, unread for the idle time now, with
 // enough reads, in automatic mode. A claimed pass is consumed and in flight
-// until Release.
+// until the auto-confirmer finishes it.
 func (t *Tracker) ClaimAuto(uii string, passID uint64) bool {
+	_, ok := t.claimAuto(uii, passID)
+	return ok
+}
+
+// claimAuto is ClaimAuto returning the claimed pass as it is at the claim. A
+// rejected claim of the tag's current pass unqueues it, so a later tick
+// reconsiders it.
+func (t *Tracker) claimAuto(uii string, passID uint64) (job, bool) {
 	now := t.Now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	p := t.passes[uii]
-	if p == nil || p.id != passID || p.consumed || now.Sub(p.lastSeen) < t.cfg.Idle ||
-		p.reads < t.cfg.MinReads || !t.mode.Enabled() {
-		return false
+	if p == nil || p.id != passID {
+		return job{}, false
+	}
+	if p.consumed || now.Sub(p.lastSeen) < t.cfg.Idle || p.reads < t.cfg.MinReads || !t.mode.Enabled() {
+		p.queued = false
+		return job{}, false
 	}
 	p.consumed = true
 	t.inFlight[uii] = passID
-	return true
+	t.autoDone[uii] = passID
+	return job{uii, p.id, p.reads, p.lastSeen, p.lastAntenna}, true
 }
 
-// ClaimManual consumes the tag's current pass (a new one when it has none
-// live), unless an automatic confirm of the tag is in flight.
-func (t *Tracker) ClaimManual(uii string) bool {
+// ClaimManual is ClaimManualErr reporting only whether the claim succeeded.
+func (t *Tracker) ClaimManual(uii string) bool { return t.ClaimManualErr(uii) == nil }
+
+// ClaimManualErr consumes the tag's current pass (a new one when it has none
+// live). It is refused while an automatic confirm of the tag is in flight
+// (confirm.ErrAutoInProgress) and after one, until the tag is read again
+// (confirm.ErrAlreadyAutoConfirmed).
+func (t *Tracker) ClaimManualErr(uii string) error {
 	now := t.Now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if _, busy := t.inFlight[uii]; busy {
-		return false
+		return confirm.ErrAutoInProgress
+	}
+	if _, done := t.autoDone[uii]; done {
+		return confirm.ErrAlreadyAutoConfirmed
 	}
 	p := t.passes[uii]
 	if p == nil || now.Sub(p.lastSeen) >= t.cfg.Idle {
 		p = t.newPass(uii, now)
 	}
 	p.consumed = true
-	return true
+	return nil
 }
 
-// Release ends the in-flight state of an automatic claim. The pass stays
-// consumed whatever the outcome.
-func (t *Tracker) Release(passID uint64) {
+// finish ends the in-flight state of the automatic claim of pass passID. The
+// pass stays consumed whatever the outcome; when nothing was confirmed,
+// manual confirms of the tag are accepted again.
+func (t *Tracker) finish(uii string, passID uint64, confirmed bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for uii, id := range t.inFlight {
-		if id == passID {
-			delete(t.inFlight, uii)
-		}
+	if t.inFlight[uii] == passID {
+		delete(t.inFlight, uii)
+	}
+	if !confirmed && t.autoDone[uii] == passID {
+		delete(t.autoDone, uii)
 	}
 }
 
@@ -236,9 +294,11 @@ func (t *Tracker) setQueued(uii string, passID uint64) {
 type Store interface {
 	GetKanbanByUII(uii string) (*localstore.Kanban, error)
 	GetUserByRFIDTag(rfidTag string) (*localstore.User, error)
+	HasPendingConfirmation(uii string) (bool, error)
 }
 
-// Confirmer registers a movement; it claims the pass on the Tracker.
+// Confirmer registers a movement. Automatic requests are already claimed on
+// the Tracker by the auto-confirmer.
 type Confirmer interface {
 	Confirm(ctx context.Context, req confirm.Request) (confirm.Result, error)
 }
@@ -280,9 +340,15 @@ func (a *AutoConfirmer) Tick(now time.Time) {
 	}
 }
 
-// confirmPass confirms a queued pass; the confirm's claim rejects it when the
-// pass changed since it was queued.
-func (a *AutoConfirmer) confirmPass(ctx context.Context, j job) {
+// confirmPass claims a queued pass first (rejected when it changed since it
+// was queued), then decides and confirms it from the values after the claim.
+func (a *AutoConfirmer) confirmPass(ctx context.Context, queued job) {
+	j, ok := a.tracker.claimAuto(queued.uii, queued.passID)
+	if !ok {
+		return
+	}
+	confirmed := false
+	defer func() { a.tracker.finish(j.uii, j.passID, confirmed) }()
 	action, ok := a.direction(j.uii)
 	if !ok {
 		// Left for a manual confirm.
@@ -297,21 +363,20 @@ func (a *AutoConfirmer) confirmPass(ctx context.Context, j job) {
 		Auto:       true,
 		PassID:     j.passID,
 	})
-	if errors.Is(err, confirm.ErrNotClaimable) {
-		return
-	}
 	if err != nil {
 		log.Printf("[AutoConfirm] Failed to confirm %s %s: %v", action, j.uii, err)
 		return
 	}
+	confirmed = true
 	log.Printf("[AutoConfirm] Confirmed %s %s (%s, %d reads)", action, j.uii, res.Mode, j.reads)
 	if a.bus != nil {
 		a.bus.PublishAutoConfirmed(events.AutoConfirmed{UII: j.uii, Action: string(action), ConfirmationID: res.ConfirmationID})
 	}
 }
 
-// direction is the movement of a kanban-linked tag (not a user badge) with a
-// known, non-blank location; ok is false otherwise.
+// direction is the movement of a kanban-linked tag (not a user badge) with no
+// unsynced confirmation queued and a known, non-blank location; ok is false
+// otherwise. A cached location is only trusted when nothing is pending.
 func (a *AutoConfirmer) direction(uii string) (verify.Action, bool) {
 	kanban, err := a.store.GetKanbanByUII(uii)
 	if err != nil {
@@ -327,6 +392,15 @@ func (a *AutoConfirmer) direction(uii string) (verify.Action, bool) {
 		return "", false
 	}
 	if user != nil {
+		return "", false
+	}
+	pending, err := a.store.HasPendingConfirmation(uii)
+	if err != nil {
+		log.Printf("[AutoConfirm] Failed to look up pending confirmations of %s: %v", uii, err)
+		return "", false
+	}
+	if pending {
+		log.Printf("[AutoConfirm] Skipped %s: a confirmation is pending sync", uii)
 		return "", false
 	}
 	tool, err := a.tools.GetToolByUII(uii)

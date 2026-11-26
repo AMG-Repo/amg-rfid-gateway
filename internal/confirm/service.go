@@ -33,21 +33,25 @@ var (
 	// ErrAutoInProgress means an automatic confirm of the same tag is in
 	// flight: the manual confirm is refused, nothing is written.
 	ErrAutoInProgress = errors.New("automatic confirmation in progress")
-	// ErrNotClaimable means the pass of an automatic confirm is no longer
-	// confirmable (newer read, already confirmed, manual mode): nothing is written.
-	ErrNotClaimable = errors.New("pass not claimable")
+	// ErrAlreadyAutoConfirmed means the tag's pass was already confirmed
+	// automatically and the tag was not read since: the manual confirm is
+	// stale, nothing is written.
+	ErrAlreadyAutoConfirmed = errors.New("already confirmed automatically")
 )
 
-// Claimer guards that a tag pass is confirmed at most once. Claims are
-// synchronous and taken before anything is sent or queued.
+// Claimer guards that a tag pass is confirmed at most once. Manual claims are
+// synchronous and taken before anything is sent or queued; automatic
+// requests are claimed by the auto-confirmer before it decides them.
 type Claimer interface {
-	// ClaimAuto claims the pass passID of uii for an automatic confirm.
-	ClaimAuto(uii string, passID uint64) bool
 	// ClaimManual consumes the tag's current pass for a manual confirm; it
-	// fails only while an automatic confirm of the tag is in flight.
+	// fails while an automatic confirm of the tag is in flight.
 	ClaimManual(uii string) bool
-	// Release ends the in-flight state of an automatic claim.
-	Release(passID uint64)
+}
+
+// manualClaimErrer is a Claimer telling why a manual claim was refused
+// (ErrAutoInProgress or ErrAlreadyAutoConfirmed).
+type manualClaimErrer interface {
+	ClaimManualErr(uii string) error
 }
 
 // Request is one movement to confirm. Action must already be canonical
@@ -61,7 +65,7 @@ type Request struct {
 	OccurredAt time.Time
 	// Auto marks a movement the gateway confirmed by itself.
 	Auto bool
-	// PassID is the tag pass an automatic confirm claims.
+	// PassID is the tag pass an automatic confirm claimed.
 	PassID uint64
 }
 
@@ -80,8 +84,8 @@ type Service struct {
 	MaxPending int
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
-	// Claimer, when set, is claimed before anything is sent or queued; nil
-	// means no claims.
+	// Claimer, when set, is claimed by manual confirms before anything is
+	// sent or queued; nil means no claims.
 	Claimer Claimer
 }
 
@@ -104,12 +108,11 @@ func (s *Service) Confirm(ctx context.Context, req Request) (Result, error) {
 		return Result{}, ErrNotAssigned
 	}
 
-	if s.Claimer != nil {
-		if req.Auto {
-			if !s.Claimer.ClaimAuto(req.UII, req.PassID) {
-				return Result{}, ErrNotClaimable
+	if s.Claimer != nil && !req.Auto {
+		if c, ok := s.Claimer.(manualClaimErrer); ok {
+			if err := c.ClaimManualErr(req.UII); err != nil {
+				return Result{}, err
 			}
-			defer s.Claimer.Release(req.PassID)
 		} else if !s.Claimer.ClaimManual(req.UII) {
 			return Result{}, ErrAutoInProgress
 		}

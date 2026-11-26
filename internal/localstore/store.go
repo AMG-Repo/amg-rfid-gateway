@@ -824,6 +824,14 @@ func (s *LocalStore) GetPendingConfirmationsCount() (int, error) {
 	return count, err
 }
 
+// HasPendingConfirmation reports whether uii has a confirmation not yet synced
+// to the VPS.
+func (s *LocalStore) HasPendingConfirmation(uii string) (bool, error) {
+	var pending bool
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pending_confirmations WHERE uii = ? AND synced = 0)`, uii).Scan(&pending)
+	return pending, err
+}
+
 // GetOldestPendingAt returns when the oldest unsynced confirmation was queued,
 // or nil when nothing is pending.
 func (s *LocalStore) GetOldestPendingAt() (*time.Time, error) {

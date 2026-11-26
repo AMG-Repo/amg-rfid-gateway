@@ -156,6 +156,11 @@ func main() {
 		sessions,
 		autoMode,
 	)
+	// Tags confirmed just before a restart: their first pass is not
+	// confirmed again.
+	if err := tracker.SeedRecent(localStore, time.Now()); err != nil {
+		log.Printf("Warning: Failed to seed recent confirmations: %v", err)
+	}
 	autoConfirmer := autoconfirm.New(
 		tracker,
 		eventBus,

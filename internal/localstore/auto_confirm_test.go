@@ -74,3 +74,33 @@ func TestAutoFlag_StoredAndListedInHistory(t *testing.T) {
 		}
 	}
 }
+
+func TestHasPendingConfirmation(t *testing.T) {
+	store, _ := newProductionStore(t)
+	now := time.Now()
+	if pending, err := store.HasPendingConfirmation("E1"); err != nil || pending {
+		t.Fatalf("empty queue: %v, %v; want false, nil", pending, err)
+	}
+	if err := store.RecordSyncedConfirmationWithIDAuto("E1", "salida", "ant-1", "id-1", now, false); err != nil {
+		t.Fatalf("record synced: %v", err)
+	}
+	if pending, err := store.HasPendingConfirmation("E1"); err != nil || pending {
+		t.Errorf("synced only: %v, %v; want false, nil", pending, err)
+	}
+	c, err := store.CreateConfirmationWithIDAuto("E1", "salida", "ant-1", "id-2", now, 0, false)
+	if err != nil {
+		t.Fatalf("queue: %v", err)
+	}
+	if pending, err := store.HasPendingConfirmation("E1"); err != nil || !pending {
+		t.Errorf("queued: %v, %v; want true, nil", pending, err)
+	}
+	if pending, _ := store.HasPendingConfirmation("E2"); pending {
+		t.Error("another tag reported pending")
+	}
+	if err := store.MarkConfirmationSynced(c.ID); err != nil {
+		t.Fatalf("mark synced: %v", err)
+	}
+	if pending, err := store.HasPendingConfirmation("E1"); err != nil || pending {
+		t.Errorf("after sync: %v, %v; want false, nil", pending, err)
+	}
+}

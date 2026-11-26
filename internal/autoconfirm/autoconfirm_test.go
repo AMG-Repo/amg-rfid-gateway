@@ -489,7 +489,8 @@ func TestClaim_ManualWhileAutoInFlightIsRefused(t *testing.T) {
 	if n := e.vps.confirms.Load(); n != 1 {
 		t.Errorf("VPS confirms = %d, want 1", n)
 	}
-	// Released: a later manual confirm is accepted.
+	// Released: once the tag is read again, a manual confirm is accepted.
+	e.reads("E1", "ant-1", last.Add(3*time.Minute), 1)
 	if err := e.manual("E1", "entrada"); err != nil {
 		t.Errorf("manual after release: %v", err)
 	}
@@ -653,5 +654,177 @@ func TestRun_StopsOnCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not stop on cancel")
+	}
+}
+
+func TestWorker_PendingConfirmationBlocksAuto(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	// An offline salida still queued; the cached location says warehouse.
+	if _, err := e.store.CreateConfirmationWithIDAuto("E1", "salida", "manual", "pending-1", t0.Add(-2*time.Hour), 0, false); err != nil {
+		t.Fatalf("queue: %v", err)
+	}
+	last := e.reads("E1", "ant-1", t0, 3)
+
+	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(2 * time.Minute))
+
+	if n := e.vps.confirms.Load(); n != 0 {
+		t.Errorf("VPS confirms = %d, want 0 while a confirmation is pending", n)
+	}
+	if q, _ := e.store.GetUnsyncedConfirmations(10); len(q) != 1 {
+		t.Errorf("queue = %+v, want only the pending one", q)
+	}
+}
+
+// changeAtClaim runs change on the first clock read after it is armed: the
+// claim is the first thing the worker does that reads the clock.
+func (e *env) changeAtClaim(change func()) (arm func()) {
+	var armed, done atomic.Bool
+	e.tracker.Now = func() time.Time {
+		if armed.Load() && done.CompareAndSwap(false, true) {
+			change()
+		}
+		return time.Unix(0, e.clock.Load()).UTC()
+	}
+	e.svc.Now = e.tracker.Now
+	return func() { armed.Store(true) }
+}
+
+func TestWorker_DecisionUsesPostClaimValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(t *testing.T, e *env)
+		want   string // action sent, "" = nothing
+	}{
+		{"location changed", func(t *testing.T, e *env) { e.link(t, "E1", loc("Línea 3")) }, "entrada"},
+		{"user badge added", func(t *testing.T, e *env) {
+			if err := e.store.UpsertUsers([]localstore.User{{ID: 1, CompanyID: "c", Name: "Ana", RFIDTag: "E1", Active: true}}); err != nil {
+				t.Errorf("user: %v", err)
+			}
+		}, ""},
+		{"kanban unlinked", func(t *testing.T, e *env) {
+			if err := e.store.ApplyKanbanLinks([]localstore.SyncDataItem{{UII: "E1", Active: true}}); err != nil {
+				t.Errorf("unlink: %v", err)
+			}
+		}, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, true)
+			e.link(t, "E1", loc("Almacén General"))
+			last := e.reads("E1", "ant-1", t0, 3)
+			arm := e.changeAtClaim(func() { tc.change(t, e) })
+			now := last.Add(time.Minute)
+			e.at(now)
+			e.ac.Tick(now)
+			arm()
+			e.work()
+
+			sent, _ := e.vps.last.Load().(map[string]any)
+			if tc.want == "" {
+				if n := e.vps.confirms.Load(); n != 0 {
+					t.Errorf("VPS confirms = %d (%v), want 0", n, sent)
+				}
+				return
+			}
+			if n := e.vps.confirms.Load(); n != 1 || sent["action"] != tc.want {
+				t.Errorf("VPS confirms = %d action %v, want one %s", n, sent["action"], tc.want)
+			}
+		})
+	}
+}
+
+func TestClaim_RejectedClaimIsReconsideredLater(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	last := e.reads("E1", "ant-1", t0, 3)
+	now := last.Add(time.Minute)
+	e.at(now)
+	e.ac.Tick(now)
+	e.reads("E1", "ant-1", now.Add(-time.Second), 1) // the pass extends before the claim
+	e.work()
+	if n := e.vps.confirms.Load(); n != 0 {
+		t.Fatalf("VPS confirms = %d, want 0 after the rejected claim", n)
+	}
+
+	e.tick(now.Add(time.Minute))
+	e.tick(now.Add(2 * time.Minute))
+
+	if n := e.vps.confirms.Load(); n != 1 {
+		t.Errorf("VPS confirms = %d, want exactly 1 on a later tick", n)
+	}
+}
+
+func TestClaim_StaleManualAfterAutoIsRefused(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	last := e.reads("E1", "ant-1", t0, 3)
+	e.tick(last.Add(time.Minute))
+
+	err := e.manual("E1", "salida")
+	if !errors.Is(err, confirm.ErrAlreadyAutoConfirmed) {
+		t.Fatalf("manual err = %v, want ErrAlreadyAutoConfirmed", err)
+	}
+	if h := e.history(t); len(h) != 1 || !h[0].Auto {
+		t.Fatalf("history = %+v, want only the auto movement", h)
+	}
+
+	// A new read: manual confirms are normal again.
+	e.reads("E1", "ant-1", last.Add(3*time.Minute), 1)
+	if err := e.manual("E1", "entrada"); err != nil {
+		t.Errorf("manual after a new read: %v", err)
+	}
+	if n := e.vps.confirms.Load(); n != 2 {
+		t.Errorf("VPS confirms = %d, want 2", n)
+	}
+}
+
+// recordAt records a synced confirmation of uii at occurredAt.
+func (e *env) recordAt(t *testing.T, uii string, occurredAt time.Time) {
+	t.Helper()
+	if err := e.store.RecordSyncedConfirmationWithIDAuto(uii, "salida", "manual", "seed-"+occurredAt.String(), occurredAt, false); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+}
+
+func TestSeed_RecentConfirmationConsumesFirstPass(t *testing.T) {
+	// Real time: the seed reads the store's recent confirmations.
+	start := time.Now().UTC().Truncate(time.Second)
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	e.recordAt(t, "E1", start.Add(-5*time.Minute))
+	e.at(start)
+	if err := e.tracker.SeedRecent(e.store, start); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	last := e.reads("E1", "ant-1", start, 3)
+	e.tick(last.Add(time.Minute))
+	if n := e.vps.confirms.Load(); n != 0 {
+		t.Fatalf("VPS confirms = %d, want 0 for the first pass after start", n)
+	}
+
+	last = e.reads("E1", "ant-1", last.Add(2*time.Minute), 3)
+	e.tick(last.Add(time.Minute))
+	if n := e.vps.confirms.Load(); n != 1 {
+		t.Errorf("VPS confirms = %d, want 1 for a later pass", n)
+	}
+}
+
+func TestSeed_OldConfirmationIsIgnored(t *testing.T) {
+	start := time.Now().UTC().Truncate(time.Second)
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	e.recordAt(t, "E1", start.Add(-11*time.Minute))
+	e.at(start)
+	if err := e.tracker.SeedRecent(e.store, start); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	last := e.reads("E1", "ant-1", start, 3)
+	e.tick(last.Add(time.Minute))
+	if n := e.vps.confirms.Load(); n != 1 {
+		t.Errorf("VPS confirms = %d, want 1: an old confirmation is not seeded", n)
 	}
 }

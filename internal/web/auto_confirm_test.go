@@ -14,6 +14,7 @@ import (
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/autoconfirm"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/confirm"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
@@ -235,3 +236,28 @@ func TestHandleConfirm_ManualClaimConsumesTrackedPass(t *testing.T) {
 type nopSink struct{}
 
 func (nopSink) Store(models.Reading) error { return nil }
+
+// doneClaimer refuses manual claims as after an automatic confirm of the tag
+// with no read since.
+type doneClaimer struct{}
+
+func (doneClaimer) ClaimManual(string) bool     { return false }
+func (doneClaimer) ClaimManualErr(string) error { return confirm.ErrAlreadyAutoConfirmed }
+
+func TestHandleConfirm_AfterAutoConfirmAnswers409(t *testing.T) {
+	env := newKanbanTestEnv(t, nil)
+	env.linkKanban(t, "E1", localstore.Kanban{Code: "K1", Description: "Burlete", StandardPack: 10, Unit: "PZ"})
+	env.server.SetConfirmClaimer(doneClaimer{})
+
+	rec := postConfirm(env.server, `{"uii":"E1","action":"salida"}`)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("confirm = %d %s, want 409", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":"Este movimiento ya se confirmó automáticamente."}` {
+		t.Errorf("body = %s", got)
+	}
+	if q, _ := env.store.GetUnsyncedConfirmations(10); len(q) != 0 {
+		t.Errorf("queue = %+v, want nothing written", q)
+	}
+}
