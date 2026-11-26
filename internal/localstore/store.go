@@ -609,6 +609,17 @@ func (s *LocalStore) PurgeSyncedConfirmations(cutoff time.Time) (int64, error) {
 	return res.RowsAffected()
 }
 
+// ParkConfirmation raises the retry count of a pending confirmation to at least
+// retryCount, so it is counted as stuck and skipped until it is requeued.
+func (s *LocalStore) ParkConfirmation(id int64, retryCount int) error {
+	_, err := s.db.Exec(`
+		UPDATE pending_confirmations
+		SET retry_count = MAX(retry_count, ?), next_attempt_at = NULL
+		WHERE id = ? AND synced = 0
+	`, retryCount, id)
+	return err
+}
+
 // IncrementRetryCount increments retry count for a confirmation.
 func (s *LocalStore) IncrementRetryCount(id int64) error {
 	_, err := s.db.Exec(`

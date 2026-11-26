@@ -576,7 +576,7 @@ the bearer token when `web_access_mode: lan`.
 | `/api/history` | GET | none | Today's confirmations (gateway local day), newest first: `[{uii, kanban_code, description, quantity, unit, action, antenna_id, time, synced}]`. `quantity` is the kanban `standard_pack`; the four kanban fields are `null` when the tag has no active kanban link; `synced` is `false` while the confirmation is still queued for the VPS |
 | `/api/tags/assign` | POST | write auth | Assign a tag to a kanban (online only) |
 | `/api/confirm` | POST | write auth | Confirm entrada/salida (assigned tags only) |
-| `/api/confirmations/requeue` | POST | write auth | Resets the retry count and backoff of every pending confirmation stuck after the max retries so the sync worker sends them again; answers `200 {"requeued": N}` (`0` when none are stuck), `405` for other methods |
+| `/api/confirmations/requeue` | POST | write auth | Resets the retry count and backoff of every pending confirmation stuck after a VPS rejection so the sync worker sends them again; answers `200 {"requeued": N}` (`0` when none are stuck), `405` for other methods |
 | `/events` | GET (SSE) | none | `tag_detected` events, see below |
 
 **`POST /api/tags/assign`** body `{"uii": "...", "kanban_code": "...", "antenna_id": "..."}`
@@ -596,13 +596,15 @@ checked against the local catalog because the VPS is authoritative (the cached c
 Error bodies are `{"error": "<mensaje>", "code": "<code>"}`. Assigning the same tag to the same
 kanban again is idempotent.
 
-**Retries.** A failed send is retried with a per-confirmation backoff: the wait after the n-th
-failure is `confirmation_retry_interval × 2^(n-1)`, capped at 30 minutes, so a VPS outage of
-minutes does not exhaust the 10 attempts. Confirmations waiting out their backoff are skipped
-by the sync worker and never crowd out due ones. After 10 failed sends a confirmation is
-*stuck* (`stuck_count` in `/api/status`): it stays queued and is not sent again until
+**Retries.** A send that fails for a transient reason (network error, timeout, 5xx, 401, 408 or
+429) is retried with a per-confirmation backoff: the wait after the n-th failure is
+`confirmation_retry_interval × 2^(n-1)`, capped at 30 minutes, and it is retried for as long as
+the outage lasts; transient failures never make a confirmation stuck. Confirmations waiting out
+their backoff are skipped by the sync worker and never crowd out due ones. Any other 4xx from the
+VPS (for example 400, 404 or 409) is a rejection that resending cannot fix: the confirmation is
+*stuck* at once (`stuck_count` in `/api/status`), stays queued and is not sent again until
 `POST /api/confirmations/requeue` (the panel's "Reintentar" button on the "N confirmaciones sin
-enviar" item) resets it. The tick is also `confirmation_retry_interval`, so a due confirmation
+enviar" item, shown as "Rechazadas por el VPS") resets it. The tick is also `confirmation_retry_interval`, so a due confirmation
 may wait for the next tick.
 
 **`POST /api/confirm`** keeps its request and response shape; `message` is in Spanish

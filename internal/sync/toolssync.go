@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"log"
 	"strings"
 	"sync"
@@ -10,9 +11,40 @@ import (
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 )
 
-// MaxRetries is the maximum number of retry attempts for pending confirmations.
-// Confirmations exceeding this limit are abandoned to prevent infinite retries.
+// MaxRetries is the retry count that marks a pending confirmation as stuck.
+// Only a permanent rejection from the VPS parks a confirmation there; transient
+// failures keep retrying with a capped backoff and never reach it.
 const MaxRetries = 10
+
+// statusCoder is implemented by VPS client errors that carry the HTTP status.
+type statusCoder interface {
+	StatusCode() int
+}
+
+// isPermanentRejection reports whether the VPS answered with a status that
+// resending the same confirmation cannot fix: a 4xx other than 401 (token),
+// 408 (timeout) and 429 (rate limit). Network errors and 5xx are transient.
+func isPermanentRejection(err error) bool {
+	var sc statusCoder
+	if !errors.As(err, &sc) {
+		return false
+	}
+	code := sc.StatusCode()
+	if code < 400 || code >= 500 {
+		return false
+	}
+	switch code {
+	case 401, 408, 429:
+		return false
+	}
+	return true
+}
+
+// ConfirmationParker is optionally implemented by stores that can park a
+// confirmation the VPS rejected, so it is counted as stuck and not resent.
+type ConfirmationParker interface {
+	ParkConfirmation(id int64, retryCount int) error
+}
 
 // SyncDataResponse represents the response from the gateway sync endpoint
 type SyncDataResponse struct {
@@ -423,7 +455,7 @@ func (t *ToolsSync) performFlush() {
 
 	log.Printf("[ToolsSync] Flushing %d pending confirmations", len(confirmations))
 
-	allSucceeded := true
+	vpsReachable := true
 	for _, conf := range confirmations {
 		// Check if retry count exceeded - per spec, remain queued for manual inspection
 		if conf.RetryCount >= MaxRetries {
@@ -434,13 +466,28 @@ func (t *ToolsSync) performFlush() {
 
 		// Send confirmation with antenna_id using new gateway endpoint
 		err := t.vpsClient.SendConfirmationV2(t.companyID, conf.UII, conf.Action, conf.AntennaID)
-		if err != nil {
-			log.Printf("[ToolsSync] Failed to send confirmation %d: %v", conf.ID, err)
-			allSucceeded = false
-			// Increment retry count
-			if err := t.store.IncrementRetryCount(conf.ID); err != nil {
+		if err != nil && isPermanentRejection(err) {
+			// The VPS answered: resending cannot help. Park it for the operator.
+			log.Printf("[ToolsSync] VPS rejected confirmation %d, parked until requeued: %v", conf.ID, err)
+			if parker, ok := t.store.(ConfirmationParker); ok {
+				if err := parker.ParkConfirmation(conf.ID, MaxRetries); err != nil {
+					log.Printf("[ToolsSync] Failed to park confirmation %d: %v", conf.ID, err)
+				}
+			} else if err := t.store.IncrementRetryCount(conf.ID); err != nil {
 				log.Printf("[ToolsSync] Failed to increment retry count: %v", err)
-			} else if scheduler, ok := t.store.(ConfirmationRetryScheduler); ok {
+			}
+		} else if err != nil {
+			log.Printf("[ToolsSync] Failed to send confirmation %d: %v", conf.ID, err)
+			vpsReachable = false
+			// Count the failure for the backoff, but never up to MaxRetries:
+			// a transient failure must not make the confirmation stuck.
+			if conf.RetryCount+1 < MaxRetries {
+				if err := t.store.IncrementRetryCount(conf.ID); err != nil {
+					log.Printf("[ToolsSync] Failed to increment retry count: %v", err)
+					continue
+				}
+			}
+			if scheduler, ok := t.store.(ConfirmationRetryScheduler); ok {
 				// Wait longer after each failure instead of retrying every tick.
 				if err := scheduler.ScheduleConfirmationRetry(conf.ID, t.retryInterval, time.Now()); err != nil {
 					log.Printf("[ToolsSync] Failed to schedule retry for confirmation %d: %v", conf.ID, err)
@@ -456,10 +503,6 @@ func (t *ToolsSync) performFlush() {
 		}
 	}
 
-	// Update VPS status based on whether all confirmations succeeded
-	if allSucceeded {
-		t.setVPSOnline(true)
-	} else {
-		t.setVPSOnline(false)
-	}
+	// The VPS is online unless a send failed without an answer from it
+	t.setVPSOnline(vpsReachable)
 }
