@@ -14,6 +14,7 @@ type HistoryEntry struct {
 	AntennaID    string
 	Timestamp    time.Time
 	Synced       bool
+	Auto         bool
 	KanbanCode   *string
 	Description  *string
 	StandardPack *float64
@@ -26,7 +27,7 @@ func (s *LocalStore) ListConfirmationsBetween(start, end time.Time) ([]HistoryEn
 	// created_at never precedes the confirmation time, so it is a safe, index-free
 	// prefilter that avoids reading the whole 30-day retention window.
 	rows, err := s.db.Query(`
-		SELECT c.id, c.uii, c.action, c.antenna_id, c.timestamp, c.synced,
+		SELECT c.id, c.uii, c.action, c.antenna_id, c.timestamp, c.synced, c.auto,
 		       k.code, k.description, k.standard_pack, k.unit
 		FROM pending_confirmations c
 		LEFT JOIN tag_kanban_links l ON l.uii = c.uii
@@ -48,7 +49,7 @@ func (s *LocalStore) ListConfirmationsBetween(start, end time.Time) ([]HistoryEn
 		var antenna, code, description, unit sql.NullString
 		var pack sql.NullFloat64
 		e := &r.entry
-		if err := rows.Scan(&r.id, &e.UII, &e.Action, &antenna, &e.Timestamp, &e.Synced, &code, &description, &pack, &unit); err != nil {
+		if err := rows.Scan(&r.id, &e.UII, &e.Action, &antenna, &e.Timestamp, &e.Synced, &e.Auto, &code, &description, &pack, &unit); err != nil {
 			return nil, err
 		}
 		if e.Timestamp.Before(start) || !e.Timestamp.Before(end) {

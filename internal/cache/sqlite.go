@@ -125,6 +125,12 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 		return nil, fmt.Errorf("failed to migrate rssi to signed dBm: %w", err)
 	}
 
+	// Gateway settings persisted across restarts (additive table)
+	if err := migrateSettingsTable(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to migrate settings table: %w", err)
+	}
+
 	// HAPPY PATH: Create cache instance with buffered channel
 	cache := &SQLite{
 		db:       db,
@@ -204,7 +210,8 @@ func createTables(db *sql.DB) error {
 				synced_at DATETIME,
 				next_attempt_at DATETIME,
 				confirmation_id TEXT,
-				occurred_at TEXT
+				occurred_at TEXT,
+				auto INTEGER NOT NULL DEFAULT 0
 			);
 
 			CREATE INDEX IF NOT EXISTS idx_users_rfid ON users(rfid_tag);
@@ -281,7 +288,8 @@ func createTables(db *sql.DB) error {
 			synced_at DATETIME,
 			next_attempt_at DATETIME,
 			confirmation_id TEXT,
-			occurred_at TEXT
+			occurred_at TEXT,
+			auto INTEGER NOT NULL DEFAULT 0
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_tool_tags_uii ON tool_tags(uii);
@@ -382,7 +390,31 @@ func migratePendingConfirmations(db *sql.DB) error {
 		}
 	}
 
-	return migrateConfirmationIdempotency(db)
+	if err := migrateConfirmationIdempotency(db); err != nil {
+		return err
+	}
+	return migrateAutoConfirmation(db)
+}
+
+// migrateAutoConfirmation adds auto (1 when the gateway confirmed the movement
+// by itself, 0 for operator confirmations) to pending_confirmations. Existing
+// rows were all confirmed by an operator. It is idempotent - safe to run
+// multiple times.
+func migrateAutoConfirmation(db *sql.DB) error {
+	var exists bool
+	err := db.QueryRow(`
+		SELECT COUNT(*) > 0 FROM pragma_table_info('pending_confirmations') WHERE name = 'auto'
+	`).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("failed to check auto column: %w", err)
+	}
+	if !exists {
+		_, err = db.Exec(`ALTER TABLE pending_confirmations ADD COLUMN auto INTEGER NOT NULL DEFAULT 0`)
+		if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("failed to add auto column: %w", err)
+		}
+	}
+	return nil
 }
 
 // migrateConfirmationIdempotency adds confirmation_id (the idempotency key the
@@ -739,6 +771,21 @@ func migrateSignedRSSI(db *sql.DB) error {
 	}
 	if n, err := res.RowsAffected(); err == nil && n > 0 {
 		fmt.Fprintf(os.Stderr, "[cache] converted %d queued readings to signed dBm rssi\n", n)
+	}
+	return nil
+}
+
+// migrateSettingsTable creates the key/value table for gateway settings changed
+// at runtime (e.g. the automatic confirmation mode). It is additive.
+func migrateSettingsTable(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS settings (
+			key TEXT PRIMARY KEY,
+			value TEXT
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create settings table: %w", err)
 	}
 	return nil
 }
