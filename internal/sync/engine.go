@@ -21,6 +21,21 @@ type Cache interface {
 	Count() (int, error)
 }
 
+// ReadingPurger is implemented by caches that delete synced readings past their
+// retention. It is optional so caches without it keep working unchanged.
+type ReadingPurger interface {
+	PurgeSyncedReadings(cutoff time.Time) (int64, error)
+}
+
+// ReadingRejecter is implemented by caches that keep readings the VPS rejected
+// apart from delivered ones. Without it, rejected readings are marked synced.
+type ReadingRejecter interface {
+	MarkRejected(ids []int64) error
+}
+
+// readingPurgeInterval is how often the sync loop purges synced readings.
+const readingPurgeInterval = time.Hour
+
 // Sender delivers a batch of readings to the cloud and returns its verdict.
 type Sender interface {
 	SendSyncRequest(req models.SyncRequest) (*models.SyncResponse, error)
@@ -172,17 +187,40 @@ func (e *Engine) run() {
 	ticker := time.NewTicker(e.config.SyncInterval)
 	defer ticker.Stop()
 
-	// Do initial sync with exponential backoff on failure
+	// Purge old synced readings, then do initial sync with exponential backoff on failure
+	lastPurge := time.Now()
+	e.purgeSyncedReadings()
 	e.syncWithBackoff(e.ctx)
 
 	for {
 		select {
 		case <-ticker.C:
+			if time.Since(lastPurge) >= readingPurgeInterval {
+				lastPurge = time.Now()
+				e.purgeSyncedReadings()
+			}
 			e.syncWithBackoff(e.ctx)
 
 		case <-e.stopCh:
 			return
 		}
+	}
+}
+
+// purgeSyncedReadings deletes synced readings older than the retention.
+// Failures are logged only; unsynced readings are never touched.
+func (e *Engine) purgeSyncedReadings() {
+	purger, ok := e.cache.(ReadingPurger)
+	if !ok {
+		return
+	}
+	removed, err := purger.PurgeSyncedReadings(time.Now().Add(-cache.ReadingRetention))
+	if err != nil {
+		log.Printf("[Sync] Failed to purge synced readings: %v", err)
+		return
+	}
+	if removed > 0 {
+		log.Printf("[Sync] Purged %d synced readings older than %s", removed, cache.ReadingRetention)
 	}
 }
 
@@ -289,7 +327,8 @@ func (e *Engine) syncOnce(ctx context.Context) error {
 	// The server stored (accepted) or already had (duplicates) every reading
 	// except the ones it rejected by index. Rejections are terminal: a resend
 	// would be rejected again, so they leave the queue too.
-	rejected := rejectedIndexes(resp.Errors, len(ids))
+	rejectedSet := rejectedIndexes(resp.Errors, len(ids))
+	rejected := len(rejectedSet)
 	delivered := resp.Accepted + resp.Duplicates
 	if resp.Accepted < 0 || resp.Duplicates < 0 || delivered+rejected != len(ids) {
 		// The response does not account for every reading: keep them all
@@ -300,9 +339,9 @@ func (e *Engine) syncOnce(ctx context.Context) error {
 		return nil
 	}
 
-	if err := e.cache.MarkSynced(ids); err != nil {
+	if err := e.markDelivered(ids, rejectedSet); err != nil {
 		e.handlePartialFailure(0, len(ids))
-		return fmt.Errorf("failed to mark %d readings as synced: %w", len(ids), err)
+		return err
 	}
 	if rejected > 0 {
 		log.Printf("[Sync] server rejected %d of %d readings: %v", rejected, len(ids), resp.Errors)
@@ -314,9 +353,36 @@ func (e *Engine) syncOnce(ctx context.Context) error {
 	return nil
 }
 
-// rejectedIndexes counts the distinct in-range request indexes named by
+// markDelivered marks the rejected indexes rejected and the rest synced. When
+// the cache cannot keep rejections apart, the whole batch is marked synced.
+func (e *Engine) markDelivered(ids []int64, rejectedSet map[int]bool) error {
+	rejecter, ok := e.cache.(ReadingRejecter)
+	if !ok || len(rejectedSet) == 0 {
+		if err := e.cache.MarkSynced(ids); err != nil {
+			return fmt.Errorf("failed to mark %d readings as synced: %w", len(ids), err)
+		}
+		return nil
+	}
+	var delivered, rejected []int64
+	for i, id := range ids {
+		if rejectedSet[i] {
+			rejected = append(rejected, id)
+		} else {
+			delivered = append(delivered, id)
+		}
+	}
+	if err := e.cache.MarkSynced(delivered); err != nil {
+		return fmt.Errorf("failed to mark %d readings as synced: %w", len(delivered), err)
+	}
+	if err := rejecter.MarkRejected(rejected); err != nil {
+		return fmt.Errorf("failed to mark %d readings as rejected: %w", len(rejected), err)
+	}
+	return nil
+}
+
+// rejectedIndexes returns the distinct in-range request indexes named by
 // "reading[<index>]: <reason>" errors.
-func rejectedIndexes(errs []string, n int) int {
+func rejectedIndexes(errs []string, n int) map[int]bool {
 	seen := make(map[int]bool)
 	for _, msg := range errs {
 		m := rejectedIndex.FindStringSubmatch(msg)
@@ -328,7 +394,7 @@ func rejectedIndexes(errs []string, n int) int {
 			seen[i] = true
 		}
 	}
-	return len(seen)
+	return seen
 }
 
 // handleFailure updates stats on failed sync
