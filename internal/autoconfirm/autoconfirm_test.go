@@ -199,7 +199,7 @@ func TestTick_AutomaticPassConfirmsOnceOnline(t *testing.T) {
 	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-2", t0, 3)
 
-	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(ended))
 	e.tick(last.Add(2 * time.Minute))
 
 	if n := e.vps.confirms.Load(); n != 1 {
@@ -228,7 +228,7 @@ func TestTick_OutsideTagConfirmsEntrada(t *testing.T) {
 	e.link(t, "E1", loc("Línea 3"))
 	last := e.reads("E1", "ant-1", t0, 4)
 
-	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(ended))
 
 	if h := e.history(t); len(h) != 1 || h[0].Action != "entrada" || !h[0].Auto {
 		t.Errorf("history = %+v, want one auto entrada", h)
@@ -268,7 +268,7 @@ func TestTick_NothingConfirmed(t *testing.T) {
 			tc.setup(t, e)
 			last := e.reads("E1", "ant-1", t0, tc.reads)
 
-			e.tick(last.Add(time.Minute))
+			e.tick(last.Add(ended))
 
 			if n := e.vps.confirms.Load(); n != 0 {
 				t.Errorf("VPS confirms = %d, want 0", n)
@@ -299,7 +299,7 @@ func TestTick_ReadsKeepThePassAlive(t *testing.T) {
 	if n := e.vps.confirms.Load(); n != 0 {
 		t.Fatalf("confirmed before idle: %d", n)
 	}
-	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(ended))
 	if h := e.history(t); len(h) != 1 || !h[0].Timestamp.Equal(last) {
 		t.Errorf("history = %+v, want one confirm at the last read %v", h, last)
 	}
@@ -309,18 +309,19 @@ func TestTick_NewReadAfterConfirmStartsNewPass(t *testing.T) {
 	e := newEnv(t, true)
 	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-1", t0, 3)
-	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(ended))
 
 	// The confirm moved the tag out of the warehouse; one read is not a pass.
 	start := last.Add(2 * time.Minute)
 	e.reads("E1", "ant-1", start, 1)
-	e.tick(start.Add(time.Minute))
+	e.tick(start.Add(ended))
 	if n := e.vps.confirms.Load(); n != 1 {
 		t.Fatalf("confirms after short pass = %d, want 1", n)
 	}
 
-	last = e.reads("E1", "ant-1", start.Add(2*time.Minute), 3)
-	e.tick(last.Add(time.Minute))
+	// After the Cooldown since the first confirm.
+	last = e.reads("E1", "ant-1", start.Add(Cooldown), 3)
+	e.tick(last.Add(ended))
 	if n := e.vps.confirms.Load(); n != 2 {
 		t.Fatalf("confirms = %d, want 2", n)
 	}
@@ -335,7 +336,7 @@ func TestTick_OfflineQueuesAutoConfirmation(t *testing.T) {
 	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-1", t0, 3)
 
-	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(ended))
 
 	queue, _ := e.store.GetUnsyncedConfirmations(10)
 	if len(queue) != 1 || queue[0].Action != "salida" || !queue[0].OccurredAt.Equal(last) {
@@ -360,7 +361,7 @@ func TestObserve_GapOfIdleStartsNewPass(t *testing.T) {
 	last := e.reads("E1", "ant-1", t0, 2)
 	last = e.reads("E1", "ant-1", last.Add(time.Minute), 1)
 
-	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(ended))
 
 	if h := e.history(t); len(h) != 0 {
 		t.Errorf("history = %+v, want none: passes joined across an idle gap", h)
@@ -393,7 +394,7 @@ func TestClaim_ReadAfterEnqueueRejectsTheQueuedPass(t *testing.T) {
 	e := newEnv(t, true)
 	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-1", t0, 3)
-	now := last.Add(time.Minute)
+	now := last.Add(ended)
 	e.at(now)
 	e.ac.Tick(now)
 
@@ -412,7 +413,7 @@ func TestClaim_ManualAfterEnqueueWins(t *testing.T) {
 	e := newEnv(t, true)
 	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-1", t0, 3)
-	now := last.Add(time.Minute)
+	now := last.Add(ended)
 	e.at(now)
 	e.ac.Tick(now)
 
@@ -433,7 +434,7 @@ func TestClaim_ModeSwitchedToManualAfterEnqueue(t *testing.T) {
 	e := newEnv(t, true)
 	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-1", t0, 3)
-	now := last.Add(time.Minute)
+	now := last.Add(ended)
 	e.at(now)
 	e.ac.Tick(now)
 
@@ -467,8 +468,8 @@ func TestClaim_ManualWhileAutoInFlightIsRefused(t *testing.T) {
 	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-1", t0, 3)
 	entered, release := holdVPS(e)
-	e.at(last.Add(time.Minute))
-	e.ac.Tick(last.Add(time.Minute))
+	e.at(last.Add(ended))
+	e.ac.Tick(last.Add(ended))
 	done := make(chan struct{})
 	go func() {
 		e.work()
@@ -500,7 +501,7 @@ func TestClaim_AutoSuccessKeepsNewerPass(t *testing.T) {
 	e := newEnv(t, true)
 	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-1", t0, 3)
-	now := last.Add(time.Minute)
+	now := last.Add(ended)
 	entered, release := holdVPS(e)
 	e.at(now)
 	e.ac.Tick(now)
@@ -515,10 +516,13 @@ func TestClaim_AutoSuccessKeepsNewerPass(t *testing.T) {
 	close(release)
 	<-done
 
-	e.tick(newLast.Add(time.Minute))
-
-	if n := e.vps.confirms.Load(); n != 2 {
-		t.Errorf("VPS confirms = %d, want 2: the newer pass was consumed", n)
+	// The newer pass is kept unconsumed (the Cooldown, not the claim, then
+	// keeps it from a second automatic confirm).
+	e.tracker.mu.Lock()
+	p := e.tracker.passes["E1"]
+	e.tracker.mu.Unlock()
+	if p == nil || p.consumed || p.reads != 3 || !p.lastSeen.Equal(newLast) {
+		t.Errorf("newer pass = %+v, want it live and unconsumed", p)
 	}
 }
 
@@ -531,7 +535,7 @@ func TestTick_FullQueueRetriesOnLaterTick(t *testing.T) {
 	e.link(t, "E2", loc("Almacén General"))
 	last := e.reads("E1", "ant-1", t0, 3)
 	e.reads("E2", "ant-1", t0, 3)
-	now := last.Add(time.Minute)
+	now := last.Add(ended)
 
 	e.at(now)
 	e.ac.Tick(now)
@@ -562,13 +566,13 @@ func TestClaim_ManualWhileReadingThenIdle(t *testing.T) {
 	}
 	last := e.reads("E1", "ant-1", t0.Add(10*time.Second), 3)
 
-	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(ended))
 	if h := e.history(t); len(h) != 1 || h[0].Auto {
 		t.Fatalf("history = %+v, want only the manual movement", h)
 	}
 
-	last = e.reads("E1", "ant-1", last.Add(2*time.Minute), 3)
-	e.tick(last.Add(time.Minute))
+	last = e.reads("E1", "ant-1", last.Add(Cooldown), 3)
+	e.tick(last.Add(ended))
 	h := e.history(t)
 	auto := 0
 	for _, m := range h {
@@ -588,7 +592,7 @@ func TestClaim_ManualWithoutPassConsumesTheNextReads(t *testing.T) {
 		t.Fatalf("manual: %v", err)
 	}
 	last := e.reads("E1", "ant-1", t0.Add(10*time.Second), 3) // still the consumed pass
-	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(ended))
 	if n := e.vps.confirms.Load(); n != 1 {
 		t.Fatalf("VPS confirms = %d, want only the manual one", n)
 	}
@@ -602,7 +606,7 @@ func TestClaim_FailedAutoConfirmIsNotRetried(t *testing.T) {
 		t.Fatalf("fill queue: %v", err)
 	}
 	last := e.reads("E2", "ant-1", t0, 3)
-	e.tick(last.Add(time.Minute)) // queue full: the auto confirm fails
+	e.tick(last.Add(ended)) // queue full: the auto confirm fails
 	e.svc.MaxPending = 0
 	e.tick(last.Add(2 * time.Minute))
 
@@ -619,7 +623,7 @@ func TestRun_ConfirmsOnTickAndStopsOnCancel(t *testing.T) {
 	e := newEnv(t, true)
 	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-1", t0, 3)
-	e.at(last.Add(time.Minute))
+	e.at(last.Add(ended))
 	ctx, cancel := context.WithCancel(context.Background())
 	ticks := make(chan time.Time)
 	done := make(chan struct{})
@@ -666,7 +670,7 @@ func TestWorker_PendingConfirmationBlocksAuto(t *testing.T) {
 	}
 	last := e.reads("E1", "ant-1", t0, 3)
 
-	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(ended))
 	e.tick(last.Add(2 * time.Minute))
 
 	if n := e.vps.confirms.Load(); n != 0 {
@@ -715,7 +719,7 @@ func TestWorker_DecisionUsesPostClaimValues(t *testing.T) {
 			e.link(t, "E1", loc("Almacén General"))
 			last := e.reads("E1", "ant-1", t0, 3)
 			arm := e.changeAtClaim(func() { tc.change(t, e) })
-			now := last.Add(time.Minute)
+			now := last.Add(ended)
 			e.at(now)
 			e.ac.Tick(now)
 			arm()
@@ -739,16 +743,16 @@ func TestClaim_RejectedClaimIsReconsideredLater(t *testing.T) {
 	e := newEnv(t, true)
 	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-1", t0, 3)
-	now := last.Add(time.Minute)
+	now := last.Add(ended)
 	e.at(now)
 	e.ac.Tick(now)
-	e.reads("E1", "ant-1", now.Add(-time.Second), 1) // the pass extends before the claim
+	e.reads("E1", "ant-1", last.Add(59*time.Second), 1) // the pass extends before the claim
 	e.work()
 	if n := e.vps.confirms.Load(); n != 0 {
 		t.Fatalf("VPS confirms = %d, want 0 after the rejected claim", n)
 	}
 
-	e.tick(now.Add(time.Minute))
+	e.tick(now.Add(ended))
 	e.tick(now.Add(2 * time.Minute))
 
 	if n := e.vps.confirms.Load(); n != 1 {
@@ -760,7 +764,7 @@ func TestClaim_StaleManualAfterAutoIsRefused(t *testing.T) {
 	e := newEnv(t, true)
 	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-1", t0, 3)
-	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(ended))
 
 	err := e.manual("E1", "salida")
 	if !errors.Is(err, confirm.ErrAlreadyAutoConfirmed) {
@@ -800,13 +804,14 @@ func TestSeed_RecentConfirmationConsumesFirstPass(t *testing.T) {
 	}
 
 	last := e.reads("E1", "ant-1", start, 3)
-	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(ended))
 	if n := e.vps.confirms.Load(); n != 0 {
 		t.Fatalf("VPS confirms = %d, want 0 for the first pass after start", n)
 	}
 
-	last = e.reads("E1", "ant-1", last.Add(2*time.Minute), 3)
-	e.tick(last.Add(time.Minute))
+	// A later pass after the Cooldown since the seeded confirmation.
+	last = e.reads("E1", "ant-1", start.Add(Cooldown), 3)
+	e.tick(last.Add(ended))
 	if n := e.vps.confirms.Load(); n != 1 {
 		t.Errorf("VPS confirms = %d, want 1 for a later pass", n)
 	}
@@ -823,8 +828,114 @@ func TestSeed_OldConfirmationIsIgnored(t *testing.T) {
 	}
 
 	last := e.reads("E1", "ant-1", start, 3)
-	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(ended))
 	if n := e.vps.confirms.Load(); n != 1 {
 		t.Errorf("VPS confirms = %d, want 1: an old confirmation is not seeded", n)
 	}
 }
+
+func TestWorker_CooldownAfterRecentConfirmation(t *testing.T) {
+	tests := []struct {
+		name string
+		ago  time.Duration
+		want int32
+	}{
+		{"3 minutes ago", 3 * time.Minute, 0},
+		{"11 minutes ago", 11 * time.Minute, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, true)
+			// The salida reached the VPS, but the cached location is still
+			// the warehouse (a stale sync snapshot).
+			e.link(t, "E1", loc("Almacén General"))
+			last := e.reads("E1", "ant-1", t0, 3)
+			e.recordAt(t, "E1", last.Add(time.Minute-tc.ago))
+			e.tick(last.Add(time.Minute + 2*time.Second))
+			if n := e.vps.confirms.Load(); n != tc.want {
+				t.Errorf("VPS confirms = %d, want %d", n, tc.want)
+			}
+		})
+	}
+}
+
+func TestWarmup_PassStartingRightAfterStartIsConsumed(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	e.tracker.Start(t0)
+	last := e.reads("E1", "ant-1", t0.Add(10*time.Second), 3)
+	e.tick(last.Add(time.Minute + LateReadMargin))
+	e.tick(last.Add(2 * time.Minute))
+	if n := e.vps.confirms.Load(); n != 0 {
+		t.Fatalf("VPS confirms = %d, want 0 for a pass starting in the warm-up", n)
+	}
+
+	last = e.reads("E1", "ant-1", last.Add(3*time.Minute), 3)
+	e.tick(last.Add(time.Minute + LateReadMargin))
+	if n := e.vps.confirms.Load(); n != 1 {
+		t.Errorf("VPS confirms = %d, want 1 for a pass after the warm-up", n)
+	}
+}
+
+func TestWarmup_FailedSeedKeepsTheWarmup(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	e.tracker.Start(t0)
+	if err := e.tracker.SeedRecent(failingLister{}, t0); err == nil {
+		t.Fatal("seed: want an error")
+	}
+	last := e.reads("E1", "ant-1", t0.Add(10*time.Second), 3)
+	e.tick(last.Add(time.Minute + LateReadMargin))
+	if n := e.vps.confirms.Load(); n != 0 {
+		t.Errorf("VPS confirms = %d, want 0", n)
+	}
+}
+
+type failingLister struct{}
+
+func (failingLister) ListConfirmationsBetween(time.Time, time.Time) ([]localstore.HistoryEntry, error) {
+	return nil, errors.New("db down")
+}
+
+func TestClaim_NeedsLateReadMarginPastIdle(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	last := e.reads("E1", "ant-1", t0, 3)
+	now := last.Add(time.Minute)
+	e.at(now)
+	e.ac.Tick(now)
+	// A read timestamped just before the idle deadline arrives late.
+	e.reads("E1", "ant-1", last.Add(59*time.Second), 1)
+	e.work()
+	e.tick(now.Add(time.Second))
+	if n := e.vps.confirms.Load(); n != 0 {
+		t.Fatalf("VPS confirms = %d, want 0 within the margin", n)
+	}
+	e.tick(last.Add(59*time.Second + time.Minute + LateReadMargin))
+	if n := e.vps.confirms.Load(); n != 1 {
+		t.Errorf("VPS confirms = %d, want 1 after the margin", n)
+	}
+}
+
+func TestObserve_ReadOlderThanThePassDoesNotCount(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	// New pass on ant-2 with 2 reads; late reads of an older pass on ant-1.
+	e.reads("E1", "ant-1", t0, 3)
+	start := t0.Add(5 * time.Minute)
+	last := e.reads("E1", "ant-2", start, 2)
+	e.reads("E1", "ant-1", t0.Add(3*time.Second), 2)
+	e.tick(last.Add(time.Minute + LateReadMargin))
+	if n := e.vps.confirms.Load(); n != 0 {
+		t.Fatalf("VPS confirms = %d, want 0: old reads must not reach min reads", n)
+	}
+	e.tracker.mu.Lock()
+	p := e.tracker.passes["E1"]
+	e.tracker.mu.Unlock()
+	if p != nil && p.lastAntenna != "ant-2" {
+		t.Errorf("pass antenna = %s, want ant-2", p.lastAntenna)
+	}
+}
+
+// ended is how long after its last read a pass of newEnv ends.
+const ended = time.Minute + LateReadMargin

@@ -30,6 +30,15 @@ const TickInterval = time.Second
 // a restart.
 const SeedWindow = 10 * time.Minute
 
+// Cooldown is how long after any local confirmation of a tag (manual or
+// automatic, synced or not) it is not confirmed automatically: the cached
+// location may still be older than that movement.
+const Cooldown = 10 * time.Minute
+
+// LateReadMargin is the extra time past the idle time before a pass may be
+// claimed, so a read delayed on its way to the Tracker still extends it.
+const LateReadMargin = 2 * time.Second
+
 // confirmQueue bounds the ended passes waiting for the confirm worker; a
 // variable so tests can lower it.
 var confirmQueue = 64
@@ -59,8 +68,10 @@ type Sink interface {
 }
 
 type pass struct {
-	id          uint64
-	reads       int
+	id    uint64
+	reads int
+	// firstSeen is the pass's first read: older reads do not count.
+	firstSeen   time.Time
 	lastSeen    time.Time
 	lastAntenna string
 	// consumed marks a pass already confirmed (or claimed) manually or
@@ -90,7 +101,9 @@ type Tracker struct {
 	// seeded marks tags confirmed shortly before start: their first pass is
 	// consumed.
 	seeded map[string]bool
-	lastID uint64
+	// started is when the tracker started (zero: no warm-up).
+	started time.Time
+	lastID  uint64
 }
 
 var _ confirm.Claimer = (*Tracker)(nil)
@@ -126,8 +139,13 @@ func (t *Tracker) observe(uii, antenna string, seen time.Time) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.autoDone, uii)
 	p := t.passes[uii]
+	if p != nil && seen.Before(p.firstSeen) {
+		// A late read from before the current pass: it neither counts
+		// toward it nor reopens an older one.
+		return
+	}
+	delete(t.autoDone, uii)
 	if p == nil || seen.Sub(p.lastSeen) >= t.cfg.Idle {
 		p = t.newPass(uii, seen)
 	}
@@ -138,14 +156,30 @@ func (t *Tracker) observe(uii, antenna string, seen time.Time) {
 	p.lastAntenna = antenna
 }
 
-// newPass replaces the tag's pass; the first pass of a seeded tag is
-// consumed. Callers hold mu.
+// newPass replaces the tag's pass; the first pass of a seeded tag and a pass
+// starting within the idle time after Start are consumed. Callers hold mu.
 func (t *Tracker) newPass(uii string, seen time.Time) *pass {
 	t.lastID++
-	p := &pass{id: t.lastID, lastSeen: seen, consumed: t.seeded[uii]}
+	warmup := !t.started.IsZero() && seen.Sub(t.started) < t.cfg.Idle
+	p := &pass{id: t.lastID, firstSeen: seen, lastSeen: seen, consumed: t.seeded[uii] || warmup}
 	delete(t.seeded, uii)
 	t.passes[uii] = p
 	return p
+}
+
+// Start begins the warm-up at now: a pass whose first read arrives within
+// the idle time after now may continue one from before a restart, so it is
+// consumed. Call it before reads arrive, whatever SeedRecent returns.
+func (t *Tracker) Start(now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.started = now
+}
+
+// endedAt reports whether a pass last read at lastSeen may be claimed at now:
+// unread for the idle time plus LateReadMargin.
+func (t *Tracker) endedAt(lastSeen, now time.Time) bool {
+	return now.Sub(lastSeen) >= t.cfg.Idle+LateReadMargin
 }
 
 // RecentLister lists the confirmations recorded locally.
@@ -190,7 +224,7 @@ func (t *Tracker) claimAuto(uii string, passID uint64) (job, bool) {
 	if p == nil || p.id != passID {
 		return job{}, false
 	}
-	if p.consumed || now.Sub(p.lastSeen) < t.cfg.Idle || p.reads < t.cfg.MinReads || !t.mode.Enabled() {
+	if p.consumed || !t.endedAt(p.lastSeen, now) || p.reads < t.cfg.MinReads || !t.mode.Enabled() {
 		p.queued = false
 		return job{}, false
 	}
@@ -257,15 +291,16 @@ type job struct {
 	lastAntenna string
 }
 
-// ended returns the passes unread for the idle time at now that may be
-// confirmed and are not queued yet; every other ended pass is forgotten.
+// ended returns the passes unread for the idle time plus LateReadMargin at
+// now that may be confirmed and are not queued yet, marking them queued;
+// every other ended pass is forgotten.
 func (t *Tracker) ended(now time.Time) []job {
 	auto := t.mode.Enabled()
 	var jobs []job
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for uii, p := range t.passes {
-		if now.Sub(p.lastSeen) < t.cfg.Idle {
+		if !t.endedAt(p.lastSeen, now) {
 			continue
 		}
 		if _, busy := t.inFlight[uii]; busy {
@@ -276,17 +311,21 @@ func (t *Tracker) ended(now time.Time) []job {
 			continue
 		}
 		if !p.queued {
+			p.queued = true
 			jobs = append(jobs, job{uii, p.id, p.reads, p.lastSeen, p.lastAntenna})
 		}
 	}
 	return jobs
 }
 
-func (t *Tracker) setQueued(uii string, passID uint64) {
+// unqueue clears the queued mark of passes that did not fit in the queue.
+func (t *Tracker) unqueue(jobs []job) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if p := t.passes[uii]; p != nil && p.id == passID {
-		p.queued = true
+	for _, j := range jobs {
+		if p := t.passes[j.uii]; p != nil && p.id == j.passID {
+			p.queued = false
+		}
 	}
 }
 
@@ -295,6 +334,7 @@ type Store interface {
 	GetKanbanByUII(uii string) (*localstore.Kanban, error)
 	GetUserByRFIDTag(rfidTag string) (*localstore.User, error)
 	HasPendingConfirmation(uii string) (bool, error)
+	HasConfirmationSince(uii string, since time.Time) (bool, error)
 }
 
 // Confirmer registers a movement. Automatic requests are already claimed on
@@ -326,15 +366,16 @@ func New(tracker *Tracker, bus *events.EventBus, store Store, tools verify.ToolS
 	}
 }
 
-// Tick queues every pass unread for the idle time at now that may be
-// confirmed. It never blocks: with a full queue the pass is retried on the
-// next tick.
+// Tick queues every ended pass that may be confirmed; passes are marked
+// queued before the worker can see them. It never blocks: with a full queue
+// the pass is retried on the next tick.
 func (a *AutoConfirmer) Tick(now time.Time) {
-	for _, j := range a.tracker.ended(now) {
+	jobs := a.tracker.ended(now)
+	for i, j := range jobs {
 		select {
 		case a.work <- j:
-			a.tracker.setQueued(j.uii, j.passID)
 		default:
+			a.tracker.unqueue(jobs[i:])
 			return
 		}
 	}
@@ -349,7 +390,7 @@ func (a *AutoConfirmer) confirmPass(ctx context.Context, queued job) {
 	}
 	confirmed := false
 	defer func() { a.tracker.finish(j.uii, j.passID, confirmed) }()
-	action, ok := a.direction(j.uii)
+	action, ok := a.direction(j.uii, a.tracker.Now())
 	if !ok {
 		// Left for a manual confirm.
 		a.tracker.drop(j.uii, j.passID)
@@ -375,9 +416,10 @@ func (a *AutoConfirmer) confirmPass(ctx context.Context, queued job) {
 }
 
 // direction is the movement of a kanban-linked tag (not a user badge) with no
-// unsynced confirmation queued and a known, non-blank location; ok is false
-// otherwise. A cached location is only trusted when nothing is pending.
-func (a *AutoConfirmer) direction(uii string) (verify.Action, bool) {
+// unsynced confirmation queued, no confirmation within the Cooldown before
+// now and a known, non-blank location; ok is false otherwise. A cached
+// location is only trusted when nothing is pending or recent.
+func (a *AutoConfirmer) direction(uii string, now time.Time) (verify.Action, bool) {
 	kanban, err := a.store.GetKanbanByUII(uii)
 	if err != nil {
 		log.Printf("[AutoConfirm] Failed to look up kanban for %s: %v", uii, err)
@@ -401,6 +443,15 @@ func (a *AutoConfirmer) direction(uii string) (verify.Action, bool) {
 	}
 	if pending {
 		log.Printf("[AutoConfirm] Skipped %s: a confirmation is pending sync", uii)
+		return "", false
+	}
+	recent, err := a.store.HasConfirmationSince(uii, now.Add(-Cooldown))
+	if err != nil {
+		log.Printf("[AutoConfirm] Failed to look up recent confirmations of %s: %v", uii, err)
+		return "", false
+	}
+	if recent {
+		log.Printf("[AutoConfirm] Skipped %s: confirmed within the last %v", uii, Cooldown)
 		return "", false
 	}
 	tool, err := a.tools.GetToolByUII(uii)

@@ -40,6 +40,9 @@ type fakeVPS struct {
 	*httptest.Server
 	confirms atomic.Int32
 	last     atomic.Value
+	// during, when set, runs inside each confirmation POST before it is
+	// answered.
+	during func()
 }
 
 func newFakeVPS(t *testing.T, status int) *fakeVPS {
@@ -54,6 +57,9 @@ func newFakeVPS(t *testing.T, status int) *fakeVPS {
 		json.NewDecoder(r.Body).Decode(&sent)
 		f.last.Store(sent)
 		f.confirms.Add(1)
+		if f.during != nil {
+			f.during()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		w.Write([]byte(`{"status":"OK"}`))
@@ -215,5 +221,71 @@ func TestConfirm_UnassignedTagIsNotClaimed(t *testing.T) {
 	}
 	if len(c.calls) != 0 {
 		t.Errorf("calls = %v, want none", c.calls)
+	}
+}
+
+func onlineService(t *testing.T, status int) (*Service, *localstore.LocalStore, *fakeVPS) {
+	t.Helper()
+	store := newStore(t)
+	link(t, store, "E1")
+	vps := newFakeVPS(t, status)
+	svc := &Service{Store: store, VPS: httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("tok")), CompanyID: "c", MaxPending: 1}
+	return svc, store, vps
+}
+
+func TestConfirm_OnlineSuccessRecordsOneSyncedRowWithSentID(t *testing.T) {
+	svc, store, vps := onlineService(t, http.StatusOK)
+	res, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida"})
+	if err != nil || res.Mode != ModeOnline {
+		t.Fatalf("Confirm = %+v, %v; want online", res, err)
+	}
+	sent, _ := vps.last.Load().(map[string]any)
+	if sent["confirmation_id"] != res.ConfirmationID {
+		t.Errorf("sent id %v, result id %s", sent["confirmation_id"], res.ConfirmationID)
+	}
+	if r := rows(t, store, "E1"); len(r) != 1 || !r[0].synced {
+		t.Errorf("rows = %+v, want one synced row", r)
+	}
+	if q, _ := store.GetUnsyncedConfirmations(10); len(q) != 0 {
+		t.Errorf("unsynced = %+v, want none", q)
+	}
+}
+
+func TestConfirm_OnlineFailureLeavesOneDueRowWithSentID(t *testing.T) {
+	svc, store, vps := onlineService(t, http.StatusInternalServerError)
+	res, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida"})
+	if err != nil || res.Mode != ModeOffline {
+		t.Fatalf("Confirm = %+v, %v; want offline", res, err)
+	}
+	sent, _ := vps.last.Load().(map[string]any)
+	q, _ := store.GetRetryableConfirmations(10, 5)
+	if len(q) != 1 || q[0].ConfirmationID != res.ConfirmationID || sent["confirmation_id"] != res.ConfirmationID {
+		t.Errorf("retryable = %+v, sent %v, result id %s; want one due row with the sent id", q, sent["confirmation_id"], res.ConfirmationID)
+	}
+	if r := rows(t, store, "E1"); len(r) != 1 {
+		t.Errorf("rows = %+v, want one", r)
+	}
+}
+
+// During the send the row is already recorded with the sent id (a crash
+// after the VPS accepts leaves it pending for a deduped retry) and is not
+// picked by the retry worker.
+func TestConfirm_RowRecordedBeforeSendAndNotRetryableDuringIt(t *testing.T) {
+	svc, store, vps := onlineService(t, http.StatusOK)
+	var during []localstore.PendingConfirmation
+	var retryable []localstore.PendingConfirmation
+	vps.during = func() {
+		during, _ = store.GetUnsyncedConfirmations(10)
+		retryable, _ = store.GetRetryableConfirmations(10, 5)
+	}
+	res, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida"})
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	if len(during) != 1 || during[0].ConfirmationID != res.ConfirmationID {
+		t.Errorf("pending during the send = %+v, want one row with id %s", during, res.ConfirmationID)
+	}
+	if len(retryable) != 0 {
+		t.Errorf("retryable during the send = %+v, want none", retryable)
 	}
 }

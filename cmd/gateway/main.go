@@ -157,9 +157,12 @@ func main() {
 		autoMode,
 	)
 	// Tags confirmed just before a restart: their first pass is not
-	// confirmed again.
-	if err := tracker.SeedRecent(localStore, time.Now()); err != nil {
-		log.Printf("Warning: Failed to seed recent confirmations: %v", err)
+	// confirmed again. The warm-up (passes starting within the idle time)
+	// applies even when the seed fails.
+	startedAt := time.Now()
+	tracker.Start(startedAt)
+	if err := tracker.SeedRecent(localStore, startedAt); err != nil {
+		log.Printf("Warning: Failed to seed recent confirmations (start warm-up still applies): %v", err)
 	}
 	autoConfirmer := autoconfirm.New(
 		tracker,

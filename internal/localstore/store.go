@@ -610,6 +610,70 @@ func (s *LocalStore) RecordSyncedConfirmationWithIDAuto(uii, action, antennaID, 
 	return err
 }
 
+// CreateSendingConfirmation records a confirmation about to be sent online,
+// before the send: pending with its idempotency id and instant, not due until
+// notBefore so the sync worker does not resend it while the send is in
+// flight. The queue cap does not apply. After the send, mark it synced
+// (MarkConfirmationSynced) or due now (MakeConfirmationDue); a crash in
+// between leaves it pending with the same id, so the VPS dedupes the retry.
+func (s *LocalStore) CreateSendingConfirmation(uii, action, antennaID, confirmationID string, occurredAt time.Time, auto bool, notBefore time.Time) (*PendingConfirmation, error) {
+	cols, marks, args := autoColumn(auto)
+	result, err := s.db.Exec(`
+		INSERT INTO pending_confirmations (uii, action, antenna_id, timestamp, synced, retry_count, confirmation_id, occurred_at, next_attempt_at`+cols+`)
+		VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?`+marks+`)
+	`, append([]any{uii, action, antennaID, occurredAt, nullIfEmpty(confirmationID), formatOccurredAt(occurredAt), notBefore.UTC().Format(sqliteTimestamp)}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return nil, err
+	}
+	return &PendingConfirmation{
+		ID:             id,
+		UII:            uii,
+		Action:         action,
+		AntennaID:      antennaID,
+		Timestamp:      occurredAt,
+		CreatedAt:      time.Now(),
+		ConfirmationID: confirmationID,
+		OccurredAt:     occurredAt.UTC(),
+	}, nil
+}
+
+// MakeConfirmationDue makes a confirmation recorded by
+// CreateSendingConfirmation whose send failed due now for the sync worker,
+// applying the queue cap as CreateConfirmation does: when the other unsynced
+// confirmations already reach maxPending (> 0), the row is removed and
+// ErrQueueFull returned, as if it had been queued after the failed send.
+func (s *LocalStore) MakeConfirmationDue(id int64, maxPending int) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if maxPending > 0 {
+		var count int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM pending_confirmations WHERE synced = 0 AND id <> ?`, id).Scan(&count); err != nil {
+			return err
+		}
+		if count >= maxPending {
+			if _, err := tx.Exec(`DELETE FROM pending_confirmations WHERE id = ? AND synced = 0`, id); err != nil {
+				return err
+			}
+			if err := tx.Commit(); err != nil {
+				return err
+			}
+			log.Printf("[LocalStore] Queue cap reached (%d), rejected confirmation id=%d", maxPending, id)
+			return ErrQueueFull
+		}
+	}
+	if _, err := tx.Exec(`UPDATE pending_confirmations SET next_attempt_at = NULL WHERE id = ? AND synced = 0`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // autoColumn returns the extra INSERT column, placeholder and value marking an
 // automatic confirmation. Operator confirmations rely on the column default
 // (0), so their insert is unchanged.
@@ -830,6 +894,34 @@ func (s *LocalStore) HasPendingConfirmation(uii string) (bool, error) {
 	var pending bool
 	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pending_confirmations WHERE uii = ? AND synced = 0)`, uii).Scan(&pending)
 	return pending, err
+}
+
+// HasConfirmationSince reports whether uii has a confirmation (manual or
+// automatic, synced or not) that occurred at or after since: its occurred_at
+// when set, else its timestamp.
+func (s *LocalStore) HasConfirmationSince(uii string, since time.Time) (bool, error) {
+	rows, err := s.db.Query(`SELECT timestamp, occurred_at FROM pending_confirmations WHERE uii = ?`, uii)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var timestamp time.Time
+		var occurredAt sql.NullString
+		if err := rows.Scan(&timestamp, &occurredAt); err != nil {
+			return false, err
+		}
+		at := timestamp
+		if occurredAt.Valid {
+			if t, err := time.Parse(time.RFC3339Nano, occurredAt.String); err == nil {
+				at = t
+			}
+		}
+		if !at.Before(since) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // GetOldestPendingAt returns when the oldest unsynced confirmation was queued,

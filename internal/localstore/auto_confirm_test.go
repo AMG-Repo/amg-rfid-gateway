@@ -1,6 +1,7 @@
 package localstore
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -102,5 +103,118 @@ func TestHasPendingConfirmation(t *testing.T) {
 	}
 	if pending, err := store.HasPendingConfirmation("E1"); err != nil || pending {
 		t.Errorf("after sync: %v, %v; want false, nil", pending, err)
+	}
+}
+
+func TestHasConfirmationSince(t *testing.T) {
+	store, _ := newProductionStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	since := now.Add(-10 * time.Minute)
+	if found, err := store.HasConfirmationSince("E1", since); err != nil || found {
+		t.Fatalf("no rows: %v, %v; want false, nil", found, err)
+	}
+	// Old confirmations of the tag and a recent one of another tag.
+	if err := store.RecordSyncedConfirmationWithIDAuto("E1", "salida", "manual", "old", now.Add(-11*time.Minute), false); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordSyncedConfirmation("E1", "entrada", "manual", now.Add(-20*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateConfirmationWithIDAuto("E2", "salida", "manual", "other", now, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := store.HasConfirmationSince("E1", since); err != nil || found {
+		t.Fatalf("only old rows: %v, %v; want false, nil", found, err)
+	}
+
+	tests := []struct {
+		name   string
+		record func(uii string) error
+	}{
+		{"synced manual", func(uii string) error {
+			return store.RecordSyncedConfirmationWithIDAuto(uii, "salida", "manual", uii, now.Add(-3*time.Minute), false)
+		}},
+		{"pending auto", func(uii string) error {
+			_, err := store.CreateConfirmationWithIDAuto(uii, "salida", "ant-1", uii, now.Add(-3*time.Minute), 0, true)
+			return err
+		}},
+		{"legacy without occurred_at", func(uii string) error {
+			return store.RecordSyncedConfirmation(uii, "salida", "manual", now.Add(-3*time.Minute))
+		}},
+	}
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			uii := "R" + string(rune('0'+i))
+			if err := tc.record(uii); err != nil {
+				t.Fatalf("record: %v", err)
+			}
+			if found, err := store.HasConfirmationSince(uii, since); err != nil || !found {
+				t.Errorf("recent: %v, %v; want true, nil", found, err)
+			}
+			if found, _ := store.HasConfirmationSince(uii, now.Add(-time.Minute)); found {
+				t.Error("found a confirmation older than since")
+			}
+		})
+	}
+}
+
+func TestSendingConfirmation_NotRetryableUntilDue(t *testing.T) {
+	store, _ := newProductionStore(t)
+	now := time.Now().UTC()
+	c, err := store.CreateSendingConfirmation("E1", "salida", "ant-1", "send-1", now, true, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if q, _ := store.GetRetryableConfirmations(10, 5); len(q) != 0 {
+		t.Fatalf("retryable during the send = %+v, want none", q)
+	}
+	if err := store.MakeConfirmationDue(c.ID, 0); err != nil {
+		t.Fatalf("due: %v", err)
+	}
+	q, _ := store.GetRetryableConfirmations(10, 5)
+	if len(q) != 1 || q[0].ConfirmationID != "send-1" {
+		t.Fatalf("retryable after due = %+v, want send-1", q)
+	}
+	h, _ := store.ListConfirmationsBetween(now.Add(-time.Hour), now.Add(time.Hour))
+	if len(h) != 1 || !h[0].Auto || h[0].Synced {
+		t.Errorf("history = %+v, want one pending auto row", h)
+	}
+}
+
+func TestSendingConfirmation_IgnoresQueueCap(t *testing.T) {
+	store, _ := newProductionStore(t)
+	now := time.Now().UTC()
+	if _, err := store.CreateConfirmationWithIDAuto("E0", "salida", "manual", "q-1", now, 1, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateSendingConfirmation("E1", "salida", "manual", "send-1", now, false, now.Add(time.Minute)); err != nil {
+		t.Fatalf("create with a full queue: %v", err)
+	}
+}
+
+func TestMakeConfirmationDue_AppliesQueueCap(t *testing.T) {
+	store, _ := newProductionStore(t)
+	now := time.Now().UTC()
+	c, err := store.CreateSendingConfirmation("E1", "salida", "manual", "send-1", now, false, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Alone in the queue: within a cap of 1.
+	if err := store.MakeConfirmationDue(c.ID, 1); err != nil {
+		t.Fatalf("due within the cap: %v", err)
+	}
+	if _, err := store.CreateConfirmationWithIDAuto("E0", "salida", "manual", "q-1", now, 0, false); err != nil {
+		t.Fatal(err)
+	}
+	c2, err := store.CreateSendingConfirmation("E2", "salida", "manual", "send-2", now, false, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MakeConfirmationDue(c2.ID, 2); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("err = %v, want ErrQueueFull", err)
+	}
+	q, _ := store.GetUnsyncedConfirmations(10)
+	if len(q) != 2 {
+		t.Errorf("unsynced = %+v, want the two queued before, without send-2", q)
 	}
 }

@@ -54,6 +54,10 @@ type manualClaimErrer interface {
 	ClaimManualErr(uii string) error
 }
 
+// SendingDelay keeps a confirmation recorded before its online send out of
+// the retry worker's batches while the send is in flight.
+const SendingDelay = time.Minute
+
 // Request is one movement to confirm. Action must already be canonical
 // ("entrada" or "salida").
 type Request struct {
@@ -133,16 +137,41 @@ func (s *Service) Confirm(ctx context.Context, req Request) (Result, error) {
 	defer cancel()
 
 	if CheckVPSHealth(ctx, s.VPS) {
-		err := s.VPS.SendIdempotentConfirmation(s.CompanyID, req.UII, req.Action, antennaID, confirmationID, occurredAt)
+		// Recorded before the send, not due during it (next_attempt_at is
+		// compared with the wall clock): a crash after the VPS accepts leaves
+		// it pending with the same id, so the retry is deduped. A failed
+		// record does not stop the send.
+		row, err := s.Store.CreateSendingConfirmation(req.UII, req.Action, antennaID, confirmationID, occurredAt, req.Auto, time.Now().Add(SendingDelay))
+		if err != nil {
+			log.Printf("[Confirm] Failed to record confirmation for %s before sending: %v", req.UII, err)
+			row = nil
+		}
+		err = s.VPS.SendIdempotentConfirmation(s.CompanyID, req.UII, req.Action, antennaID, confirmationID, occurredAt)
 		if err == nil {
 			// The VPS has the confirmation, so a failed local record is logged only.
 			s.applyMovementLocation(req.UII, req.Action)
-			if err := s.Store.RecordSyncedConfirmationWithIDAuto(req.UII, req.Action, antennaID, confirmationID, occurredAt, req.Auto); err != nil {
+			if row != nil {
+				err = s.Store.MarkConfirmationSynced(row.ID)
+			} else {
+				err = s.Store.RecordSyncedConfirmationWithIDAuto(req.UII, req.Action, antennaID, confirmationID, occurredAt, req.Auto)
+			}
+			if err != nil {
 				log.Printf("[Confirm] Failed to record synced confirmation for %s: %v", req.UII, err)
 			}
 			return Result{Mode: ModeOnline, ConfirmationID: confirmationID}, nil
 		}
 		log.Printf("[Confirm] VPS confirmation failed: %v, falling back to local queue", err)
+		if row != nil {
+			// Queued as the offline path would, cap included.
+			if err := s.Store.MakeConfirmationDue(row.ID, s.MaxPending); err != nil {
+				if !errors.Is(err, localstore.ErrQueueFull) {
+					log.Printf("[Confirm] Failed to queue local confirmation: %v", err)
+				}
+				return Result{Mode: ModeOffline}, err
+			}
+			s.applyMovementLocation(req.UII, req.Action)
+			return Result{Mode: ModeOffline, ConfirmationID: confirmationID}, nil
+		}
 	}
 
 	if _, err := s.Store.CreateConfirmationWithIDAuto(req.UII, req.Action, antennaID, confirmationID, occurredAt, s.MaxPending, req.Auto); err != nil {
