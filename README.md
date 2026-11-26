@@ -647,7 +647,10 @@ When the offline queue is at `max_pending_confirmations` it answers
 and nothing queued is discarded.
 
 **Automatic confirmation (experimental).** The default mode is manual (no stored setting means
-manual): nothing changes and every movement is confirmed with the panel button. In automatic mode (`POST /api/auto-confirm`) the gateway tracks
+manual): nothing changes and every movement is confirmed with the panel button. Use automatic mode
+only when a single gateway reads a given set of tags: with several gateways sharing tags, a movement
+recorded by another gateway is only seen here after the next tools sync (hourly by default), so an
+automatic confirm in that window can repeat its direction. In automatic mode (`POST /api/auto-confirm`) the gateway tracks
 each tag's pass (reads, last read, last antenna); a pass ends once the tag goes unread for
 `auto_confirm_idle` (default 1 min) plus a 2 s margin for reads delayed on their way in; a read
 timestamped before the start of the tag's current pass does not count toward it (nor reopens an

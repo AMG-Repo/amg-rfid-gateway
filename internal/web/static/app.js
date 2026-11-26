@@ -1367,7 +1367,7 @@
       idle +
       " sin lectura y " +
       reads +
-      "+ lecturas"
+      "+ lecturas. Úsalo solo si este es el único gateway que lee estos tags."
     );
   }
   function renderMode() {
@@ -1396,7 +1396,7 @@
       renderMode();
       say(
         status.auto_confirm
-          ? "Modo automático activado. " + autoRuleText(status) + "."
+          ? "Modo automático activado. " + autoRuleText(status)
           : "Modo manual activado.",
       );
       return;
