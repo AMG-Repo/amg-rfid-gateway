@@ -658,10 +658,12 @@ the values read after the claim. A tag with any confirmation still pending sync 
 is never auto-confirmed (its cached location is only trusted when nothing is pending). Cooldown: a
 tag with any local confirmation (manual or automatic, synced or not) whose movement time is within
 the last 10 minutes is not auto-confirmed either; the pass is dropped and nothing is written (a sync
-may still carry a location older than that movement). The direction follows the tag's known cached location
-(in the warehouse → `salida`, anywhere else → `entrada`); a tag whose location is unknown or blank
-(no tool row, empty/NULL location, or a failed lookup) is never auto-confirmed and stays for a manual
-confirm. `occurred_at` is the last read and `antenna_id` the last antenna. It uses the same path as
+may still carry a location older than that movement). Direction: the tag's most recent local
+confirmation (manual or automatic, synced or not, by movement time) decides first: last `entrada` →
+`salida`, last `salida` → `entrada`. Only a tag with no local confirmation uses its known cached
+location (in the warehouse → `salida`, anywhere else → `entrada`); such a tag whose location is
+unknown or blank (no tool row, empty/NULL location, or a failed lookup) is never auto-confirmed and
+stays for a manual confirm. `occurred_at` is the last read and `antenna_id` the last antenna. It uses the same path as
 `POST /api/confirm` (confirmation id, online send, offline queue with retries, location update); the
 movement shows `auto: true` in `/api/history` and an SSE `auto_confirmed` event
 (`{"uii", "action", "confirmation_id"}`) is sent. One movement per pass: every confirm (manual from
@@ -681,16 +683,16 @@ Start warm-up: a pass whose first read arrives within `auto_confirm_idle` after 
 is consumed too (it may continue a pass from before the restart), even when reading the recent
 confirmations fails.
 
-Online confirms (manual or automatic) are recorded locally before they are sent: the row is pending
-with its confirmation id and not due for the retry worker during the send, then marked synced
-(success) or queued as before (failure, queue cap included). If the gateway dies after the VPS
-accepted, the row stays pending with the same id: the retry is deduped by the VPS and the restart
-seed sees it. There is no user-visible change (same responses, one history row per confirm).
+Manual confirms behave exactly as before automatic mode existed (same path, responses and records),
+except for the two `409` answers above.
 
-Known residual cases: two manual confirms of the same pass are allowed (as in manual mode today); a
-confirm already claimed completes after a switch to Manual; an automatic confirm that is skipped
-(cooldown, warm-up, pending queue, unknown location, failed send) is not retried and falls back to a
-manual confirm.
+Known residual cases: movements made outside this gateway (another gateway or the VPS) are only seen
+through the hourly tools sync, and only for tags this gateway never confirmed, so the direction can be
+wrong for a tag moved elsewhere; a read that reaches the gateway after the automatic confirm claimed
+its pass does not stop that confirm; two manual confirms of the same pass are allowed (as in manual
+mode today); a confirm already claimed completes after a switch to Manual; an automatic confirm that
+is skipped (cooldown, warm-up, pending queue, unknown location, failed send) is not retried and falls
+back to a manual confirm.
 
 **SSE `tag_detected`** keeps its fields (`epc`, `rssi`, `antenna_id`, `timestamp`,
 `suggested_action`, `suggested_reason`) and adds, additively: a `kanban` object for assigned

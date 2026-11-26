@@ -335,6 +335,7 @@ type Store interface {
 	GetUserByRFIDTag(rfidTag string) (*localstore.User, error)
 	HasPendingConfirmation(uii string) (bool, error)
 	HasConfirmationSince(uii string, since time.Time) (bool, error)
+	LastConfirmationAction(uii string) (action string, ok bool, err error)
 }
 
 // Confirmer registers a movement. Automatic requests are already claimed on
@@ -417,8 +418,8 @@ func (a *AutoConfirmer) confirmPass(ctx context.Context, queued job) {
 
 // direction is the movement of a kanban-linked tag (not a user badge) with no
 // unsynced confirmation queued, no confirmation within the Cooldown before
-// now and a known, non-blank location; ok is false otherwise. A cached
-// location is only trusted when nothing is pending or recent.
+// now: the opposite of its last local confirmation, or, when it has none, from
+// a known, non-blank cached location; ok is false otherwise.
 func (a *AutoConfirmer) direction(uii string, now time.Time) (verify.Action, bool) {
 	kanban, err := a.store.GetKanbanByUII(uii)
 	if err != nil {
@@ -452,6 +453,24 @@ func (a *AutoConfirmer) direction(uii string, now time.Time) (verify.Action, boo
 	}
 	if recent {
 		log.Printf("[AutoConfirm] Skipped %s: confirmed within the last %v", uii, Cooldown)
+		return "", false
+	}
+	// This gateway's last movement of the tag decides; the cached location,
+	// which a tools sync can overwrite with an older snapshot, only when the
+	// tag has none.
+	last, found, err := a.store.LastConfirmationAction(uii)
+	if err != nil {
+		log.Printf("[AutoConfirm] Failed to look up the last confirmation of %s: %v", uii, err)
+		return "", false
+	}
+	if found {
+		switch verify.Action(last) {
+		case verify.ActionEntrada:
+			return verify.ActionSalida, true
+		case verify.ActionSalida:
+			return verify.ActionEntrada, true
+		}
+		log.Printf("[AutoConfirm] Skipped %s: unknown last action %q", uii, last)
 		return "", false
 	}
 	tool, err := a.tools.GetToolByUII(uii)

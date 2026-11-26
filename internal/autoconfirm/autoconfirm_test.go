@@ -939,3 +939,48 @@ func TestObserve_ReadOlderThanThePassDoesNotCount(t *testing.T) {
 
 // ended is how long after its last read a pass of newEnv ends.
 const ended = time.Minute + LateReadMargin
+
+// The tag's last local confirmation decides the direction; the cached
+// location only when the tag has none.
+func TestWorker_DirectionFromLastLocalConfirmation(t *testing.T) {
+	tests := []struct {
+		name     string
+		location *string
+		last     string // "" = no local confirmation
+		want     string // "" = nothing sent
+	}{
+		{"last salida, stale warehouse location", loc("Almacén General"), "salida", "entrada"},
+		{"last entrada, outside location", loc("Línea 3"), "entrada", "salida"},
+		{"none, warehouse location", loc("Almacén General"), "", "salida"},
+		{"none, blank location", loc("  "), "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t, true)
+			e.link(t, "E1", tc.location)
+			if tc.last != "" {
+				// Older than the cooldown; an older opposite one must not win.
+				other := map[string]string{"salida": "entrada", "entrada": "salida"}[tc.last]
+				if err := e.store.RecordSyncedConfirmationWithIDAuto("E1", other, "manual", "old", t0.Add(-time.Hour), false); err != nil {
+					t.Fatal(err)
+				}
+				if err := e.store.RecordSyncedConfirmationWithIDAuto("E1", tc.last, "manual", "last", t0.Add(-30*time.Minute), true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			last := e.reads("E1", "ant-1", t0, 3)
+			e.tick(last.Add(ended))
+
+			sent, _ := e.vps.last.Load().(map[string]any)
+			if tc.want == "" {
+				if n := e.vps.confirms.Load(); n != 0 {
+					t.Errorf("VPS confirms = %d, want 0", n)
+				}
+				return
+			}
+			if n := e.vps.confirms.Load(); n != 1 || sent["action"] != tc.want {
+				t.Errorf("VPS confirms = %d, sent %v; want one %s", n, sent["action"], tc.want)
+			}
+		})
+	}
+}

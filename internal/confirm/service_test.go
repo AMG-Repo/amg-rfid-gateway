@@ -267,25 +267,24 @@ func TestConfirm_OnlineFailureLeavesOneDueRowWithSentID(t *testing.T) {
 	}
 }
 
-// During the send the row is already recorded with the sent id (a crash
-// after the VPS accepts leaves it pending for a deduped retry) and is not
-// picked by the retry worker.
-func TestConfirm_RowRecordedBeforeSendAndNotRetryableDuringIt(t *testing.T) {
+// A slow successful online send takes no queue slot: an offline confirm made
+// while it is in flight, with the queue one below the cap, is still queued.
+func TestConfirm_OnlineSendInFlightTakesNoQueueSlot(t *testing.T) {
 	svc, store, vps := onlineService(t, http.StatusOK)
-	var during []localstore.PendingConfirmation
-	var retryable []localstore.PendingConfirmation
+	svc.MaxPending = 2
+	link(t, store, "E2")
+	if _, err := store.CreateConfirmationWithIDAuto("E0", "salida", "manual", "q-1", time.Now(), 0, false); err != nil {
+		t.Fatal(err)
+	}
+	offline := &Service{Store: store, CompanyID: "c", MaxPending: 2}
+	var offlineErr error
 	vps.during = func() {
-		during, _ = store.GetUnsyncedConfirmations(10)
-		retryable, _ = store.GetRetryableConfirmations(10, 5)
+		_, offlineErr = offline.Confirm(context.Background(), Request{UII: "E2", Action: "entrada"})
 	}
-	res, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida"})
-	if err != nil {
-		t.Fatalf("Confirm: %v", err)
+	if _, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida"}); err != nil {
+		t.Fatalf("online Confirm: %v", err)
 	}
-	if len(during) != 1 || during[0].ConfirmationID != res.ConfirmationID {
-		t.Errorf("pending during the send = %+v, want one row with id %s", during, res.ConfirmationID)
-	}
-	if len(retryable) != 0 {
-		t.Errorf("retryable during the send = %+v, want none", retryable)
+	if offlineErr != nil {
+		t.Errorf("offline confirm during the send: %v, want queued", offlineErr)
 	}
 }
