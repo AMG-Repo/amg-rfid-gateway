@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/amg-rfid/amg-rfid-gateway/internal/autoconfirm"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/httpclient"
@@ -44,6 +45,9 @@ type Server struct {
 	// refreshed right after a successful tag assignment (optional)
 	syncTrigger SyncTrigger
 	antennas    AntennaStatusProvider
+
+	// autoMode is the confirmation mode shared with the auto-confirmer.
+	autoMode *autoconfirm.Mode
 }
 
 // NewServer creates a new web server.
@@ -78,6 +82,7 @@ func NewServerWithConfig(
 		companyID:  companyID,
 		config:     cfg,
 		sseClients: make(map[chan events.TagDetected]struct{}),
+		autoMode:   &autoconfirm.Mode{},
 		httpServer: &http.Server{
 			Addr:         fmt.Sprintf("%s:%d", addr, port),
 			ReadTimeout:  15 * time.Second,
@@ -104,6 +109,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/confirm", s.requireWriteAuth(s.handleConfirm))
 	mux.HandleFunc("/api/confirmations/requeue", s.requireWriteAuth(s.handleRequeue))
 	mux.HandleFunc("/api/status", s.handleStatus)
+	mux.HandleFunc("/api/auto-confirm", s.requireWriteAuth(s.handleAutoConfirm))
 	mux.HandleFunc("/api/auth-mode", s.handleAuthMode)
 	mux.HandleFunc("/api/unassigned-tags", s.handleUnassignedTags)
 	mux.HandleFunc("/api/kanbans", s.handleKanbans)

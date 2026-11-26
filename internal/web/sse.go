@@ -33,6 +33,9 @@ func (s *Server) SSEHandler(w http.ResponseWriter, r *http.Request) {
 	// Subscribe to event bus
 	ch := s.eventBus.Subscribe()
 
+	autoCh := s.eventBus.SubscribeAutoConfirmed()
+	defer s.eventBus.UnsubscribeAutoConfirmed(autoCh)
+
 	// Add to sseClients for tracking
 	s.mu.Lock()
 	s.sseClients[ch] = struct{}{}
@@ -108,6 +111,19 @@ func (s *Server) SSEHandler(w http.ResponseWriter, r *http.Request) {
 
 			// Send event
 			fmt.Fprintf(w, "event: tag_detected\ndata: %s\n\n", string(data))
+			flusher.Flush()
+
+		case event, ok := <-autoCh:
+			if !ok {
+				log.Printf("[Web] SSE channel closed")
+				return
+			}
+			data, err := json.Marshal(event)
+			if err != nil {
+				log.Printf("[Web] Failed to marshal auto-confirmed event: %v", err)
+				continue
+			}
+			fmt.Fprintf(w, "event: auto_confirmed\ndata: %s\n\n", string(data))
 			flusher.Flush()
 
 		case <-r.Context().Done():

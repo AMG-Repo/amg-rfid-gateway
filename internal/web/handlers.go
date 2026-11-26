@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/amg-rfid/amg-rfid-gateway/internal/confirm"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 	syncpkg "github.com/amg-rfid/amg-rfid-gateway/internal/sync"
-	"github.com/amg-rfid/amg-rfid-gateway/internal/uuidutil"
 )
 
 const (
@@ -19,7 +19,6 @@ const (
 	msgConfirmNoVerify    = "No se pudo verificar la asignación de la tag."
 	msgConfirmSent        = "Confirmación enviada al VPS"
 	msgConfirmQueued      = "Confirmación guardada localmente (modo sin conexión)"
-	msgConfirmNoStore     = "No hay almacén local disponible"
 	msgConfirmQueueFailed = "No se pudo guardar la confirmación en el gateway."
 	msgConfirmQueueFull   = "La cola del gateway está llena: no se guardó el movimiento. Revisá la conexión con el VPS."
 	msgConfirmBadBody     = "Solicitud inválida."
@@ -71,6 +70,12 @@ type StatusResponse struct {
 	// StuckCount is how many pending confirmations reached the sync worker's max
 	// retries: they stay queued but are no longer sent.
 	StuckCount int `json:"stuck_count"`
+	// AutoConfirm is true in automatic confirmation mode.
+	AutoConfirm bool `json:"auto_confirm"`
+	// AutoConfirmIdleSeconds is how long a tag must go unread to end its pass.
+	AutoConfirmIdleSeconds float64 `json:"auto_confirm_idle_seconds"`
+	// AutoConfirmMinReads is the minimum reads in a pass to confirm it.
+	AutoConfirmMinReads int `json:"auto_confirm_min_reads"`
 }
 
 // AuthModeResponse indicates whether UI write calls require a bearer token.
@@ -159,24 +164,20 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	// Validation is case-insensitive; store, send and apply the canonical form.
 	req.Action = strings.ToLower(strings.TrimSpace(req.Action))
 
-	// Movements are only registered for tags assigned to a kanban. Checked before
-	// anything is sent or queued, online or offline, and fail closed if the
-	// assignment cannot be verified.
 	if strings.TrimSpace(req.UII) == "" {
 		s.jsonError(w, msgConfirmNoUII, http.StatusBadRequest)
 		return
 	}
-	if s.store == nil {
+
+	res, err := s.confirmService().Confirm(r.Context(), confirm.Request{
+		UII:       req.UII,
+		Action:    req.Action,
+		AntennaID: req.AntennaID,
+	})
+	switch {
+	case errors.Is(err, confirm.ErrCannotVerify):
 		s.jsonError(w, msgConfirmNoVerify, http.StatusInternalServerError)
-		return
-	}
-	kanban, err := s.store.GetKanbanByUII(req.UII)
-	if err != nil {
-		log.Printf("[Web] Failed to verify kanban assignment for %s: %v", req.UII, err)
-		s.jsonError(w, msgConfirmNoVerify, http.StatusInternalServerError)
-		return
-	}
-	if kanban == nil {
+	case errors.Is(err, confirm.ErrNotAssigned):
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		json.NewEncoder(w).Encode(ConfirmResponse{
@@ -184,65 +185,7 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 			Message: msgConfirmNotAssigned,
 			Code:    "tag_not_assigned",
 		})
-		return
-	}
-
-	// Identify this confirmation once: the online send, the local record and
-	// every retry of the queued row carry the same id and instant, so the VPS
-	// dedupes replays.
-	confirmationID := uuidutil.NewV4()
-	occurredAt := time.Now().UTC()
-
-	// Try VPS first (online mode)
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	// Check VPS availability by attempting a lightweight operation
-	vpsOnline := s.checkVPSHealth(ctx)
-
-	if vpsOnline {
-		// Try to send confirmation to VPS with antenna_id
-		antennaID := req.AntennaID
-		if antennaID == "" {
-			antennaID = "manual"
-		}
-		err := s.vpsClient.SendIdempotentConfirmation(s.companyID, req.UII, req.Action, antennaID, confirmationID, occurredAt)
-		if err == nil {
-			// Keep a local record as already synced. The VPS has the confirmation,
-			// so a failure here is logged and never fails the request.
-			s.applyMovementLocation(req.UII, req.Action)
-			if err := s.store.RecordSyncedConfirmationWithID(req.UII, req.Action, antennaID, confirmationID, occurredAt); err != nil {
-				log.Printf("[Web] Failed to record synced confirmation for %s: %v", req.UII, err)
-			}
-			s.jsonResponse(w, ConfirmResponse{
-				Success: true,
-				Message: msgConfirmSent,
-				Mode:    "online",
-			})
-			return
-		}
-		log.Printf("[Web] VPS confirmation failed: %v, falling back to local queue", err)
-	}
-
-	// Fallback to local queue (offline mode)
-	if s.store == nil {
-		s.jsonResponse(w, ConfirmResponse{
-			Success: false,
-			Message: msgConfirmNoStore,
-			Mode:    "offline",
-		})
-		return
-	}
-
-	// Use antenna_id from request, fallback to "manual" if not provided
-	antennaID := req.AntennaID
-	if antennaID == "" {
-		antennaID = "manual"
-	}
-
-	// Get max pending confirmations from config (0 = unlimited)
-	_, err = s.store.CreateConfirmationWithID(req.UII, req.Action, antennaID, confirmationID, occurredAt, s.maxPendingConfirmations())
-	if errors.Is(err, localstore.ErrQueueFull) {
+	case errors.Is(err, confirm.ErrQueueFull):
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInsufficientStorage)
 		json.NewEncoder(w).Encode(ConfirmResponse{
@@ -251,24 +194,36 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 			Mode:    "offline",
 			Code:    "queue_full",
 		})
-		return
-	}
-	if err != nil {
-		log.Printf("[Web] Failed to create local confirmation: %v", err)
+	case err != nil:
 		s.jsonResponse(w, ConfirmResponse{
 			Success: false,
 			Message: msgConfirmQueueFailed,
 			Mode:    "offline",
 		})
-		return
+	case res.Mode == confirm.ModeOnline:
+		s.jsonResponse(w, ConfirmResponse{
+			Success: true,
+			Message: msgConfirmSent,
+			Mode:    "online",
+		})
+	default:
+		s.jsonResponse(w, ConfirmResponse{
+			Success: true,
+			Message: msgConfirmQueued,
+			Mode:    "offline",
+		})
 	}
+}
 
-	s.applyMovementLocation(req.UII, req.Action)
-	s.jsonResponse(w, ConfirmResponse{
-		Success: true,
-		Message: msgConfirmQueued,
-		Mode:    "offline",
-	})
+// confirmService builds the shared confirm path from the server's current
+// store, VPS client and queue cap.
+func (s *Server) confirmService() *confirm.Service {
+	return &confirm.Service{
+		Store:      s.store,
+		VPS:        s.vpsClient,
+		CompanyID:  s.companyID,
+		MaxPending: s.maxPendingConfirmations(),
+	}
 }
 
 // handleStatus returns system status.
@@ -336,6 +291,17 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	pendingWarning := threshold > 0 && pendingCount >= threshold
 
+	// Automatic confirmation thresholds (config defaults when unset)
+	autoIdle, autoMinReads := time.Minute, 3
+	if s.config != nil {
+		if s.config.AutoConfirmIdle > 0 {
+			autoIdle = s.config.AutoConfirmIdle
+		}
+		if s.config.AutoConfirmMinReads > 0 {
+			autoMinReads = s.config.AutoConfirmMinReads
+		}
+	}
+
 	s.jsonResponse(w, StatusResponse{
 		VPSOnline:               vpsOnline,
 		PendingCount:            pendingCount,
@@ -346,15 +312,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		LastSyncAt:              lastSyncAt,
 		MaxPendingConfirmations: s.maxPendingConfirmations(),
 		StuckCount:              stuckCount,
+		AutoConfirm:             s.autoMode.Enabled(),
+		AutoConfirmIdleSeconds:  autoIdle.Seconds(),
+		AutoConfirmMinReads:     autoMinReads,
 	})
-}
-
-// applyMovementLocation updates the cached tag location for an accepted
-// confirmation; a failure is logged only, the movement itself is recorded.
-func (s *Server) applyMovementLocation(uii, action string) {
-	if err := s.store.ApplyMovementLocation(uii, action); err != nil {
-		log.Printf("[Web] Failed to update cached location of %s after %s: %v", uii, action, err)
-	}
 }
 
 // maxPendingConfirmations is the enforced pending queue cap (0 = unlimited).
@@ -386,30 +347,7 @@ func (s *Server) handleAuthMode(w http.ResponseWriter, r *http.Request) {
 
 // checkVPSHealth checks if VPS is reachable by making an actual HTTP GET request.
 func (s *Server) checkVPSHealth(ctx context.Context) bool {
-	if s.vpsClient == nil {
-		return false
-	}
-
-	// Create a timeout context for the health check
-	timeoutCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	// Make an actual HTTP GET request to the VPS health endpoint
-	// Even a 401/404 response means the VPS is reachable
-	req, err := http.NewRequestWithContext(timeoutCtx, http.MethodGet, s.vpsClient.BaseURL()+"/health", nil)
-	if err != nil {
-		return false
-	}
-
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	// Any HTTP response means VPS is reachable (even error status codes)
-	return true
+	return confirm.CheckVPSHealth(ctx, s.vpsClient)
 }
 
 // GetRecentTags returns the most recent pending confirmations as tags.
