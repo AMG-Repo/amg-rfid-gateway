@@ -869,13 +869,13 @@
         n === 1
           ? "1 confirmación sin enviar"
           : n + " confirmaciones sin enviar",
-      meta: ["Reintentos agotados · siguen guardadas en el gateway"],
+      meta: ["No se reenvían solas · siguen guardadas en el gateway"],
       acts: [retry],
       detail: [
         h(
           "p",
           "desc",
-          "El VPS no aceptó estas confirmaciones después de varios intentos. Ya no se reenvían solas; usa Reintentar cuando el VPS vuelva a responder.",
+          "El VPS rechazó estas confirmaciones (por ejemplo, tag o herramienta no registrados) o quedaron trabadas en una versión anterior del gateway. No se reenvían solas; corrige el dato en el VPS si hace falta y usa Reintentar. Los cortes de red ya no las traban: esas se reenvían solas.",
         ),
         h(
           "p",
@@ -1320,7 +1320,7 @@
       if (st.max_pending_confirmations > 0)
         line("Límite de la cola", String(st.max_pending_confirmations));
       if (st.stuck_count > 0)
-        line("Sin enviar (reintentos agotados)", String(st.stuck_count));
+        line("Sin enviar (requieren Reintentar)", String(st.stuck_count));
       if (st.last_sync_at)
         line("Último envío al VPS", hhmm(Date.parse(st.last_sync_at), true));
     }
@@ -1342,7 +1342,7 @@
     if (st && st.pending_warning)
       issues.push("Cola por sincronizar alta (" + st.pending_count + ")");
     if (st && st.stuck_count > 0)
-      issues.push(st.stuck_count + " sin enviar tras varios intentos");
+      issues.push(st.stuck_count + " sin enviar, requieren Reintentar");
     var issue = issues.join(" · ");
     var loaded = st || antennas || statusErr;
     dot("d-sum", loaded ? (issue ? (bad ? "offline" : "") : "online") : "");

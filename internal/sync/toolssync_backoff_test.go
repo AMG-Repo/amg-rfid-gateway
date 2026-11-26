@@ -17,6 +17,8 @@ type backoffEnv struct {
 	ts    *ToolsSync
 	sent  *[]string
 	fail  *bool
+	// failErr is the error returned while fail is set.
+	failErr *error
 }
 
 func newBackoffEnv(t *testing.T, retryInterval time.Duration) *backoffEnv {
@@ -30,10 +32,11 @@ func newBackoffEnv(t *testing.T, retryInterval time.Duration) *backoffEnv {
 
 	var sent []string
 	fail := true
+	failErr := errors.New("vps down")
 	vps := &mockVPSClient{sendConfirmV2Func: func(_, uii, _, _ string) error {
 		sent = append(sent, uii)
 		if fail {
-			return errors.New("vps down")
+			return failErr
 		}
 		return nil
 	}}
@@ -41,8 +44,9 @@ func newBackoffEnv(t *testing.T, retryInterval time.Duration) *backoffEnv {
 		db:    c.GetDB(),
 		store: store,
 		ts:    NewToolsSync(vps, store, "company123", time.Hour, retryInterval),
-		sent:  &sent,
-		fail:  &fail,
+		sent:    &sent,
+		fail:    &fail,
+		failErr: &failErr,
 	}
 }
 
@@ -141,16 +145,14 @@ func TestToolsSync_WaitingRowsDoNotStarveNewConfirmations(t *testing.T) {
 	}
 }
 
-// Backoff does not change what stuck means: the failure that reaches MaxRetries
-// leaves the row queued and counted as stuck, and it is never sent again.
+// A permanent rejection parks the row: it stays queued and counted as stuck,
+// it is never sent again on its own, and Requeue makes it sendable right away.
 func TestToolsSync_StuckSemanticsHoldWithBackoff(t *testing.T) {
 	e := newBackoffEnv(t, time.Minute)
 	id := e.seed(t, "EPC-1")
-	if _, err := e.db.Exec(`UPDATE pending_confirmations SET retry_count = ? WHERE id = ?`, MaxRetries-1, id); err != nil {
-		t.Fatalf("seed retries: %v", err)
-	}
+	*e.failErr = statusErr(404)
 
-	e.ts.performFlush() // the last allowed attempt fails
+	e.ts.performFlush() // the VPS rejects it
 	if got := e.retryCount(t, id); got != MaxRetries {
 		t.Fatalf("retry_count = %d, want %d", got, MaxRetries)
 	}

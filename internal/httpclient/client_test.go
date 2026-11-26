@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -207,7 +208,14 @@ func TestSendConfirmation_HTTPError(t *testing.T) {
 	err := client.SendConfirmation("comp-1", "EPC-123", "invalid")
 
 	if err == nil {
-		t.Error("expected error for HTTP 400")
+		t.Fatal("expected error for HTTP 400")
+	}
+	var se *StatusError
+	if !errors.As(err, &se) || se.StatusCode() != http.StatusBadRequest {
+		t.Errorf("expected a StatusError with code 400, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "unexpected status code: 400") {
+		t.Errorf("error message changed: %q", err.Error())
 	}
 }
 

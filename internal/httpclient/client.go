@@ -237,11 +237,25 @@ func (c *VPSClient) sendGatewayConfirmation(companyID, uii, action, antennaID st
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return body, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+		return body, &StatusError{Code: resp.StatusCode, Body: string(body)}
 	}
 
 	return body, nil
 }
+
+// StatusError is a non-2xx answer from the VPS. Callers read the status with
+// errors.As to tell a rejection from a transient failure.
+type StatusError struct {
+	Code int
+	Body string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("unexpected status code: %d, body: %s", e.Code, e.Body)
+}
+
+// StatusCode returns the HTTP status the VPS answered with.
+func (e *StatusError) StatusCode() int { return e.Code }
 
 // FetchSyncData retrieves flattened tool+tag sync data from the VPS gateway endpoint.
 // Calls GET /api/v1/gateway/sync-data?company_id={company_id}

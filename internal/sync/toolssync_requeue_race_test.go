@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"errors"
 	"fmt"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/cache"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
@@ -82,13 +81,18 @@ func TestToolsSync_RequeueDuringFailedSendStaysDue(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if _, e = db.Exec(`UPDATE pending_confirmations SET retry_count=9 WHERE id=?`, conf.ID); e != nil {
+	// A stuck row whose retry is being scheduled when the operator requeues it.
+	// Transient sends no longer reach MaxRetries, so the store call is raced directly.
+	if _, e = db.Exec(`UPDATE pending_confirmations SET retry_count=10 WHERE id=?`, conf.ID); e != nil {
 		t.Fatal(e)
 	}
-	vps := &mockVPSClient{sendConfirmV2Func: func(string, string, string, string) error { return errors.New("forced VPS outage") }}
-	ts := NewToolsSync(vps, s, "company", time.Hour, 30*time.Second)
 	scheduled := make(chan struct{})
-	go func() { ts.performFlush(); close(scheduled) }()
+	go func() {
+		if err := s.ScheduleConfirmationRetry(conf.ID, 30*time.Second, time.Now()); err != nil {
+			t.Errorf("schedule: %v", err)
+		}
+		close(scheduled)
+	}()
 	select {
 	case <-d.read:
 	case <-time.After(3 * time.Second):
