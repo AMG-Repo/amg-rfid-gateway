@@ -932,9 +932,27 @@ func (c *SQLite) GetUnsynced(limit int) ([]PendingReading, error) {
 	return readings, rows.Err()
 }
 
+// pending_readings.synced values.
+const (
+	readingPending   = 0 // not yet delivered; returned by GetUnsynced and counted by Count
+	readingDelivered = 1 // stored by the VPS; purged after ReadingRetention
+	readingRejected  = 2 // rejected terminally by the VPS; never resent nor purged
+)
+
 // MarkSynced marks readings as synced by their IDs.
 // Uses batch UPDATE with IN clause for better performance.
 func (c *SQLite) MarkSynced(ids []int64) error {
+	return c.markReadings(ids, readingDelivered)
+}
+
+// MarkRejected marks readings the VPS rejected terminally. They leave the
+// queue but are kept locally: the purge never deletes them.
+func (c *SQLite) MarkRejected(ids []int64) error {
+	return c.markReadings(ids, readingRejected)
+}
+
+// markReadings sets synced to state for the given IDs in batches.
+func (c *SQLite) markReadings(ids []int64, state int) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -949,7 +967,7 @@ func (c *SQLite) MarkSynced(ids []int64) error {
 		}
 		batch := ids[i:end]
 
-		if err := c.markSyncedBatch(batch); err != nil {
+		if err := c.markBatch(batch, state); err != nil {
 			return fmt.Errorf("failed to mark batch %d-%d: %w", i, end, err)
 		}
 	}
@@ -957,22 +975,23 @@ func (c *SQLite) MarkSynced(ids []int64) error {
 	return nil
 }
 
-// markSyncedBatch marks a single batch of IDs as synced.
-func (c *SQLite) markSyncedBatch(ids []int64) error {
+// markBatch sets synced to state for a single batch of IDs.
+func (c *SQLite) markBatch(ids []int64, state int) error {
 	if len(ids) == 0 {
 		return nil
 	}
 
 	// Build IN clause with placeholders
 	placeholders := make([]string, len(ids))
-	args := make([]any, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, state)
 	for i, id := range ids {
 		placeholders[i] = "?"
-		args[i] = id
+		args = append(args, id)
 	}
 
 	query := fmt.Sprintf(
-		"UPDATE pending_readings SET synced = 1 WHERE id IN (%s)",
+		"UPDATE pending_readings SET synced = ? WHERE id IN (%s)",
 		strings.Join(placeholders, ","),
 	)
 
@@ -992,7 +1011,7 @@ const ReadingRetention = 7 * 24 * time.Hour
 const purgeBatchSize = 5000
 
 // PurgeSyncedReadings deletes synced readings stored before cutoff and returns
-// how many were removed. Unsynced readings are never deleted.
+// how many were removed. Unsynced and rejected readings are never deleted.
 func (c *SQLite) PurgeSyncedReadings(cutoff time.Time) (int64, error) {
 	// created_at uses the CURRENT_TIMESTAMP layout, so a string comparison works.
 	cutoffText := cutoff.UTC().Format("2006-01-02 15:04:05")
