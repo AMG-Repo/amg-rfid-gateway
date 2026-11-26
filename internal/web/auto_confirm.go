@@ -42,6 +42,8 @@ func (s *Server) handleAutoConfirm(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, msgConfirmBadBody, http.StatusBadRequest)
 		return
 	}
+	s.autoModeMu.Lock()
+	defer s.autoModeMu.Unlock()
 	if s.store != nil {
 		if err := s.store.SetAutoConfirmEnabled(*req.Enabled); err != nil {
 			log.Printf("[Web] Failed to persist auto-confirm mode: %v", err)

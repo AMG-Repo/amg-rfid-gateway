@@ -154,7 +154,7 @@ func main() {
 		eventBus,
 		localStore,
 		verifier,
-		&confirm.Service{Store: localStore, VPS: vpsClient, CompanyID: cfg.CompanyID, MaxPending: maxPending},
+		&confirm.Service{Store: localStore, VPS: vpsClient, CompanyID: cfg.CompanyID, MaxPending: maxPending, Bus: eventBus},
 		autoMode,
 	)
 

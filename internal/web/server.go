@@ -48,6 +48,9 @@ type Server struct {
 
 	// autoMode is the confirmation mode shared with the auto-confirmer.
 	autoMode *autoconfirm.Mode
+	// autoModeMu serializes persisting and applying a mode switch, so the
+	// stored and in-memory modes cannot diverge.
+	autoModeMu sync.Mutex
 }
 
 // NewServer creates a new web server.

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/cache"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/httpclient"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 )
@@ -147,5 +148,43 @@ func TestConfirm_QueueFull(t *testing.T) {
 	}
 	if _, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida"}); !errors.Is(err, localstore.ErrQueueFull) {
 		t.Errorf("err = %v, want ErrQueueFull", err)
+	}
+}
+
+func TestConfirm_PublishesMovementConfirmedOnSuccessOnly(t *testing.T) {
+	store := newStore(t)
+	link(t, store, "E1")
+	bus := events.NewEventBus(10)
+	t.Cleanup(bus.Close)
+	ch := bus.SubscribeMovementConfirmed()
+	vps := newFakeVPS(t, http.StatusOK)
+	online := &Service{Store: store, VPS: httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("tok")), CompanyID: "c", Bus: bus}
+	offline := &Service{Store: store, CompanyID: "c", Bus: bus}
+
+	if _, err := online.Confirm(context.Background(), Request{UII: "E1", Action: "salida", Auto: true}); err != nil {
+		t.Fatalf("online: %v", err)
+	}
+	if _, err := offline.Confirm(context.Background(), Request{UII: "E1", Action: "entrada"}); err != nil {
+		t.Fatalf("offline: %v", err)
+	}
+	if _, err := offline.Confirm(context.Background(), Request{UII: "E9", Action: "entrada"}); !errors.Is(err, ErrNotAssigned) {
+		t.Fatalf("unassigned err = %v", err)
+	}
+
+	want := []events.MovementConfirmed{{UII: "E1", Action: "salida", Auto: true}, {UII: "E1", Action: "entrada"}}
+	for _, w := range want {
+		select {
+		case ev := <-ch:
+			if ev != w {
+				t.Errorf("event %+v, want %+v", ev, w)
+			}
+		default:
+			t.Fatalf("missing event %+v", w)
+		}
+	}
+	select {
+	case ev := <-ch:
+		t.Errorf("unexpected event for a rejected confirm: %+v", ev)
+	default:
 	}
 }

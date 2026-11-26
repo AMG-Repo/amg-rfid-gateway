@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/httpclient"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/uuidutil"
@@ -60,6 +61,9 @@ type Service struct {
 	MaxPending int
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
+	// Bus, when set, receives a MovementConfirmed event for every accepted
+	// confirmation, so the auto-confirmer can consume the tag's pass.
+	Bus *events.EventBus
 }
 
 // Confirm registers the movement: online when the VPS is reachable and accepts
@@ -103,6 +107,7 @@ func (s *Service) Confirm(ctx context.Context, req Request) (Result, error) {
 			if err := s.Store.RecordSyncedConfirmationWithIDAuto(req.UII, req.Action, antennaID, confirmationID, occurredAt, req.Auto); err != nil {
 				log.Printf("[Confirm] Failed to record synced confirmation for %s: %v", req.UII, err)
 			}
+			s.publish(req)
 			return Result{Mode: ModeOnline, ConfirmationID: confirmationID}, nil
 		}
 		log.Printf("[Confirm] VPS confirmation failed: %v, falling back to local queue", err)
@@ -115,7 +120,14 @@ func (s *Service) Confirm(ctx context.Context, req Request) (Result, error) {
 		return Result{Mode: ModeOffline}, err
 	}
 	s.applyMovementLocation(req.UII, req.Action)
+	s.publish(req)
 	return Result{Mode: ModeOffline, ConfirmationID: confirmationID}, nil
+}
+
+func (s *Service) publish(req Request) {
+	if s.Bus != nil {
+		s.Bus.PublishMovementConfirmed(events.MovementConfirmed{UII: req.UII, Action: req.Action, Auto: req.Auto})
+	}
 }
 
 func (s *Service) now() time.Time {

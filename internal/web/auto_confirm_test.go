@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 )
 
 func postAutoConfirm(s *Server, method, body, token string) *httptest.ResponseRecorder {
@@ -153,5 +155,49 @@ func readUntil(t *testing.T, r *bufio.Reader, prefix string) string {
 		if strings.HasPrefix(line, prefix) {
 			return strings.TrimSpace(line)
 		}
+	}
+}
+
+func TestAutoConfirm_ConcurrentSwitchesKeepStoredAndMemoryEqual(t *testing.T) {
+	env := newKanbanTestEnv(t, nil)
+	for round := 0; round < 20; round++ {
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			body := `{"enabled":true}`
+			if i%2 == 1 {
+				body = `{"enabled":false}`
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				postAutoConfirm(env.server, http.MethodPost, body, "")
+			}()
+		}
+		wg.Wait()
+		stored, err := env.store.AutoConfirmEnabled()
+		if err != nil {
+			t.Fatalf("stored: %v", err)
+		}
+		if mem := env.server.AutoConfirmMode().Enabled(); mem != stored {
+			t.Fatalf("round %d: memory %v, stored %v", round, mem, stored)
+		}
+	}
+}
+
+func TestHandleConfirm_PublishesManualMovementConfirmed(t *testing.T) {
+	env := newKanbanTestEnv(t, nil)
+	env.linkKanban(t, "E1", localstore.Kanban{Code: "K1", Description: "Burlete", StandardPack: 10, Unit: "PZ"})
+	ch := env.bus.SubscribeMovementConfirmed()
+
+	if rec := postConfirm(env.server, `{"uii":"E1","action":"entrada"}`); rec.Code != http.StatusOK {
+		t.Fatalf("confirm = %d %s", rec.Code, rec.Body.String())
+	}
+	select {
+	case ev := <-ch:
+		if ev.UII != "E1" || ev.Action != "entrada" || ev.Auto {
+			t.Errorf("event %+v, want manual entrada E1", ev)
+		}
+	default:
+		t.Fatal("no MovementConfirmed event for a manual confirm")
 	}
 }

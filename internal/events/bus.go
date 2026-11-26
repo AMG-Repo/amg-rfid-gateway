@@ -22,11 +22,20 @@ type AutoConfirmed struct {
 	ConfirmationID string `json:"confirmation_id"`
 }
 
+// MovementConfirmed is published when a movement was confirmed (sent to the
+// VPS or queued locally), manually through the panel or automatically.
+type MovementConfirmed struct {
+	UII    string `json:"uii"`
+	Action string `json:"action"`
+	Auto   bool   `json:"auto"`
+}
+
 // EventBus provides pub/sub for tag detection events.
 // Uses buffered channels to prevent slow subscribers from blocking publishers.
 type EventBus struct {
 	subscribers []chan TagDetected
 	autoSubs    []chan AutoConfirmed
+	moveSubs    []chan MovementConfirmed
 	mu          sync.RWMutex
 	buffer      int
 }
@@ -108,6 +117,10 @@ func (b *EventBus) Close() {
 		close(ch)
 	}
 	b.autoSubs = nil
+	for _, ch := range b.moveSubs {
+		close(ch)
+	}
+	b.moveSubs = nil
 }
 
 // SubscribeAutoConfirmed creates a buffered channel receiving AutoConfirmed events.
@@ -142,6 +155,46 @@ func (b *EventBus) PublishAutoConfirmed(event AutoConfirmed) {
 	defer b.mu.RUnlock()
 
 	for _, ch := range b.autoSubs {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+}
+
+// SubscribeMovementConfirmed creates a buffered channel receiving
+// MovementConfirmed events.
+func (b *EventBus) SubscribeMovementConfirmed() chan MovementConfirmed {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	ch := make(chan MovementConfirmed, b.buffer)
+	b.moveSubs = append(b.moveSubs, ch)
+	return ch
+}
+
+// UnsubscribeMovementConfirmed removes and closes a MovementConfirmed channel;
+// a channel already removed is ignored.
+func (b *EventBus) UnsubscribeMovementConfirmed(ch chan MovementConfirmed) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for i, subscriber := range b.moveSubs {
+		if subscriber == ch {
+			b.moveSubs = append(b.moveSubs[:i], b.moveSubs[i+1:]...)
+			close(ch)
+			return
+		}
+	}
+}
+
+// PublishMovementConfirmed sends a MovementConfirmed event to its
+// subscribers, dropping it for subscribers whose buffer is full.
+func (b *EventBus) PublishMovementConfirmed(event MovementConfirmed) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	for _, ch := range b.moveSubs {
 		select {
 		case ch <- event:
 		default:

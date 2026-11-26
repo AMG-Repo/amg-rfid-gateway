@@ -223,6 +223,7 @@ func (s *Server) confirmService() *confirm.Service {
 		VPS:        s.vpsClient,
 		CompanyID:  s.companyID,
 		MaxPending: s.maxPendingConfirmations(),
+		Bus:        s.eventBus,
 	}
 }
 

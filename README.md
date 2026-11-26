@@ -364,8 +364,8 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 | `batch_size` | int | 100 | Readings per sync request |
 | `reading_session_idle` | duration | 5s | A tag session is closed and queued after this long without reading the tag |
 | `reading_session_max` | duration | 60s | A tag session still being read is closed and queued after this long (must be >= `reading_session_idle`) |
-| `auto_confirm_idle` | duration | 1m | Automatic confirmation: a tag pass ends after this long without reads (must be positive) |
-| `auto_confirm_min_reads` | int | 3 | Automatic confirmation: minimum reads in a pass to confirm it (must be positive) |
+| `auto_confirm_idle` | duration | 1m | Automatic confirmation: a tag pass ends after this long without reads (must be positive; `0` or unset = default) |
+| `auto_confirm_min_reads` | int | 3 | Automatic confirmation: minimum reads in a pass to confirm it (must be positive; `0` or unset = default) |
 | `max_retries` | int | 5 | Max retry attempts for failed syncs |
 | `health_port` | int | 8080 | HTTP port for health/metrics |
 | `data_path` | string | ./data | SQLite database location |
@@ -651,12 +651,14 @@ confirmed with the panel button. In automatic mode (`POST /api/auto-confirm`) th
 each tag's pass (reads, last read, last antenna); a pass ends once the tag goes unread for
 `auto_confirm_idle` (default 1 min). An ended pass is confirmed by the gateway when it had at least
 `auto_confirm_min_reads` reads (default 3), the tag is linked to a kanban and it is not a user
-badge; otherwise it stays for a manual confirm. The direction follows the tag state (cached in the
-warehouse → `salida`, anywhere else → `entrada`), `occurred_at` is the last read and `antenna_id`
+badge; otherwise it stays for a manual confirm. The direction follows the tag's known cached location
+(in the warehouse → `salida`, anywhere else → `entrada`); a tag whose location is unknown (no tool
+row or a failed lookup) is never auto-confirmed and stays for a manual confirm, `occurred_at` is the last read and `antenna_id`
 the last antenna. It uses the same path as `POST /api/confirm` (confirmation id, online send,
 offline queue with retries, location update); the movement shows `auto: true` in `/api/history`
-and an SSE `auto_confirmed` event (`{"uii", "action", "confirmation_id"}`) is sent. A new read after
-a pass ends starts a new pass. Passes in progress are kept in memory only (lost on restart).
+and an SSE `auto_confirmed` event (`{"uii", "action", "confirmation_id"}`) is sent. One movement per pass: once a
+pass is confirmed (manually from the panel or automatically) it is never confirmed again, and a new
+pass starts only after the tag goes unread for a full `auto_confirm_idle`. Passes in progress are kept in memory only (lost on restart).
 
 **SSE `tag_detected`** keeps its fields (`epc`, `rssi`, `antenna_id`, `timestamp`,
 `suggested_action`, `suggested_reason`) and adds, additively: a `kanban` object for assigned

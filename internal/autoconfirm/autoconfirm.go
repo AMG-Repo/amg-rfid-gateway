@@ -8,6 +8,7 @@ package autoconfirm
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +21,9 @@ import (
 
 // TickInterval is how often Run checks for ended passes.
 const TickInterval = time.Second
+
+// confirmQueue bounds the ended passes waiting for the confirm worker.
+const confirmQueue = 64
 
 // Mode is the in-memory confirmation mode shared by the auto-confirmer and the
 // web panel; the zero value is manual.
@@ -59,6 +63,15 @@ type pass struct {
 	reads       int
 	lastSeen    time.Time
 	lastAntenna string
+	// consumed marks a pass already confirmed (manually or automatically):
+	// it is dropped without confirming when it ends.
+	consumed bool
+}
+
+type ended struct {
+	uii string
+	pass
+	now time.Time
 }
 
 // AutoConfirmer tracks tag passes (keyed by EPC, which is the UII) and
@@ -70,8 +83,14 @@ type AutoConfirmer struct {
 	suggester Suggester
 	confirmer Confirmer
 	mode      *Mode
-	// Now is the clock for reads without a timestamp and for Run's ticks.
+	// Now is the clock for reads without a timestamp, for confirms and for
+	// Run's ticks.
 	Now func() time.Time
+
+	// Test hooks: afterTick runs after each Run tick, beforeConfirm right
+	// before the worker re-checks the mode.
+	afterTick     func()
+	beforeConfirm func()
 
 	mu     sync.Mutex
 	passes map[string]*pass
@@ -91,7 +110,8 @@ func New(cfg Config, bus *events.EventBus, store Store, suggester Suggester, con
 	}
 }
 
-// Observe counts one read in the tag's current pass.
+// Observe counts one read in the tag's current pass; a read at least the idle
+// time after the previous one starts a new pass.
 func (a *AutoConfirmer) Observe(ev events.TagDetected) {
 	if ev.EPC == "" {
 		return
@@ -103,7 +123,7 @@ func (a *AutoConfirmer) Observe(ev events.TagDetected) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	p := a.passes[ev.EPC]
-	if p == nil {
+	if p == nil || seen.Sub(p.lastSeen) >= a.cfg.Idle {
 		p = &pass{}
 		a.passes[ev.EPC] = p
 	}
@@ -114,33 +134,60 @@ func (a *AutoConfirmer) Observe(ev events.TagDetected) {
 	p.lastAntenna = ev.AntennaID
 }
 
-// Tick ends every pass unread for at least the idle time at now. In automatic
-// mode a qualifying pass is confirmed; every ended pass is discarded, so the
-// next read starts a new one.
-func (a *AutoConfirmer) Tick(ctx context.Context, now time.Time) {
-	type ended struct {
-		uii string
-		pass
+// Consumed marks the tag's current pass as confirmed (creating one when the
+// tag has no live pass), so it ends without another movement.
+func (a *AutoConfirmer) Consumed(ev events.MovementConfirmed) {
+	if ev.UII == "" {
+		return
 	}
+	a.markConsumed(ev.UII, a.Now())
+}
+
+func (a *AutoConfirmer) markConsumed(uii string, at time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	p := a.passes[uii]
+	if p == nil || at.Sub(p.lastSeen) >= a.cfg.Idle {
+		p = &pass{}
+		a.passes[uii] = p
+	}
+	p.consumed = true
+	if at.After(p.lastSeen) {
+		p.lastSeen = at
+	}
+}
+
+// endPasses removes every pass unread for at least the idle time at now and
+// returns the ones that may be confirmed (automatic mode, not consumed).
+func (a *AutoConfirmer) endPasses(now time.Time) []ended {
 	var done []ended
 	a.mu.Lock()
 	for uii, p := range a.passes {
 		if now.Sub(p.lastSeen) >= a.cfg.Idle {
-			done = append(done, ended{uii, *p})
+			if !p.consumed {
+				done = append(done, ended{uii, *p, now})
+			}
 			delete(a.passes, uii)
 		}
 	}
 	a.mu.Unlock()
-
 	if !a.mode.Enabled() {
-		return
+		return nil
 	}
-	for _, e := range done {
-		a.confirmPass(ctx, e.uii, e.pass)
+	return done
+}
+
+// Tick ends every pass unread for at least the idle time at now. In automatic
+// mode a qualifying pass is confirmed; every ended pass is discarded, so the
+// next read starts a new one.
+func (a *AutoConfirmer) Tick(ctx context.Context, now time.Time) {
+	for _, e := range a.endPasses(now) {
+		a.confirmPass(ctx, e)
 	}
 }
 
-func (a *AutoConfirmer) confirmPass(ctx context.Context, uii string, p pass) {
+func (a *AutoConfirmer) confirmPass(ctx context.Context, e ended) {
+	uii, p := e.uii, e.pass
 	if p.reads < a.cfg.MinReads {
 		return
 	}
@@ -161,8 +208,22 @@ func (a *AutoConfirmer) confirmPass(ctx context.Context, uii string, p pass) {
 		return
 	}
 
-	// Direction from the tag state only, never from an antenna zone.
-	action := string(a.suggester.SuggestAction(uii, "").Action)
+	// Direction from the tag's known location only, never from an antenna
+	// zone; an unknown location (missing row, lookup error) is left for a
+	// manual confirm.
+	suggested := a.suggester.SuggestAction(uii, "")
+	if !strings.HasPrefix(suggested.Reason, "location:") {
+		log.Printf("[AutoConfirm] Skipped %s: no known location (%s)", uii, suggested.Reason)
+		return
+	}
+	action := string(suggested.Action)
+
+	if a.beforeConfirm != nil {
+		a.beforeConfirm()
+	}
+	if !a.mode.Enabled() {
+		return
+	}
 	res, err := a.confirmer.Confirm(ctx, confirm.Request{
 		UII:        uii,
 		Action:     action,
@@ -174,29 +235,95 @@ func (a *AutoConfirmer) confirmPass(ctx context.Context, uii string, p pass) {
 		log.Printf("[AutoConfirm] Failed to confirm %s %s: %v", action, uii, err)
 		return
 	}
+	a.markConsumed(uii, e.now)
 	log.Printf("[AutoConfirm] Confirmed %s %s (%s, %d reads)", action, uii, res.Mode, p.reads)
 	if a.bus != nil {
 		a.bus.PublishAutoConfirmed(events.AutoConfirmed{UII: uii, Action: action, ConfirmationID: res.ConfirmationID})
 	}
 }
 
-// Run observes bus reads and ticks every TickInterval until ctx is done.
+// Run observes bus reads and confirmed movements and ticks every TickInterval
+// until ctx is done. Ended passes are confirmed by a separate worker so reads
+// keep being observed during VPS I/O; Run returns after the worker stops.
 func (a *AutoConfirmer) Run(ctx context.Context) {
-	ch := a.bus.Subscribe()
-	defer a.bus.Unsubscribe(ch)
+	reads := a.bus.Subscribe()
+	defer a.bus.Unsubscribe(reads)
+	moves := a.bus.SubscribeMovementConfirmed()
+	defer a.bus.UnsubscribeMovementConfirmed(moves)
 	ticker := time.NewTicker(TickInterval)
 	defer ticker.Stop()
+	a.run(ctx, reads, moves, ticker.C)
+}
+
+func (a *AutoConfirmer) run(ctx context.Context, reads <-chan events.TagDetected, moves <-chan events.MovementConfirmed, ticks <-chan time.Time) {
+	ctx, cancel := context.WithCancel(ctx)
+	work := make(chan ended, confirmQueue)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case e := <-work:
+				a.confirmPass(ctx, e)
+			}
+		}
+	}()
+	defer wg.Wait()
+	defer cancel()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case ev, ok := <-ch:
+		case ev, ok := <-reads:
 			if !ok {
 				return
 			}
 			a.Observe(ev)
-		case <-ticker.C:
-			a.Tick(ctx, a.Now())
+		case ev, ok := <-moves:
+			if !ok {
+				return
+			}
+			a.Consumed(ev)
+		case <-ticks:
+			// Every queued event counts before passes are ended.
+			if !a.drain(reads, moves) {
+				return
+			}
+			for _, e := range a.endPasses(a.Now()) {
+				select {
+				case work <- e:
+				case <-ctx.Done():
+					return
+				}
+			}
+			if a.afterTick != nil {
+				a.afterTick()
+			}
+		}
+	}
+}
+
+// drain observes every queued read and movement without blocking; it reports
+// false when a channel was closed.
+func (a *AutoConfirmer) drain(reads <-chan events.TagDetected, moves <-chan events.MovementConfirmed) bool {
+	for {
+		select {
+		case ev, ok := <-reads:
+			if !ok {
+				return false
+			}
+			a.Observe(ev)
+		case ev, ok := <-moves:
+			if !ok {
+				return false
+			}
+			a.Consumed(ev)
+		default:
+			return true
 		}
 	}
 }
