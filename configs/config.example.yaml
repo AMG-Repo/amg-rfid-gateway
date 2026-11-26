@@ -19,6 +19,11 @@ batch_size: 100
 # the tag goes unread for reading_session_idle, or after reading_session_max.
 reading_session_idle: 5s
 reading_session_max: 60s
+# Automatic confirmation (switched on from the local panel): a tag pass that
+# goes unread for auto_confirm_idle is confirmed when it had at least
+# auto_confirm_min_reads reads.
+auto_confirm_idle: 1m
+auto_confirm_min_reads: 3
 max_retries: 5
 
 # Health and metrics endpoint (loopback-only by default; use an IP literal)
