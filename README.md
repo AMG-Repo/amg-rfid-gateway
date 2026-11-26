@@ -604,7 +604,7 @@ their backoff are skipped by the sync worker and never crowd out due ones. Any o
 VPS (for example 400, 404 or 409) is a rejection that resending cannot fix: the confirmation is
 *stuck* at once (`stuck_count` in `/api/status`), stays queued and is not sent again until
 `POST /api/confirmations/requeue` (the panel's "Reintentar" button on the "N confirmaciones sin
-enviar" item, shown as "Rechazadas por el VPS") resets it. The tick is also `confirmation_retry_interval`, so a due confirmation
+enviar" item) resets it. The tick is also `confirmation_retry_interval`, so a due confirmation
 may wait for the next tick.
 
 **`POST /api/confirm`** keeps its request and response shape; `message` is in Spanish
