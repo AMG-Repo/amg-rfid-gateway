@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/httpclient"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/uuidutil"
@@ -31,7 +30,25 @@ var (
 	ErrNoStore = errors.New("no local store")
 	// ErrQueueFull is localstore.ErrQueueFull: the queue cap was reached.
 	ErrQueueFull = localstore.ErrQueueFull
+	// ErrAutoInProgress means an automatic confirm of the same tag is in
+	// flight: the manual confirm is refused, nothing is written.
+	ErrAutoInProgress = errors.New("automatic confirmation in progress")
+	// ErrNotClaimable means the pass of an automatic confirm is no longer
+	// confirmable (newer read, already confirmed, manual mode): nothing is written.
+	ErrNotClaimable = errors.New("pass not claimable")
 )
+
+// Claimer guards that a tag pass is confirmed at most once. Claims are
+// synchronous and taken before anything is sent or queued.
+type Claimer interface {
+	// ClaimAuto claims the pass passID of uii for an automatic confirm.
+	ClaimAuto(uii string, passID uint64) bool
+	// ClaimManual consumes the tag's current pass for a manual confirm; it
+	// fails only while an automatic confirm of the tag is in flight.
+	ClaimManual(uii string) bool
+	// Release ends the in-flight state of an automatic claim.
+	Release(passID uint64)
+}
 
 // Request is one movement to confirm. Action must already be canonical
 // ("entrada" or "salida").
@@ -44,6 +61,8 @@ type Request struct {
 	OccurredAt time.Time
 	// Auto marks a movement the gateway confirmed by itself.
 	Auto bool
+	// PassID is the tag pass an automatic confirm claims.
+	PassID uint64
 }
 
 // Result describes an accepted confirmation.
@@ -61,9 +80,9 @@ type Service struct {
 	MaxPending int
 	// Now is the clock; nil means time.Now.
 	Now func() time.Time
-	// Bus, when set, receives a MovementConfirmed event for every accepted
-	// confirmation, so the auto-confirmer can consume the tag's pass.
-	Bus *events.EventBus
+	// Claimer, when set, is claimed before anything is sent or queued; nil
+	// means no claims.
+	Claimer Claimer
 }
 
 // Confirm registers the movement: online when the VPS is reachable and accepts
@@ -83,6 +102,17 @@ func (s *Service) Confirm(ctx context.Context, req Request) (Result, error) {
 	}
 	if kanban == nil {
 		return Result{}, ErrNotAssigned
+	}
+
+	if s.Claimer != nil {
+		if req.Auto {
+			if !s.Claimer.ClaimAuto(req.UII, req.PassID) {
+				return Result{}, ErrNotClaimable
+			}
+			defer s.Claimer.Release(req.PassID)
+		} else if !s.Claimer.ClaimManual(req.UII) {
+			return Result{}, ErrAutoInProgress
+		}
 	}
 
 	confirmationID := uuidutil.NewV4()
@@ -107,7 +137,6 @@ func (s *Service) Confirm(ctx context.Context, req Request) (Result, error) {
 			if err := s.Store.RecordSyncedConfirmationWithIDAuto(req.UII, req.Action, antennaID, confirmationID, occurredAt, req.Auto); err != nil {
 				log.Printf("[Confirm] Failed to record synced confirmation for %s: %v", req.UII, err)
 			}
-			s.publish(req)
 			return Result{Mode: ModeOnline, ConfirmationID: confirmationID}, nil
 		}
 		log.Printf("[Confirm] VPS confirmation failed: %v, falling back to local queue", err)
@@ -120,14 +149,7 @@ func (s *Service) Confirm(ctx context.Context, req Request) (Result, error) {
 		return Result{Mode: ModeOffline}, err
 	}
 	s.applyMovementLocation(req.UII, req.Action)
-	s.publish(req)
 	return Result{Mode: ModeOffline, ConfirmationID: confirmationID}, nil
-}
-
-func (s *Service) publish(req Request) {
-	if s.Bus != nil {
-		s.Bus.PublishMovementConfirmed(events.MovementConfirmed{UII: req.UII, Action: req.Action, Auto: req.Auto})
-	}
 }
 
 func (s *Service) now() time.Time {

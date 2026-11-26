@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/cache"
-	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/httpclient"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 )
@@ -151,40 +151,72 @@ func TestConfirm_QueueFull(t *testing.T) {
 	}
 }
 
-func TestConfirm_PublishesMovementConfirmedOnSuccessOnly(t *testing.T) {
+// fakeClaimer records claims and refuses the ones configured.
+type fakeClaimer struct {
+	auto, manual bool
+	calls        []string
+}
+
+func (f *fakeClaimer) ClaimAuto(uii string, passID uint64) bool {
+	f.calls = append(f.calls, "auto:"+uii)
+	return f.auto
+}
+
+func (f *fakeClaimer) ClaimManual(uii string) bool {
+	f.calls = append(f.calls, "manual:"+uii)
+	return f.manual
+}
+
+func (f *fakeClaimer) Release(passID uint64) { f.calls = append(f.calls, "release") }
+
+func TestConfirm_RefusedClaimWritesNothing(t *testing.T) {
 	store := newStore(t)
 	link(t, store, "E1")
-	bus := events.NewEventBus(10)
-	t.Cleanup(bus.Close)
-	ch := bus.SubscribeMovementConfirmed()
 	vps := newFakeVPS(t, http.StatusOK)
-	online := &Service{Store: store, VPS: httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("tok")), CompanyID: "c", Bus: bus}
-	offline := &Service{Store: store, CompanyID: "c", Bus: bus}
+	c := &fakeClaimer{}
+	svc := &Service{Store: store, VPS: httpclient.NewVPSClient(vps.URL, 2*time.Second, httpclient.StaticToken("tok")), CompanyID: "c", Claimer: c}
 
-	if _, err := online.Confirm(context.Background(), Request{UII: "E1", Action: "salida", Auto: true}); err != nil {
-		t.Fatalf("online: %v", err)
+	if _, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida", Auto: true, PassID: 7}); !errors.Is(err, ErrNotClaimable) {
+		t.Errorf("auto err = %v, want ErrNotClaimable", err)
 	}
-	if _, err := offline.Confirm(context.Background(), Request{UII: "E1", Action: "entrada"}); err != nil {
-		t.Fatalf("offline: %v", err)
+	if _, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida"}); !errors.Is(err, ErrAutoInProgress) {
+		t.Errorf("manual err = %v, want ErrAutoInProgress", err)
 	}
-	if _, err := offline.Confirm(context.Background(), Request{UII: "E9", Action: "entrada"}); !errors.Is(err, ErrNotAssigned) {
-		t.Fatalf("unassigned err = %v", err)
+	if n := vps.confirms.Load(); n != 0 {
+		t.Errorf("VPS confirms = %d, want 0", n)
 	}
+	if q, _ := store.GetUnsyncedConfirmations(10); len(q) != 0 {
+		t.Errorf("queue = %+v, want none", q)
+	}
+	if got := strings.Join(c.calls, ","); got != "auto:E1,manual:E1" {
+		t.Errorf("calls = %s", got)
+	}
+}
 
-	want := []events.MovementConfirmed{{UII: "E1", Action: "salida", Auto: true}, {UII: "E1", Action: "entrada"}}
-	for _, w := range want {
-		select {
-		case ev := <-ch:
-			if ev != w {
-				t.Errorf("event %+v, want %+v", ev, w)
-			}
-		default:
-			t.Fatalf("missing event %+v", w)
-		}
+func TestConfirm_AutoClaimReleasedAfterSuccessAndFailure(t *testing.T) {
+	store := newStore(t)
+	link(t, store, "E1")
+	c := &fakeClaimer{auto: true, manual: true}
+	svc := &Service{Store: store, CompanyID: "c", MaxPending: 1, Claimer: c}
+
+	if _, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida", Auto: true, PassID: 1}); err != nil {
+		t.Fatalf("first: %v", err)
 	}
-	select {
-	case ev := <-ch:
-		t.Errorf("unexpected event for a rejected confirm: %+v", ev)
-	default:
+	if _, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "entrada", Auto: true, PassID: 2}); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("second err = %v, want ErrQueueFull", err)
+	}
+	if got := strings.Join(c.calls, ","); got != "auto:E1,release,auto:E1,release" {
+		t.Errorf("calls = %s", got)
+	}
+}
+
+func TestConfirm_UnassignedTagIsNotClaimed(t *testing.T) {
+	c := &fakeClaimer{auto: true, manual: true}
+	svc := &Service{Store: newStore(t), Claimer: c}
+	if _, err := svc.Confirm(context.Background(), Request{UII: "E9", Action: "entrada"}); !errors.Is(err, ErrNotAssigned) {
+		t.Fatalf("err = %v", err)
+	}
+	if len(c.calls) != 0 {
+		t.Errorf("calls = %v, want none", c.calls)
 	}
 }

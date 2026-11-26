@@ -319,38 +319,3 @@ func TestEventBus_CloseClosesAutoConfirmedSubscribers(t *testing.T) {
 		t.Error("auto-confirmed channel still open after Close")
 	}
 }
-
-func TestEventBus_MovementConfirmedReachesSubscribersOnly(t *testing.T) {
-	bus := NewEventBus(10)
-	mvCh := bus.SubscribeMovementConfirmed()
-	autoCh := bus.SubscribeAutoConfirmed()
-
-	bus.PublishMovementConfirmed(MovementConfirmed{UII: "E1", Action: "entrada", Auto: false})
-
-	select {
-	case ev := <-mvCh:
-		if ev.UII != "E1" || ev.Action != "entrada" || ev.Auto {
-			t.Errorf("received %+v", ev)
-		}
-	default:
-		t.Fatal("movement-confirmed event not delivered")
-	}
-	select {
-	case ev := <-autoCh:
-		t.Errorf("auto subscriber received %+v", ev)
-	default:
-	}
-
-	bus.UnsubscribeMovementConfirmed(mvCh)
-	if _, ok := <-mvCh; ok {
-		t.Error("channel still open after unsubscribe")
-	}
-	bus.UnsubscribeMovementConfirmed(mvCh)
-	bus.PublishMovementConfirmed(MovementConfirmed{UII: "E2"})
-
-	ch := bus.SubscribeMovementConfirmed()
-	bus.Close()
-	if _, ok := <-ch; ok {
-		t.Error("movement-confirmed channel still open after Close")
-	}
-}

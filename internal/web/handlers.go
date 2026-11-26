@@ -24,6 +24,7 @@ const (
 	msgConfirmBadBody     = "Solicitud inválida."
 	msgConfirmBadAction   = "Movimiento inválido: debe ser entrada o salida."
 	msgConfirmNoUII       = "Falta el código de la tag (uii)."
+	msgConfirmAutoBusy    = "Este movimiento ya se está confirmando automáticamente."
 )
 
 // TagInfo represents tag information for API responses.
@@ -175,6 +176,8 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		AntennaID: req.AntennaID,
 	})
 	switch {
+	case errors.Is(err, confirm.ErrAutoInProgress):
+		s.jsonError(w, msgConfirmAutoBusy, http.StatusConflict)
 	case errors.Is(err, confirm.ErrCannotVerify):
 		s.jsonError(w, msgConfirmNoVerify, http.StatusInternalServerError)
 	case errors.Is(err, confirm.ErrNotAssigned):
@@ -223,7 +226,7 @@ func (s *Server) confirmService() *confirm.Service {
 		VPS:        s.vpsClient,
 		CompanyID:  s.companyID,
 		MaxPending: s.maxPendingConfirmations(),
-		Bus:        s.eventBus,
+		Claimer:    s.claimer,
 	}
 }
 

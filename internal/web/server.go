@@ -15,6 +15,7 @@ import (
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/autoconfirm"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/confirm"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/httpclient"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
@@ -51,6 +52,9 @@ type Server struct {
 	// autoModeMu serializes persisting and applying a mode switch, so the
 	// stored and in-memory modes cannot diverge.
 	autoModeMu sync.Mutex
+	// claimer arbitrates manual and automatic confirms of a tag pass (nil =
+	// no claims).
+	claimer confirm.Claimer
 }
 
 // NewServer creates a new web server.

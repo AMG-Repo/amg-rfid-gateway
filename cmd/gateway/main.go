@@ -149,13 +149,19 @@ func main() {
 	if cfg.MaxPendingConfirmations != nil {
 		maxPending = *cfg.MaxPendingConfirmations
 	}
-	autoConfirmer := autoconfirm.New(
+	// The tracker sees every read synchronously before the reading sessions
+	// and arbitrates every confirm (manual or automatic) of a tag pass.
+	tracker := autoconfirm.NewTracker(
 		autoconfirm.Config{Idle: cfg.AutoConfirmIdle, MinReads: cfg.AutoConfirmMinReads},
+		sessions,
+		autoMode,
+	)
+	autoConfirmer := autoconfirm.New(
+		tracker,
 		eventBus,
 		localStore,
-		verifier,
-		&confirm.Service{Store: localStore, VPS: vpsClient, CompanyID: cfg.CompanyID, MaxPending: maxPending, Bus: eventBus},
-		autoMode,
+		toolStoreAdapter,
+		&confirm.Service{Store: localStore, VPS: vpsClient, CompanyID: cfg.CompanyID, MaxPending: maxPending, Claimer: tracker},
 	)
 
 	// Initialize web server (if enabled)
@@ -175,6 +181,7 @@ func main() {
 		webServer.SetSyncTrigger(toolsSync)
 		webServer.SetAntennaProvider(antennaProvider)
 		webServer.SetAutoConfirmMode(autoMode)
+		webServer.SetConfirmClaimer(tracker)
 		log.Printf("Web server initialized on %s:%d", cfg.WebListenAddr, cfg.WebPort)
 	}
 
@@ -220,7 +227,7 @@ func main() {
 		antennaWg.Add(1)
 		go func(antenna config.AntennaConfig) {
 			defer antennaWg.Done()
-			runAntennaWithReconnect(antennaCtx, antenna, sessions, healthMonitor, cfg, antennaProvider, eventBus)
+			runAntennaWithReconnect(antennaCtx, antenna, tracker, healthMonitor, cfg, antennaProvider, eventBus)
 		}(ant)
 	}
 

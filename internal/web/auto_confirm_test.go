@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/amg-rfid/amg-rfid-gateway/internal/autoconfirm"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
+	"github.com/amg-rfid/amg-rfid-shared-go/models"
 )
 
 func postAutoConfirm(s *Server, method, body, token string) *httptest.ResponseRecorder {
@@ -184,20 +186,52 @@ func TestAutoConfirm_ConcurrentSwitchesKeepStoredAndMemoryEqual(t *testing.T) {
 	}
 }
 
-func TestHandleConfirm_PublishesManualMovementConfirmed(t *testing.T) {
+// busyClaimer refuses manual claims, as while an automatic confirm of the tag
+// is in flight.
+type busyClaimer struct{ manual int }
+
+func (c *busyClaimer) ClaimAuto(string, uint64) bool { return false }
+func (c *busyClaimer) ClaimManual(string) bool       { c.manual++; return false }
+func (c *busyClaimer) Release(uint64)                {}
+
+func TestHandleConfirm_AutoInFlightAnswers409(t *testing.T) {
 	env := newKanbanTestEnv(t, nil)
 	env.linkKanban(t, "E1", localstore.Kanban{Code: "K1", Description: "Burlete", StandardPack: 10, Unit: "PZ"})
-	ch := env.bus.SubscribeMovementConfirmed()
+	c := &busyClaimer{}
+	env.server.SetConfirmClaimer(c)
+
+	rec := postConfirm(env.server, `{"uii":"E1","action":"entrada"}`)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("confirm = %d %s, want 409", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"error":"Este movimiento ya se está confirmando automáticamente."}` {
+		t.Errorf("body = %s", got)
+	}
+	if c.manual != 1 {
+		t.Errorf("manual claims = %d, want 1", c.manual)
+	}
+	if q, _ := env.store.GetUnsyncedConfirmations(10); len(q) != 0 {
+		t.Errorf("queue = %+v, want nothing written", q)
+	}
+}
+
+func TestHandleConfirm_ManualClaimConsumesTrackedPass(t *testing.T) {
+	env := newKanbanTestEnv(t, nil)
+	env.linkKanban(t, "E1", localstore.Kanban{Code: "K1", Description: "Burlete", StandardPack: 10, Unit: "PZ"})
+	mode := &autoconfirm.Mode{}
+	mode.Set(true)
+	tracker := autoconfirm.NewTracker(autoconfirm.Config{Idle: time.Minute, MinReads: 1}, nopSink{}, mode)
+	env.server.SetConfirmClaimer(tracker)
 
 	if rec := postConfirm(env.server, `{"uii":"E1","action":"entrada"}`); rec.Code != http.StatusOK {
 		t.Fatalf("confirm = %d %s", rec.Code, rec.Body.String())
 	}
-	select {
-	case ev := <-ch:
-		if ev.UII != "E1" || ev.Action != "entrada" || ev.Auto {
-			t.Errorf("event %+v, want manual entrada E1", ev)
-		}
-	default:
-		t.Fatal("no MovementConfirmed event for a manual confirm")
+	if tracker.ClaimAuto("E1", 1) {
+		t.Error("auto claim of the manually confirmed pass succeeded")
 	}
 }
+
+type nopSink struct{}
+
+func (nopSink) Store(models.Reading) error { return nil }

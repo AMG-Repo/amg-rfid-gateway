@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/autoconfirm"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/confirm"
 )
 
 // AutoConfirmRequest switches the confirmation mode.
@@ -23,6 +24,12 @@ func (s *Server) SetAutoConfirmMode(mode *autoconfirm.Mode) {
 	if mode != nil {
 		s.autoMode = mode
 	}
+}
+
+// SetConfirmClaimer makes manual confirms claim the tag's pass, so they
+// never duplicate an automatic one.
+func (s *Server) SetConfirmClaimer(c confirm.Claimer) {
+	s.claimer = c
 }
 
 // AutoConfirmMode returns the confirmation mode the panel switches.

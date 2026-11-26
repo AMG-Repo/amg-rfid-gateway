@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/amg-rfid/amg-rfid-gateway/internal/httpclient"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/verify"
+	"github.com/amg-rfid/amg-rfid-shared-go/models"
 )
 
 var t0 = time.Date(2026, 11, 26, 15, 0, 0, 0, time.UTC)
@@ -26,6 +28,9 @@ type fakeVPS struct {
 	*httptest.Server
 	confirms atomic.Int32
 	last     atomic.Value // map[string]any
+	// hold, when set, is called inside each confirmation POST before it is
+	// answered.
+	hold func()
 }
 
 func newFakeVPS(t *testing.T) *fakeVPS {
@@ -35,6 +40,9 @@ func newFakeVPS(t *testing.T) *fakeVPS {
 		if r.URL.Path == "/health" {
 			w.WriteHeader(http.StatusOK)
 			return
+		}
+		if f.hold != nil {
+			f.hold()
 		}
 		var sent map[string]any
 		json.NewDecoder(r.Body).Decode(&sent)
@@ -47,17 +55,36 @@ func newFakeVPS(t *testing.T) *fakeVPS {
 	return f
 }
 
-type env struct {
-	store *localstore.LocalStore
-	bus   *events.EventBus
-	mode  *Mode
-	ac    *AutoConfirmer
-	vps   *fakeVPS
-	auto  chan events.AutoConfirmed
+// sink records every reading the tracker forwards.
+type sink struct {
+	mu       sync.Mutex
+	readings []models.Reading
 }
 
-// newEnv wires an auto-confirmer in automatic mode, idle 1m, min reads 3, to
-// a real store and (when online) a fake VPS.
+func (s *sink) Store(r models.Reading) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readings = append(s.readings, r)
+	return nil
+}
+
+type env struct {
+	store   *localstore.LocalStore
+	bus     *events.EventBus
+	mode    *Mode
+	tracker *Tracker
+	sink    *sink
+	svc     *confirm.Service
+	ac      *AutoConfirmer
+	vps     *fakeVPS
+	auto    chan events.AutoConfirmed
+	clock   atomic.Int64
+	links   int64
+}
+
+// newEnv wires a tracker and an auto-confirmer in automatic mode, idle 1m,
+// min reads 3, to a real store and (when online) a fake VPS. The clock is
+// explicit: set it with at.
 func newEnv(t *testing.T, online bool) *env {
 	t.Helper()
 	c, err := cache.NewSQLite(filepath.Join(t.TempDir(), "cache.db"))
@@ -69,17 +96,23 @@ func newEnv(t *testing.T, online bool) *env {
 	bus := events.NewEventBus(100)
 	t.Cleanup(bus.Close)
 
-	svc := &confirm.Service{Store: store, CompanyID: "c"}
-	e := &env{store: store, bus: bus, mode: &Mode{}}
+	e := &env{store: store, bus: bus, mode: &Mode{}, sink: &sink{}}
+	e.at(t0)
+	e.mode.Set(true)
+	e.tracker = NewTracker(Config{Idle: time.Minute, MinReads: 3}, e.sink, e.mode)
+	e.tracker.Now = func() time.Time { return time.Unix(0, e.clock.Load()).UTC() }
+	e.svc = &confirm.Service{Store: store, CompanyID: "c", Claimer: e.tracker, Now: e.tracker.Now}
 	if online {
 		e.vps = newFakeVPS(t)
-		svc.VPS = httpclient.NewVPSClient(e.vps.URL, 2*time.Second, httpclient.StaticToken("tok"))
+		e.svc.VPS = httpclient.NewVPSClient(e.vps.URL, 2*time.Second, httpclient.StaticToken("tok"))
 	}
-	e.mode.Set(true)
-	e.ac = New(Config{Idle: time.Minute, MinReads: 3}, bus, store, verify.NewVerifier(storeTools{store}, nil), svc, e.mode)
+	e.ac = New(e.tracker, bus, store, storeTools{store}, e.svc)
 	e.auto = bus.SubscribeAutoConfirmed()
 	return e
 }
+
+// at sets the clock.
+func (e *env) at(now time.Time) { e.clock.Store(now.UnixNano()) }
 
 // storeTools adapts the local store to the verifier's ToolStore.
 type storeTools struct{ s *localstore.LocalStore }
@@ -92,11 +125,21 @@ func (a storeTools) GetToolByUII(uii string) (*verify.Tool, error) {
 	return &verify.Tool{UII: tool.UII, Location: tool.Location, Status: tool.Status}, nil
 }
 
-// link assigns uii to a kanban with the given cached location.
-func (e *env) link(t *testing.T, uii, location string) {
+// fakeTools is a ToolStore returning a fixed tool or error.
+type fakeTools struct {
+	tool *verify.Tool
+	err  error
+}
+
+func (f fakeTools) GetToolByUII(string) (*verify.Tool, error) { return f.tool, f.err }
+
+// link assigns uii to a kanban with the given cached location (nil = NULL).
+func (e *env) link(t *testing.T, uii string, location *string) {
 	t.Helper()
-	k := localstore.Kanban{Code: "K1", Description: "Burlete", StandardPack: 10, Unit: "PZ"}
-	item := localstore.SyncDataItem{ID: 1, ToolID: 1, UII: uii, SKU: "S", Name: "N", Active: true, Location: &location, Kanban: &k}
+	// A salida moves the tag to the kanban's first zone, a known location.
+	k := localstore.Kanban{Code: "K1", Description: "Burlete", StandardPack: 10, Unit: "PZ", Zones: []string{"Línea 3"}}
+	e.links++
+	item := localstore.SyncDataItem{ID: e.links, ToolID: e.links, UII: uii, SKU: "S", Name: "N", Active: true, Location: location, Kanban: &k}
 	if err := e.store.UpsertToolsFromSync([]localstore.SyncDataItem{item}); err != nil {
 		t.Fatalf("upsert tool: %v", err)
 	}
@@ -105,15 +148,41 @@ func (e *env) link(t *testing.T, uii, location string) {
 	}
 }
 
-// reads observes n reads of uii one second apart starting at start; it
-// returns the last read time.
+func loc(s string) *string { return &s }
+
+// reads stores n reads of uii one second apart starting at start through the
+// tracker; it returns the last read time.
 func (e *env) reads(uii, antenna string, start time.Time, n int) time.Time {
 	last := start
 	for i := 0; i < n; i++ {
 		last = start.Add(time.Duration(i) * time.Second)
-		e.ac.Observe(events.TagDetected{EPC: uii, AntennaID: antenna, Timestamp: last})
+		e.tracker.Store(models.Reading{EPC: uii, AntennaID: antenna, GatewayID: "gw", Timestamp: last})
 	}
 	return last
+}
+
+// tick runs a tick at now and then the queued work, as the worker would.
+func (e *env) tick(now time.Time) {
+	e.at(now)
+	e.ac.Tick(now)
+	e.work()
+}
+
+// work runs every queued pass synchronously.
+func (e *env) work() {
+	for {
+		select {
+		case j := <-e.ac.work:
+			e.ac.confirmPass(context.Background(), j)
+		default:
+			return
+		}
+	}
+}
+
+func (e *env) manual(uii, action string) error {
+	_, err := e.svc.Confirm(context.Background(), confirm.Request{UII: uii, Action: action})
+	return err
 }
 
 func (e *env) history(t *testing.T) []localstore.HistoryEntry {
@@ -127,11 +196,11 @@ func (e *env) history(t *testing.T) []localstore.HistoryEntry {
 
 func TestTick_AutomaticPassConfirmsOnceOnline(t *testing.T) {
 	e := newEnv(t, true)
-	e.link(t, "E1", "Almacén General")
+	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-2", t0, 3)
 
-	e.ac.Tick(context.Background(), last.Add(time.Minute))
-	e.ac.Tick(context.Background(), last.Add(2*time.Minute))
+	e.tick(last.Add(time.Minute))
+	e.tick(last.Add(2 * time.Minute))
 
 	if n := e.vps.confirms.Load(); n != 1 {
 		t.Fatalf("VPS confirms = %d, want 1", n)
@@ -156,10 +225,10 @@ func TestTick_AutomaticPassConfirmsOnceOnline(t *testing.T) {
 
 func TestTick_OutsideTagConfirmsEntrada(t *testing.T) {
 	e := newEnv(t, true)
-	e.link(t, "E1", "Línea 3")
+	e.link(t, "E1", loc("Línea 3"))
 	last := e.reads("E1", "ant-1", t0, 4)
 
-	e.ac.Tick(context.Background(), last.Add(time.Minute))
+	e.tick(last.Add(time.Minute))
 
 	if h := e.history(t); len(h) != 1 || h[0].Action != "entrada" || !h[0].Auto {
 		t.Errorf("history = %+v, want one auto entrada", h)
@@ -172,14 +241,25 @@ func TestTick_NothingConfirmed(t *testing.T) {
 		setup func(t *testing.T, e *env)
 		reads int
 	}{
-		{"fewer reads than the minimum", func(t *testing.T, e *env) { e.link(t, "E1", "Almacén General") }, 2},
-		{"manual mode", func(t *testing.T, e *env) { e.link(t, "E1", "Almacén General"); e.mode.Set(false) }, 5},
+		{"fewer reads than the minimum", func(t *testing.T, e *env) { e.link(t, "E1", loc("Almacén General")) }, 2},
+		{"manual mode", func(t *testing.T, e *env) { e.link(t, "E1", loc("Almacén General")); e.mode.Set(false) }, 5},
 		{"tag without kanban", func(t *testing.T, e *env) {}, 5},
 		{"user badge", func(t *testing.T, e *env) {
-			e.link(t, "E1", "Almacén General")
+			e.link(t, "E1", loc("Almacén General"))
 			if err := e.store.UpsertUsers([]localstore.User{{ID: 1, CompanyID: "c", Name: "Ana", RFIDTag: "E1", Active: true}}); err != nil {
 				t.Fatalf("user: %v", err)
 			}
+		}, 5},
+		{"empty location", func(t *testing.T, e *env) { e.link(t, "E1", loc("")) }, 5},
+		{"blank location", func(t *testing.T, e *env) { e.link(t, "E1", loc("   ")) }, 5},
+		{"NULL location", func(t *testing.T, e *env) { e.link(t, "E1", nil) }, 5},
+		{"missing tool row", func(t *testing.T, e *env) {
+			e.link(t, "E1", loc("Almacén General"))
+			e.ac.tools = fakeTools{}
+		}, 5},
+		{"tool lookup error", func(t *testing.T, e *env) {
+			e.link(t, "E1", loc("Almacén General"))
+			e.ac.tools = fakeTools{err: errors.New("db down")}
 		}, 5},
 	}
 	for _, tc := range tests {
@@ -188,7 +268,7 @@ func TestTick_NothingConfirmed(t *testing.T) {
 			tc.setup(t, e)
 			last := e.reads("E1", "ant-1", t0, tc.reads)
 
-			e.ac.Tick(context.Background(), last.Add(time.Minute))
+			e.tick(last.Add(time.Minute))
 
 			if n := e.vps.confirms.Load(); n != 0 {
 				t.Errorf("VPS confirms = %d, want 0", n)
@@ -196,9 +276,10 @@ func TestTick_NothingConfirmed(t *testing.T) {
 			if h := e.history(t); len(h) != 0 {
 				t.Errorf("history = %+v, want none", h)
 			}
-			// The pass is discarded either way: the next pass starts from zero.
+			// The pass is discarded either way: it is not retried later.
 			e.mode.Set(true)
-			e.ac.Tick(context.Background(), last.Add(2*time.Minute))
+			e.ac.tools = storeTools{e.store}
+			e.tick(last.Add(2 * time.Minute))
 			if h := e.history(t); len(h) != 0 {
 				t.Errorf("pass survived its end: history = %+v", h)
 			}
@@ -208,17 +289,17 @@ func TestTick_NothingConfirmed(t *testing.T) {
 
 func TestTick_ReadsKeepThePassAlive(t *testing.T) {
 	e := newEnv(t, true)
-	e.link(t, "E1", "Almacén General")
+	e.link(t, "E1", loc("Almacén General"))
 	e.reads("E1", "ant-1", t0, 3)
 
-	e.ac.Tick(context.Background(), t0.Add(50*time.Second))
+	e.tick(t0.Add(50 * time.Second))
 	last := e.reads("E1", "ant-1", t0.Add(55*time.Second), 1)
-	e.ac.Tick(context.Background(), t0.Add(70*time.Second))
+	e.tick(t0.Add(70 * time.Second))
 
 	if n := e.vps.confirms.Load(); n != 0 {
 		t.Fatalf("confirmed before idle: %d", n)
 	}
-	e.ac.Tick(context.Background(), last.Add(time.Minute))
+	e.tick(last.Add(time.Minute))
 	if h := e.history(t); len(h) != 1 || !h[0].Timestamp.Equal(last) {
 		t.Errorf("history = %+v, want one confirm at the last read %v", h, last)
 	}
@@ -226,20 +307,20 @@ func TestTick_ReadsKeepThePassAlive(t *testing.T) {
 
 func TestTick_NewReadAfterConfirmStartsNewPass(t *testing.T) {
 	e := newEnv(t, true)
-	e.link(t, "E1", "Almacén General")
+	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-1", t0, 3)
-	e.ac.Tick(context.Background(), last.Add(time.Minute))
+	e.tick(last.Add(time.Minute))
 
 	// The confirm moved the tag out of the warehouse; one read is not a pass.
 	start := last.Add(2 * time.Minute)
 	e.reads("E1", "ant-1", start, 1)
-	e.ac.Tick(context.Background(), start.Add(time.Minute))
+	e.tick(start.Add(time.Minute))
 	if n := e.vps.confirms.Load(); n != 1 {
 		t.Fatalf("confirms after short pass = %d, want 1", n)
 	}
 
 	last = e.reads("E1", "ant-1", start.Add(2*time.Minute), 3)
-	e.ac.Tick(context.Background(), last.Add(time.Minute))
+	e.tick(last.Add(time.Minute))
 	if n := e.vps.confirms.Load(); n != 2 {
 		t.Fatalf("confirms = %d, want 2", n)
 	}
@@ -251,10 +332,10 @@ func TestTick_NewReadAfterConfirmStartsNewPass(t *testing.T) {
 
 func TestTick_OfflineQueuesAutoConfirmation(t *testing.T) {
 	e := newEnv(t, false)
-	e.link(t, "E1", "Almacén General")
+	e.link(t, "E1", loc("Almacén General"))
 	last := e.reads("E1", "ant-1", t0, 3)
 
-	e.ac.Tick(context.Background(), last.Add(time.Minute))
+	e.tick(last.Add(time.Minute))
 
 	queue, _ := e.store.GetUnsyncedConfirmations(10)
 	if len(queue) != 1 || queue[0].Action != "salida" || !queue[0].OccurredAt.Equal(last) {
@@ -273,7 +354,293 @@ func TestTick_OfflineQueuesAutoConfirmation(t *testing.T) {
 	}
 }
 
-func TestRun_ObservesBusAndStopsOnCancel(t *testing.T) {
+func TestObserve_GapOfIdleStartsNewPass(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	last := e.reads("E1", "ant-1", t0, 2)
+	last = e.reads("E1", "ant-1", last.Add(time.Minute), 1)
+
+	e.tick(last.Add(time.Minute))
+
+	if h := e.history(t); len(h) != 0 {
+		t.Errorf("history = %+v, want none: passes joined across an idle gap", h)
+	}
+}
+
+func TestStore_ForwardsEveryReadingUnchanged(t *testing.T) {
+	e := newEnv(t, true)
+	in := []models.Reading{
+		{EPC: "E1", AntennaID: "ant-1", GatewayID: "gw", RSSI: -40, Timestamp: t0},
+		{EPC: "E1", AntennaID: "ant-2", GatewayID: "gw", RSSI: -50, Timestamp: t0.Add(time.Second)},
+		{EPC: "", AntennaID: "ant-1", GatewayID: "gw", Timestamp: t0}, // invalid: still forwarded
+	}
+	for _, r := range in {
+		if err := e.tracker.Store(r); err != nil {
+			t.Fatalf("store: %v", err)
+		}
+	}
+	if len(e.sink.readings) != len(in) {
+		t.Fatalf("forwarded %d readings, want %d", len(e.sink.readings), len(in))
+	}
+	for i := range in {
+		if e.sink.readings[i] != in[i] {
+			t.Errorf("reading %d forwarded as %+v, want %+v", i, e.sink.readings[i], in[i])
+		}
+	}
+}
+
+func TestClaim_ReadAfterEnqueueRejectsTheQueuedPass(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	last := e.reads("E1", "ant-1", t0, 3)
+	now := last.Add(time.Minute)
+	e.at(now)
+	e.ac.Tick(now)
+
+	e.reads("E1", "ant-1", now, 1) // the tag is read again before the worker claims
+	e.work()
+
+	if n := e.vps.confirms.Load(); n != 0 {
+		t.Errorf("VPS confirms = %d, want 0: the tag is being read again", n)
+	}
+	if h := e.history(t); len(h) != 0 {
+		t.Errorf("history = %+v, want none", h)
+	}
+}
+
+func TestClaim_ManualAfterEnqueueWins(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	last := e.reads("E1", "ant-1", t0, 3)
+	now := last.Add(time.Minute)
+	e.at(now)
+	e.ac.Tick(now)
+
+	if err := e.manual("E1", "salida"); err != nil {
+		t.Fatalf("manual: %v", err)
+	}
+	e.work()
+
+	if h := e.history(t); len(h) != 1 || h[0].Auto {
+		t.Errorf("history = %+v, want exactly the manual movement", h)
+	}
+	if n := e.vps.confirms.Load(); n != 1 {
+		t.Errorf("VPS confirms = %d, want 1", n)
+	}
+}
+
+func TestClaim_ModeSwitchedToManualAfterEnqueue(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	last := e.reads("E1", "ant-1", t0, 3)
+	now := last.Add(time.Minute)
+	e.at(now)
+	e.ac.Tick(now)
+
+	e.mode.Set(false)
+	e.work()
+
+	if n := e.vps.confirms.Load(); n != 0 {
+		t.Errorf("VPS confirms = %d, want 0 after switching to manual", n)
+	}
+	if h := e.history(t); len(h) != 0 {
+		t.Errorf("history = %+v, want none", h)
+	}
+}
+
+// holdVPS makes the next confirmation POST wait: entered is closed when it
+// arrives, and it is answered once release is closed.
+func holdVPS(e *env) (entered, release chan struct{}) {
+	entered, release = make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	e.vps.hold = func() {
+		once.Do(func() {
+			close(entered)
+			<-release
+		})
+	}
+	return entered, release
+}
+
+func TestClaim_ManualWhileAutoInFlightIsRefused(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	last := e.reads("E1", "ant-1", t0, 3)
+	entered, release := holdVPS(e)
+	e.at(last.Add(time.Minute))
+	e.ac.Tick(last.Add(time.Minute))
+	done := make(chan struct{})
+	go func() {
+		e.work()
+		close(done)
+	}()
+	<-entered
+
+	err := e.manual("E1", "salida")
+	close(release)
+	<-done
+
+	if !errors.Is(err, confirm.ErrAutoInProgress) {
+		t.Fatalf("manual err = %v, want ErrAutoInProgress", err)
+	}
+	if h := e.history(t); len(h) != 1 || !h[0].Auto {
+		t.Errorf("history = %+v, want only the auto movement", h)
+	}
+	if n := e.vps.confirms.Load(); n != 1 {
+		t.Errorf("VPS confirms = %d, want 1", n)
+	}
+	// Released: a later manual confirm is accepted.
+	if err := e.manual("E1", "entrada"); err != nil {
+		t.Errorf("manual after release: %v", err)
+	}
+}
+
+func TestClaim_AutoSuccessKeepsNewerPass(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	last := e.reads("E1", "ant-1", t0, 3)
+	now := last.Add(time.Minute)
+	entered, release := holdVPS(e)
+	e.at(now)
+	e.ac.Tick(now)
+	done := make(chan struct{})
+	go func() {
+		e.work()
+		close(done)
+	}()
+	<-entered
+	// A new pass starts while the first one is being confirmed.
+	newLast := e.reads("E1", "ant-1", now.Add(time.Second), 3)
+	close(release)
+	<-done
+
+	e.tick(newLast.Add(time.Minute))
+
+	if n := e.vps.confirms.Load(); n != 2 {
+		t.Errorf("VPS confirms = %d, want 2: the newer pass was consumed", n)
+	}
+}
+
+func TestTick_FullQueueRetriesOnLaterTick(t *testing.T) {
+	old := confirmQueue
+	confirmQueue = 1
+	t.Cleanup(func() { confirmQueue = old })
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	e.link(t, "E2", loc("Almacén General"))
+	last := e.reads("E1", "ant-1", t0, 3)
+	e.reads("E2", "ant-1", t0, 3)
+	now := last.Add(time.Minute)
+
+	e.at(now)
+	e.ac.Tick(now)
+	e.ac.Tick(now) // queue full: nothing blocks
+	before := len(e.sink.readings)
+	e.reads("E3", "ant-1", now, 2) // reads are still observed and forwarded
+	if got := len(e.sink.readings) - before; got != 2 {
+		t.Fatalf("forwarded %d reads while the queue was full, want 2", got)
+	}
+	if got := len(e.ac.work); got != 1 {
+		t.Fatalf("queued %d passes, want 1", got)
+	}
+	e.work()
+	e.tick(now.Add(time.Second))
+
+	if n := e.vps.confirms.Load(); n != 2 {
+		t.Errorf("VPS confirms = %d, want 2 (second pass on a later tick)", n)
+	}
+}
+
+func TestClaim_ManualWhileReadingThenIdle(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	e.reads("E1", "ant-1", t0, 3)
+	e.at(t0.Add(5 * time.Second))
+	if err := e.manual("E1", "salida"); err != nil {
+		t.Fatalf("manual: %v", err)
+	}
+	last := e.reads("E1", "ant-1", t0.Add(10*time.Second), 3)
+
+	e.tick(last.Add(time.Minute))
+	if h := e.history(t); len(h) != 1 || h[0].Auto {
+		t.Fatalf("history = %+v, want only the manual movement", h)
+	}
+
+	last = e.reads("E1", "ant-1", last.Add(2*time.Minute), 3)
+	e.tick(last.Add(time.Minute))
+	h := e.history(t)
+	auto := 0
+	for _, m := range h {
+		if m.Auto {
+			auto++
+		}
+	}
+	if len(h) != 2 || auto != 1 {
+		t.Errorf("history = %+v, want the manual one plus one auto", h)
+	}
+}
+
+func TestClaim_ManualWithoutPassConsumesTheNextReads(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	if err := e.manual("E1", "salida"); err != nil { // no pass yet: one is created
+		t.Fatalf("manual: %v", err)
+	}
+	last := e.reads("E1", "ant-1", t0.Add(10*time.Second), 3) // still the consumed pass
+	e.tick(last.Add(time.Minute))
+	if n := e.vps.confirms.Load(); n != 1 {
+		t.Fatalf("VPS confirms = %d, want only the manual one", n)
+	}
+}
+
+func TestClaim_FailedAutoConfirmIsNotRetried(t *testing.T) {
+	e := newEnv(t, false)
+	e.svc.MaxPending = 1
+	e.link(t, "E2", loc("Almacén General"))
+	if _, err := e.svc.Confirm(context.Background(), confirm.Request{UII: "E2", Action: "salida"}); err != nil {
+		t.Fatalf("fill queue: %v", err)
+	}
+	last := e.reads("E2", "ant-1", t0, 3)
+	e.tick(last.Add(time.Minute)) // queue full: the auto confirm fails
+	e.svc.MaxPending = 0
+	e.tick(last.Add(2 * time.Minute))
+
+	if q, _ := e.store.GetUnsyncedConfirmations(10); len(q) != 1 {
+		t.Errorf("queue = %+v, want only the first movement", q)
+	}
+	// The failed claim was released: a manual confirm is accepted.
+	if err := e.manual("E2", "salida"); err != nil {
+		t.Errorf("manual after failed auto: %v", err)
+	}
+}
+
+func TestRun_ConfirmsOnTickAndStopsOnCancel(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	last := e.reads("E1", "ant-1", t0, 3)
+	e.at(last.Add(time.Minute))
+	ctx, cancel := context.WithCancel(context.Background())
+	ticks := make(chan time.Time)
+	done := make(chan struct{})
+	go func() {
+		e.ac.run(ctx, ticks)
+		close(done)
+	}()
+	ticks <- time.Time{}
+	select {
+	case <-e.auto:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no auto confirm after a tick")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not stop on cancel")
+	}
+}
+
+func TestRun_StopsOnCancel(t *testing.T) {
 	e := newEnv(t, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -286,167 +653,5 @@ func TestRun_ObservesBusAndStopsOnCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not stop on cancel")
-	}
-}
-
-// fakeTools is a verifier ToolStore returning a fixed tool or error.
-type fakeTools struct {
-	tool *verify.Tool
-	err  error
-}
-
-func (f fakeTools) GetToolByUII(string) (*verify.Tool, error) { return f.tool, f.err }
-
-func TestTick_UnknownLocationIsLeftForManual(t *testing.T) {
-	tests := []struct {
-		name  string
-		tools fakeTools
-	}{
-		{"missing tool row", fakeTools{}},
-		{"lookup error", fakeTools{err: errors.New("db down")}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			e := newEnv(t, true)
-			e.link(t, "E1", "Almacén General")
-			e.ac.suggester = verify.NewVerifier(tc.tools, nil)
-			last := e.reads("E1", "ant-1", t0, 5)
-
-			e.ac.Tick(context.Background(), last.Add(time.Minute))
-
-			if n := e.vps.confirms.Load(); n != 0 {
-				t.Errorf("VPS confirms = %d, want 0", n)
-			}
-			if h := e.history(t); len(h) != 0 {
-				t.Errorf("history = %+v, want none", h)
-			}
-		})
-	}
-}
-
-func TestObserve_GapOfIdleStartsNewPass(t *testing.T) {
-	e := newEnv(t, true)
-	e.link(t, "E1", "Almacén General")
-	last := e.reads("E1", "ant-1", t0, 2)
-	last = e.reads("E1", "ant-1", last.Add(time.Minute), 1)
-
-	e.ac.Tick(context.Background(), last.Add(time.Minute))
-
-	if h := e.history(t); len(h) != 0 {
-		t.Errorf("history = %+v, want none: passes joined across an idle gap", h)
-	}
-}
-
-func TestConsumed_ManualConfirmWhileReadingConsumesPass(t *testing.T) {
-	e := newEnv(t, true)
-	e.link(t, "E1", "Almacén General")
-	e.reads("E1", "ant-1", t0, 3)
-	e.ac.Now = func() time.Time { return t0.Add(5 * time.Second) }
-	e.ac.Consumed(events.MovementConfirmed{UII: "E1", Action: "salida"})
-	last := e.reads("E1", "ant-1", t0.Add(10*time.Second), 3)
-
-	e.ac.Tick(context.Background(), last.Add(time.Minute))
-
-	if n := e.vps.confirms.Load(); n != 0 {
-		t.Errorf("VPS confirms = %d, want 0: the pass was already confirmed", n)
-	}
-}
-
-func TestConsumed_ManualConfirmInManualModeThenAutomatic(t *testing.T) {
-	e := newEnv(t, true)
-	e.link(t, "E1", "Almacén General")
-	e.mode.Set(false)
-	e.reads("E1", "ant-1", t0, 3)
-	e.ac.Now = func() time.Time { return t0.Add(3 * time.Second) }
-	e.ac.Consumed(events.MovementConfirmed{UII: "E1", Action: "salida"})
-	e.mode.Set(true)
-
-	e.ac.Tick(context.Background(), t0.Add(3*time.Second+time.Minute))
-
-	if n := e.vps.confirms.Load(); n != 0 {
-		t.Errorf("VPS confirms = %d, want 0", n)
-	}
-}
-
-func TestConsumed_NewPassAfterIdleGapConfirmsOnce(t *testing.T) {
-	e := newEnv(t, true)
-	e.link(t, "E1", "Almacén General")
-	e.ac.Now = func() time.Time { return t0 }
-	e.ac.Consumed(events.MovementConfirmed{UII: "E1", Action: "salida"}) // no pass yet: one is created
-	e.reads("E1", "ant-1", t0.Add(10*time.Second), 3)                    // still the consumed pass
-	end := t0.Add(12*time.Second + time.Minute)
-	e.ac.Tick(context.Background(), end)
-	if n := e.vps.confirms.Load(); n != 0 {
-		t.Fatalf("consumed pass confirmed: %d", n)
-	}
-
-	last := e.reads("E1", "ant-1", end.Add(time.Minute), 3)
-	e.ac.Tick(context.Background(), last.Add(time.Minute))
-
-	if n := e.vps.confirms.Load(); n != 1 {
-		t.Errorf("VPS confirms = %d, want 1", n)
-	}
-}
-
-// startRun runs the loop on the given channels with a tick hook; it returns a
-// stop func that cancels and waits for the loop and its worker.
-func startRun(t *testing.T, e *env, reads chan events.TagDetected, ticks chan time.Time) (ticked chan struct{}, stop func()) {
-	t.Helper()
-	ticked = make(chan struct{}, 10)
-	e.ac.afterTick = func() { ticked <- struct{}{} }
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		e.ac.run(ctx, reads, make(chan events.MovementConfirmed), ticks)
-		close(done)
-	}()
-	return ticked, func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Fatal("run did not stop")
-		}
-	}
-}
-
-func TestRun_QueuedReadsAreDrainedBeforeTick(t *testing.T) {
-	e := newEnv(t, true)
-	e.link(t, "E1", "Almacén General")
-	e.reads("E1", "ant-1", t0, 3)
-	reads := make(chan events.TagDetected, 10)
-	reads <- events.TagDetected{EPC: "E1", AntennaID: "ant-1", Timestamp: t0.Add(55 * time.Second)}
-	ticks := make(chan time.Time, 1)
-	ticks <- t0
-	e.ac.Now = func() time.Time { return t0.Add(70 * time.Second) }
-
-	ticked, stop := startRun(t, e, reads, ticks)
-	<-ticked
-	stop()
-
-	if n := e.vps.confirms.Load(); n != 0 {
-		t.Errorf("VPS confirms = %d, want 0: queued read keeps the pass alive", n)
-	}
-}
-
-func TestRun_SwitchToManualBeforeConfirmSkipsIt(t *testing.T) {
-	e := newEnv(t, true)
-	e.link(t, "E1", "Almacén General")
-	last := e.reads("E1", "ant-1", t0, 3)
-	e.ac.Now = func() time.Time { return last.Add(time.Minute) }
-	confirming := make(chan struct{})
-	e.ac.beforeConfirm = func() { e.mode.Set(false); close(confirming) }
-	ticks := make(chan time.Time, 1)
-	ticks <- t0
-
-	_, stop := startRun(t, e, make(chan events.TagDetected), ticks)
-	<-confirming
-	stop()
-
-	if n := e.vps.confirms.Load(); n != 0 {
-		t.Errorf("VPS confirms = %d, want 0 after switching to manual", n)
-	}
-	if h := e.history(t); len(h) != 0 {
-		t.Errorf("history = %+v, want none", h)
 	}
 }
