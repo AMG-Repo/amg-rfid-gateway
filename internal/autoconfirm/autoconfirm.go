@@ -95,6 +95,9 @@ type Tracker struct {
 	passes map[string]*pass
 	// inFlight maps a tag to the pass of its automatic confirm in progress.
 	inFlight map[string]uint64
+	// manual counts the manual confirms of a tag in progress: no pass of the
+	// tag is claimed automatically meanwhile.
+	manual map[string]int
 	// autoDone maps a tag to the pass of its last automatic confirm while the
 	// tag is not read again: a manual confirm then is stale.
 	autoDone map[string]uint64
@@ -117,6 +120,7 @@ func NewTracker(cfg Config, next Sink, mode *Mode) *Tracker {
 		Now:      time.Now,
 		passes:   make(map[string]*pass),
 		inFlight: make(map[string]uint64),
+		manual:   make(map[string]int),
 		autoDone: make(map[string]uint64),
 		seeded:   make(map[string]bool),
 	}
@@ -206,7 +210,8 @@ func (t *Tracker) SeedRecent(store RecentLister, now time.Time) error {
 
 // ClaimAuto claims pass passID of uii for an automatic confirm: it must still
 // be the tag's current pass, not consumed, unread for the idle time now, with
-// enough reads, in automatic mode. A claimed pass is consumed and in flight
+// enough reads, in automatic mode, with no manual confirm of the tag in
+// progress. A claimed pass is consumed and in flight
 // until the auto-confirmer finishes it.
 func (t *Tracker) ClaimAuto(uii string, passID uint64) bool {
 	_, ok := t.claimAuto(uii, passID)
@@ -224,7 +229,7 @@ func (t *Tracker) claimAuto(uii string, passID uint64) (job, bool) {
 	if p == nil || p.id != passID {
 		return job{}, false
 	}
-	if p.consumed || !t.endedAt(p.lastSeen, now) || p.reads < t.cfg.MinReads || !t.mode.Enabled() {
+	if p.consumed || t.manual[uii] > 0 || !t.endedAt(p.lastSeen, now) || p.reads < t.cfg.MinReads || !t.mode.Enabled() {
 		p.queued = false
 		return job{}, false
 	}
@@ -238,7 +243,8 @@ func (t *Tracker) claimAuto(uii string, passID uint64) (job, bool) {
 func (t *Tracker) ClaimManual(uii string) bool { return t.ClaimManualErr(uii) == nil }
 
 // ClaimManualErr consumes the tag's current pass (a new one when it has none
-// live). It is refused while an automatic confirm of the tag is in flight
+// live) and keeps every pass of the tag from an automatic claim until
+// FinishManual. It is refused while an automatic confirm of the tag is in flight
 // (confirm.ErrAutoInProgress) and after one, until the tag is read again
 // (confirm.ErrAlreadyAutoConfirmed).
 func (t *Tracker) ClaimManualErr(uii string) error {
@@ -256,7 +262,20 @@ func (t *Tracker) ClaimManualErr(uii string) error {
 		p = t.newPass(uii, now)
 	}
 	p.consumed = true
+	t.manual[uii]++
 	return nil
+}
+
+// FinishManual ends a manual confirm of uii that ClaimManualErr accepted,
+// whatever its outcome.
+func (t *Tracker) FinishManual(uii string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.manual[uii] <= 1 {
+		delete(t.manual, uii)
+		return
+	}
+	t.manual[uii]--
 }
 
 // finish ends the in-flight state of the automatic claim of pass passID. The
@@ -304,6 +323,10 @@ func (t *Tracker) ended(now time.Time) []job {
 			continue
 		}
 		if _, busy := t.inFlight[uii]; busy {
+			continue
+		}
+		if t.manual[uii] > 0 && !p.consumed {
+			// Reconsidered once the manual confirm finishes.
 			continue
 		}
 		if p.consumed || !auto || p.reads < t.cfg.MinReads {
@@ -418,8 +441,9 @@ func (a *AutoConfirmer) confirmPass(ctx context.Context, queued job) {
 
 // direction is the movement of a kanban-linked tag (not a user badge) with no
 // unsynced confirmation queued, no confirmation within the Cooldown before
-// now: the opposite of its last local confirmation, or, when it has none, from
-// a known, non-blank cached location; ok is false otherwise.
+// now: the opposite of its last local confirmation and the one implied by its
+// known, non-blank cached location (warehouse -> salida, else entrada) when
+// both agree, or whichever exists alone; ok is false otherwise.
 func (a *AutoConfirmer) direction(uii string, now time.Time) (verify.Action, bool) {
 	kanban, err := a.store.GetKanbanByUII(uii)
 	if err != nil {
@@ -455,34 +479,43 @@ func (a *AutoConfirmer) direction(uii string, now time.Time) (verify.Action, boo
 		log.Printf("[AutoConfirm] Skipped %s: confirmed within the last %v", uii, Cooldown)
 		return "", false
 	}
-	// This gateway's last movement of the tag decides; the cached location,
-	// which a tools sync can overwrite with an older snapshot, only when the
-	// tag has none.
+	// This gateway's last movement of the tag and its known cached location
+	// must agree; either one alone decides. A disagreement means a movement
+	// made elsewhere or a stale snapshot: left for a manual confirm.
 	last, found, err := a.store.LastConfirmationAction(uii)
 	if err != nil {
 		log.Printf("[AutoConfirm] Failed to look up the last confirmation of %s: %v", uii, err)
 		return "", false
 	}
+	var local verify.Action
 	if found {
 		switch verify.Action(last) {
 		case verify.ActionEntrada:
-			return verify.ActionSalida, true
+			local = verify.ActionSalida
 		case verify.ActionSalida:
-			return verify.ActionEntrada, true
+			local = verify.ActionEntrada
+		default:
+			log.Printf("[AutoConfirm] Skipped %s: unknown last action %q", uii, last)
+			return "", false
 		}
-		log.Printf("[AutoConfirm] Skipped %s: unknown last action %q", uii, last)
-		return "", false
 	}
 	tool, err := a.tools.GetToolByUII(uii)
 	if err != nil {
 		log.Printf("[AutoConfirm] Failed to look up location of %s: %v", uii, err)
 		return "", false
 	}
-	action, ok := verify.KnownLocationAction(tool)
-	if !ok {
-		log.Printf("[AutoConfirm] Skipped %s: no known location", uii)
+	cached, known := verify.KnownLocationAction(tool)
+	switch {
+	case found && known && local != cached:
+		log.Printf("[AutoConfirm] Skipped %s: last local movement implies %s, cached location %s", uii, local, cached)
+		return "", false
+	case found:
+		return local, true
+	case known:
+		return cached, true
 	}
-	return action, ok
+	log.Printf("[AutoConfirm] Skipped %s: no local movement and no known location", uii)
+	return "", false
 }
 
 // Run ticks every TickInterval and confirms queued passes in a worker until

@@ -38,8 +38,11 @@ func TestValidate_AutoConfirm(t *testing.T) {
 		wantErr  string
 	}{
 		{"defaults are valid", time.Minute, 3, ""},
-		{"single read is valid", 10 * time.Second, 1, ""},
-		{"negative idle", -time.Second, 3, "auto_confirm_idle must be positive"},
+		{"single read is valid", 30 * time.Second, 1, ""},
+		{"unset idle means the default", 0, 3, ""},
+		{"idle below the minimum", 29 * time.Second, 3, "auto_confirm_idle must be at least 30s"},
+		{"one second idle", time.Second, 3, "auto_confirm_idle must be at least 30s"},
+		{"negative idle", -time.Second, 3, "auto_confirm_idle must be"},
 		{"negative min reads", time.Minute, -1, "auto_confirm_min_reads must be positive"},
 	}
 	for _, tc := range tests {

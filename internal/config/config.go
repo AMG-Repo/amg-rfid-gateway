@@ -24,6 +24,10 @@ const (
 
 	// DefaultSocketPath is the historical Unix socket path shared by the gateway bridge and TUI client.
 	DefaultSocketPath = "/tmp/amg-gateway.sock"
+
+	// MinAutoConfirmIdle is the shortest auto_confirm_idle accepted: a manual
+	// confirm still being sent to the VPS must not let a new pass end.
+	MinAutoConfirmIdle = 30 * time.Second
 )
 
 // AntennaProtocol identifies the packet protocol used by an antenna.
@@ -264,9 +268,10 @@ func (c *GatewayConfig) Validate() error {
 		return errors.New("reading_session_max must be at least reading_session_idle")
 	}
 
-	// NEGATIVE: automatic confirmation thresholds must be positive
-	if c.AutoConfirmIdle < 0 {
-		return errors.New("auto_confirm_idle must be positive")
+	// NEGATIVE: automatic confirmation thresholds must be positive; a set idle
+	// time must cover a manual confirm still being sent (0 = default)
+	if c.AutoConfirmIdle < 0 || (c.AutoConfirmIdle > 0 && c.AutoConfirmIdle < MinAutoConfirmIdle) {
+		return fmt.Errorf("auto_confirm_idle must be at least %v", MinAutoConfirmIdle)
 	}
 	if c.AutoConfirmMinReads < 0 {
 		return errors.New("auto_confirm_min_reads must be positive")

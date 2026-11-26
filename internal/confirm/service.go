@@ -54,6 +54,12 @@ type manualClaimErrer interface {
 	ClaimManualErr(uii string) error
 }
 
+// manualFinisher is a Claimer told when a claimed manual confirm finished
+// (sent, queued or failed).
+type manualFinisher interface {
+	FinishManual(uii string)
+}
+
 // Request is one movement to confirm. Action must already be canonical
 // ("entrada" or "salida").
 type Request struct {
@@ -115,6 +121,9 @@ func (s *Service) Confirm(ctx context.Context, req Request) (Result, error) {
 			}
 		} else if !s.Claimer.ClaimManual(req.UII) {
 			return Result{}, ErrAutoInProgress
+		}
+		if f, ok := s.Claimer.(manualFinisher); ok {
+			defer f.FinishManual(req.UII)
 		}
 	}
 

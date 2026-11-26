@@ -288,3 +288,25 @@ func TestConfirm_OnlineSendInFlightTakesNoQueueSlot(t *testing.T) {
 		t.Errorf("offline confirm during the send: %v, want queued", offlineErr)
 	}
 }
+
+// finishClaimer accepts manual claims and records when they finish.
+type finishClaimer struct{ fakeClaimer }
+
+func (f *finishClaimer) FinishManual(uii string) { f.calls = append(f.calls, "finish:"+uii) }
+
+func TestConfirm_ManualClaimIsFinishedWhateverTheOutcome(t *testing.T) {
+	store := newStore(t)
+	link(t, store, "E1")
+	c := &finishClaimer{fakeClaimer{manual: true}}
+	svc := &Service{Store: store, CompanyID: "c", Claimer: c, MaxPending: 1}
+	if _, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "entrada"}); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if _, err := svc.Confirm(context.Background(), Request{UII: "E1", Action: "salida"}); !errors.Is(err, localstore.ErrQueueFull) {
+		t.Fatalf("second err = %v, want ErrQueueFull", err)
+	}
+	want := []string{"manual:E1", "finish:E1", "manual:E1", "finish:E1"}
+	if strings.Join(c.calls, ",") != strings.Join(want, ",") {
+		t.Errorf("calls = %v, want %v", c.calls, want)
+	}
+}

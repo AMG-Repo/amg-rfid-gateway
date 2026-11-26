@@ -364,7 +364,7 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 | `batch_size` | int | 100 | Readings per sync request |
 | `reading_session_idle` | duration | 5s | A tag session is closed and queued after this long without reading the tag |
 | `reading_session_max` | duration | 60s | A tag session still being read is closed and queued after this long (must be >= `reading_session_idle`) |
-| `auto_confirm_idle` | duration | 1m | Automatic confirmation: a tag pass ends after this long without reads (must be positive; `0` or unset = default) |
+| `auto_confirm_idle` | duration | 1m | Automatic confirmation: a tag pass ends after this long without reads (at least `30s` when set; `0` or unset = default) |
 | `auto_confirm_min_reads` | int | 3 | Automatic confirmation: minimum reads in a pass to confirm it (must be positive; `0` or unset = default) |
 | `max_retries` | int | 5 | Max retry attempts for failed syncs |
 | `health_port` | int | 8080 | HTTP port for health/metrics |
@@ -658,24 +658,28 @@ the values read after the claim. A tag with any confirmation still pending sync 
 is never auto-confirmed (its cached location is only trusted when nothing is pending). Cooldown: a
 tag with any local confirmation (manual or automatic, synced or not) whose movement time is within
 the last 10 minutes is not auto-confirmed either; the pass is dropped and nothing is written (a sync
-may still carry a location older than that movement). Direction: the tag's most recent local
-confirmation (manual or automatic, synced or not, by movement time) decides first: last `entrada` →
-`salida`, last `salida` → `entrada`. Only a tag with no local confirmation uses its known cached
-location (in the warehouse → `salida`, anywhere else → `entrada`); such a tag whose location is
-unknown or blank (no tool row, empty/NULL location, or a failed lookup) is never auto-confirmed and
-stays for a manual confirm. `occurred_at` is the last read and `antenna_id` the last antenna. It uses the same path as
+may still carry a location older than that movement). Direction: two sources must agree. The tag's
+most recent retained local confirmation (manual or automatic, synced or not, by movement time) implies
+the opposite movement (last `entrada` → `salida`, last `salida` → `entrada`); its known, non-blank
+cached location implies one too (in the warehouse → `salida`, anywhere else → `entrada`). When both
+exist and disagree (for example a movement made elsewhere, seen through the tools sync) the pass is
+dropped and nothing is written; when only one exists it decides. A tag with no retained local
+confirmation whose location is unknown or blank (no tool row, empty/NULL location) is not
+auto-confirmed, and any failed lookup skips the pass; it stays for a manual confirm. `occurred_at` is the last read and `antenna_id` the last antenna. It uses the same path as
 `POST /api/confirm` (confirmation id, online send, offline queue with retries, location update); the
 movement shows `auto: true` in `/api/history` and an SSE `auto_confirmed` event
-(`{"uii", "action", "confirmation_id"}`) is sent. One movement per pass: every confirm (manual from
-the panel or automatic) claims the tag's current pass before anything is sent or queued, so a pass is
-never confirmed twice; reads right before the automatic confirm keep the pass open, a failed automatic
+(`{"uii", "action", "confirmation_id"}`) is sent. At most one automatic confirm per pass: every
+confirm (manual from the panel or automatic) claims the tag's current pass before anything is sent or
+queued, so an automatic confirm never follows a manual or automatic one in the same pass; reads right before the automatic confirm keep the pass open, a failed automatic
 confirm is not retried in the same pass, and a new pass starts only after the tag goes unread for a
 full `auto_confirm_idle`. While an automatic confirm of a tag is in progress, a manual
 `POST /api/confirm` of the same tag answers
 `409 {"error": "Este movimiento ya se está confirmando automáticamente."}` and writes nothing; after
 an automatic confirm, a manual `POST /api/confirm` of that tag before it is read again answers
 `409 {"error": "Este movimiento ya se confirmó automáticamente."}` and writes nothing (a new read
-makes manual confirms normal again). Switching to Manual stops every pass not yet being confirmed; a
+makes manual confirms normal again). While a manual confirm of a tag is being sent or queued, no pass
+of that tag is auto-confirmed; a pass that ends meanwhile is kept and reconsidered once the manual
+confirm finishes (success or failure), when the cooldown normally drops it. Switching to Manual stops every pass not yet being confirmed; a
 confirm already in progress completes. Passes in progress are kept in memory only; on start, every
 tag with a confirmation (manual or automatic) in the last 10 minutes has its first pass after the
 restart consumed (not auto-confirmed), and later passes after a full idle gap behave normally.
@@ -686,9 +690,9 @@ confirmations fails.
 Manual confirms behave exactly as before automatic mode existed (same path, responses and records),
 except for the two `409` answers above.
 
-Known residual cases: movements made outside this gateway (another gateway or the VPS) are only seen
-through the hourly tools sync, and only for tags this gateway never confirmed, so the direction can be
-wrong for a tag moved elsewhere; a read that reaches the gateway after the automatic confirm claimed
+Known residual cases (exceptions to one movement per pass): movements made outside this gateway
+(another gateway or the VPS) are only seen through the hourly tools sync; until then a tag moved
+elsewhere can be confirmed in the wrong direction; a read that reaches the gateway after the automatic confirm claimed
 its pass does not stop that confirm; two manual confirms of the same pass are allowed (as in manual
 mode today); a confirm already claimed completes after a switch to Manual; an automatic confirm that
 is skipped (cooldown, warm-up, pending queue, unknown location, failed send) is not retried and falls

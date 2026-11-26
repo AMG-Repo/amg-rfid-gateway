@@ -784,10 +784,11 @@ func TestClaim_StaleManualAfterAutoIsRefused(t *testing.T) {
 	}
 }
 
-// recordAt records a synced confirmation of uii at occurredAt.
+// recordAt records a synced entrada of uii at occurredAt; it agrees with a
+// warehouse location, so only the timing rules decide.
 func (e *env) recordAt(t *testing.T, uii string, occurredAt time.Time) {
 	t.Helper()
-	if err := e.store.RecordSyncedConfirmationWithIDAuto(uii, "salida", "manual", "seed-"+occurredAt.String(), occurredAt, false); err != nil {
+	if err := e.store.RecordSyncedConfirmationWithIDAuto(uii, "entrada", "manual", "seed-"+occurredAt.String(), occurredAt, false); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 }
@@ -846,8 +847,8 @@ func TestWorker_CooldownAfterRecentConfirmation(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t, true)
-			// The salida reached the VPS, but the cached location is still
-			// the warehouse (a stale sync snapshot).
+			// A recent local movement: the cached location may not reflect
+			// it yet.
 			e.link(t, "E1", loc("Almacén General"))
 			last := e.reads("E1", "ant-1", t0, 3)
 			e.recordAt(t, "E1", last.Add(time.Minute-tc.ago))
@@ -940,8 +941,8 @@ func TestObserve_ReadOlderThanThePassDoesNotCount(t *testing.T) {
 // ended is how long after its last read a pass of newEnv ends.
 const ended = time.Minute + LateReadMargin
 
-// The tag's last local confirmation decides the direction; the cached
-// location only when the tag has none.
+// The tag's last local confirmation and its known cached location must agree
+// on the direction; either one alone decides.
 func TestWorker_DirectionFromLastLocalConfirmation(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -949,8 +950,11 @@ func TestWorker_DirectionFromLastLocalConfirmation(t *testing.T) {
 		last     string // "" = no local confirmation
 		want     string // "" = nothing sent
 	}{
-		{"last salida, stale warehouse location", loc("Almacén General"), "salida", "entrada"},
-		{"last entrada, outside location", loc("Línea 3"), "entrada", "salida"},
+		{"last salida, warehouse location (external entrada)", loc("Almacén General"), "salida", ""},
+		{"last salida, outside location", loc("Línea 3"), "salida", "entrada"},
+		{"last entrada, warehouse location", loc("Almacén General"), "entrada", "salida"},
+		{"last entrada, outside location", loc("Línea 3"), "entrada", ""},
+		{"last salida, blank location", loc("  "), "salida", "entrada"},
 		{"none, warehouse location", loc("Almacén General"), "", "salida"},
 		{"none, blank location", loc("  "), "", ""},
 	}
@@ -982,5 +986,43 @@ func TestWorker_DirectionFromLastLocalConfirmation(t *testing.T) {
 				t.Errorf("VPS confirms = %d, sent %v; want one %s", n, sent["action"], tc.want)
 			}
 		})
+	}
+}
+
+// A manual confirm still being sent blocks every automatic confirm of the tag;
+// once it finishes, the cooldown keeps the next pass from a second movement.
+func TestClaim_ManualInFlightBlocksAuto(t *testing.T) {
+	e := newEnv(t, true)
+	e.link(t, "E1", loc("Almacén General"))
+	entered, release := holdVPS(e)
+	var releaseOnce sync.Once
+	unhold := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unhold()
+	done := make(chan error, 1)
+	go func() { done <- e.manual("E1", "salida") }()
+	<-entered
+
+	last := e.reads("E1", "ant-1", t0.Add(2*time.Minute), 3)
+	e.tick(last.Add(ended))
+	if n := e.vps.confirms.Load(); n != 0 {
+		t.Fatalf("VPS confirms = %d, want 0 while the manual confirm is in flight", n)
+	}
+	e.tracker.mu.Lock()
+	p := e.tracker.passes["E1"]
+	e.tracker.mu.Unlock()
+	if p == nil || p.consumed {
+		t.Fatalf("pass = %+v, want kept and not consumed", p)
+	}
+
+	unhold()
+	if err := <-done; err != nil {
+		t.Fatalf("manual: %v", err)
+	}
+	e.tick(last.Add(ended + time.Second))
+	if n := e.vps.confirms.Load(); n != 1 {
+		t.Errorf("VPS confirms = %d, want only the manual salida", n)
+	}
+	if h := e.history(t); len(h) != 1 || h[0].Auto {
+		t.Errorf("history = %+v, want only the manual movement", h)
 	}
 }
