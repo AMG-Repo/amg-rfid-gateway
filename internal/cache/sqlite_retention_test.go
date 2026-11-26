@@ -119,21 +119,23 @@ func TestSQLite_PurgeSyncedReadingsOlderThanCutoff(t *testing.T) {
 // A large backlog of synced readings is purged completely in one call, even
 // though the delete runs in bounded batches.
 func TestSQLite_PurgeSyncedReadingsLargeBacklog(t *testing.T) {
-	c, ids := newRetentionCache(t, purgeBatchSize+7)
-	if err := c.MarkSynced(ids); err != nil {
-		t.Fatalf("failed to mark synced: %v", err)
-	}
-	if _, err := c.GetDB().Exec(`UPDATE pending_readings SET created_at = ?`,
-		time.Now().Add(-30*24*time.Hour).UTC().Format("2006-01-02 15:04:05")); err != nil {
-		t.Fatalf("failed to age rows: %v", err)
+	c, _ := newRetentionCache(t, 0)
+	// Seed with SQL: the async Store buffer holds fewer rows than one batch.
+	const n = purgeBatchSize + 7
+	if _, err := c.GetDB().Exec(`
+		WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM seq WHERE i < ?)
+		INSERT INTO pending_readings (antenna_id, gateway_id, epc, rssi, timestamp, synced, created_at)
+		SELECT 'ant-1', 'gw-1', 'EPC-BULK-' || i, -55, ?, 1, ? FROM seq
+	`, n, time.Now().UTC(), time.Now().Add(-30*24*time.Hour).UTC().Format("2006-01-02 15:04:05")); err != nil {
+		t.Fatalf("failed to seed rows: %v", err)
 	}
 
 	removed, err := c.PurgeSyncedReadings(time.Now().Add(-ReadingRetention))
 	if err != nil {
 		t.Fatalf("purge failed: %v", err)
 	}
-	if removed != int64(len(ids)) {
-		t.Errorf("expected %d purged readings, got %d", len(ids), removed)
+	if removed != n {
+		t.Errorf("expected %d purged readings, got %d", n, removed)
 	}
 	if got := totalRows(t, c); got != 0 {
 		t.Errorf("expected no rows left, got %d", got)
