@@ -21,6 +21,15 @@ type Cache interface {
 	Count() (int, error)
 }
 
+// ReadingPurger is implemented by caches that delete synced readings past their
+// retention. It is optional so caches without it keep working unchanged.
+type ReadingPurger interface {
+	PurgeSyncedReadings(cutoff time.Time) (int64, error)
+}
+
+// readingPurgeInterval is how often the sync loop purges synced readings.
+const readingPurgeInterval = time.Hour
+
 // Sender delivers a batch of readings to the cloud and returns its verdict.
 type Sender interface {
 	SendSyncRequest(req models.SyncRequest) (*models.SyncResponse, error)
@@ -172,17 +181,40 @@ func (e *Engine) run() {
 	ticker := time.NewTicker(e.config.SyncInterval)
 	defer ticker.Stop()
 
-	// Do initial sync with exponential backoff on failure
+	// Purge old synced readings, then do initial sync with exponential backoff on failure
+	lastPurge := time.Now()
+	e.purgeSyncedReadings()
 	e.syncWithBackoff(e.ctx)
 
 	for {
 		select {
 		case <-ticker.C:
+			if time.Since(lastPurge) >= readingPurgeInterval {
+				lastPurge = time.Now()
+				e.purgeSyncedReadings()
+			}
 			e.syncWithBackoff(e.ctx)
 
 		case <-e.stopCh:
 			return
 		}
+	}
+}
+
+// purgeSyncedReadings deletes synced readings older than the retention.
+// Failures are logged only; unsynced readings are never touched.
+func (e *Engine) purgeSyncedReadings() {
+	purger, ok := e.cache.(ReadingPurger)
+	if !ok {
+		return
+	}
+	removed, err := purger.PurgeSyncedReadings(time.Now().Add(-cache.ReadingRetention))
+	if err != nil {
+		log.Printf("[Sync] Failed to purge synced readings: %v", err)
+		return
+	}
+	if removed > 0 {
+		log.Printf("[Sync] Purged %d synced readings older than %s", removed, cache.ReadingRetention)
 	}
 }
 

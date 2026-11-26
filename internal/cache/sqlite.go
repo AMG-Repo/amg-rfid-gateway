@@ -984,11 +984,47 @@ func (c *SQLite) markSyncedBatch(ids []int64) error {
 	return nil
 }
 
-// Count returns the total number of readings in the cache.
+// ReadingRetention is how long readings already synced to the VPS are kept locally.
+const ReadingRetention = 7 * 24 * time.Hour
+
+// purgeBatchSize bounds each purge DELETE so a large backlog does not hold the
+// write lock for long.
+const purgeBatchSize = 5000
+
+// PurgeSyncedReadings deletes synced readings stored before cutoff and returns
+// how many were removed. Unsynced readings are never deleted.
+func (c *SQLite) PurgeSyncedReadings(cutoff time.Time) (int64, error) {
+	// created_at uses the CURRENT_TIMESTAMP layout, so a string comparison works.
+	cutoffText := cutoff.UTC().Format("2006-01-02 15:04:05")
+	var total int64
+	for {
+		res, err := c.db.Exec(`
+			DELETE FROM pending_readings
+			WHERE id IN (
+				SELECT id FROM pending_readings
+				WHERE synced = 1 AND created_at < ?
+				LIMIT ?
+			)
+		`, cutoffText, purgeBatchSize)
+		if err != nil {
+			return total, fmt.Errorf("failed to purge synced readings: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, fmt.Errorf("failed to purge synced readings: %w", err)
+		}
+		total += n
+		if n < purgeBatchSize {
+			return total, nil
+		}
+	}
+}
+
+// Count returns the number of readings not yet synced to the VPS.
 func (c *SQLite) Count() (int, error) {
 	var count int
 	err := c.db.QueryRow(`
-		SELECT COUNT(*) FROM pending_readings
+		SELECT COUNT(*) FROM pending_readings WHERE synced = 0
 	`).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("failed to count: %w", err)

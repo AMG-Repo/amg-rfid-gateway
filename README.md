@@ -485,6 +485,11 @@ curl http://localhost:8080/health
 # }
 ```
 
+`cache_size` in `/health` (and the `gateway_readings_pending` metric) counts only readings not yet synced to
+the VPS; the status is `syncing` while that backlog is non-empty. Readings already synced are kept
+locally for 7 days and then purged by the sync engine (checked hourly), so the SQLite cache does not
+grow without bound.
+
 ### Prometheus Metrics
 
 ```bash
