@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/amg-rfid/amg-rfid-gateway/internal/uuidutil"
 )
 
 // Tool represents a tool from VPS cached locally (legacy flat schema).
@@ -103,6 +105,12 @@ type PendingConfirmation struct {
 	Synced     bool      `json:"synced"`
 	RetryCount int       `json:"retry_count"`
 	CreatedAt  time.Time `json:"created_at"`
+	// ConfirmationID is the idempotency key the VPS dedupes replays by; it
+	// stays the same on every resend. Empty only for rows never given one.
+	ConfirmationID string `json:"confirmation_id,omitempty"`
+	// OccurredAt is when the operator confirmed (UTC). Zero for rows queued
+	// before it was recorded.
+	OccurredAt time.Time `json:"occurred_at,omitempty"`
 }
 
 // LocalStore provides SQLite operations for local verification.
@@ -439,6 +447,15 @@ var ErrQueueFull = errors.New("pending confirmation queue is full")
 // If maxPending is > 0 and the unsynced count has reached it, the confirmation
 // is rejected with ErrQueueFull and the queue is left unchanged.
 func (s *LocalStore) CreateConfirmation(uii, action, antennaID string, timestamp time.Time, maxPending int) (*PendingConfirmation, error) {
+	return s.CreateConfirmationWithID(uii, action, antennaID, uuidutil.NewV4(), timestamp, maxPending)
+}
+
+// CreateConfirmationWithID stores a new pending confirmation with the
+// idempotency id and confirm instant the caller already used (or will use) on
+// the VPS, so every resend carries them unchanged. occurredAt is also the row
+// timestamp. The queue cap applies as in CreateConfirmation.
+func (s *LocalStore) CreateConfirmationWithID(uii, action, antennaID, confirmationID string, occurredAt time.Time, maxPending int) (*PendingConfirmation, error) {
+	timestamp := occurredAt
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -458,9 +475,9 @@ func (s *LocalStore) CreateConfirmation(uii, action, antennaID string, timestamp
 	}
 
 	result, err := tx.Exec(`
-		INSERT INTO pending_confirmations (uii, action, antenna_id, timestamp, synced, retry_count)
-		VALUES (?, ?, ?, ?, 0, 0)
-	`, uii, action, antennaID, timestamp)
+		INSERT INTO pending_confirmations (uii, action, antenna_id, timestamp, synced, retry_count, confirmation_id, occurred_at)
+		VALUES (?, ?, ?, ?, 0, 0, ?, ?)
+	`, uii, action, antennaID, timestamp, nullIfEmpty(confirmationID), formatOccurredAt(occurredAt))
 	if err != nil {
 		return nil, err
 	}
@@ -483,6 +500,9 @@ func (s *LocalStore) CreateConfirmation(uii, action, antennaID string, timestamp
 		Synced:     false,
 		RetryCount: 0,
 		CreatedAt:  time.Now(),
+
+		ConfirmationID: confirmationID,
+		OccurredAt:     occurredAt.UTC(),
 	}, nil
 }
 
@@ -503,7 +523,7 @@ func (s *LocalStore) GetUnsyncedConfirmations(limit int) ([]PendingConfirmation,
 // optional extra WHERE condition whose args precede the limit.
 func (s *LocalStore) queryUnsyncedConfirmations(extraWhere string, limit int, args ...any) ([]PendingConfirmation, error) {
 	rows, err := s.db.Query(`
-		SELECT id, uii, action, antenna_id, timestamp, retry_count, created_at
+		SELECT id, uii, action, antenna_id, timestamp, retry_count, created_at, confirmation_id, occurred_at
 		FROM pending_confirmations
 		WHERE synced = 0 `+extraWhere+`
 		ORDER BY created_at ASC
@@ -517,6 +537,7 @@ func (s *LocalStore) queryUnsyncedConfirmations(extraWhere string, limit int, ar
 	var confirmations []PendingConfirmation
 	for rows.Next() {
 		var pc PendingConfirmation
+		var confirmationID, occurredAt sql.NullString
 		err := rows.Scan(
 			&pc.ID,
 			&pc.UII,
@@ -525,9 +546,17 @@ func (s *LocalStore) queryUnsyncedConfirmations(extraWhere string, limit int, ar
 			&pc.Timestamp,
 			&pc.RetryCount,
 			&pc.CreatedAt,
+			&confirmationID,
+			&occurredAt,
 		)
 		if err != nil {
 			continue
+		}
+		pc.ConfirmationID = confirmationID.String
+		if occurredAt.Valid {
+			if t, err := time.Parse(time.RFC3339Nano, occurredAt.String); err == nil {
+				pc.OccurredAt = t
+			}
 		}
 		pc.Synced = false
 		confirmations = append(confirmations, pc)
@@ -554,6 +583,34 @@ func (s *LocalStore) RecordSyncedConfirmation(uii, action, antennaID string, sen
 		VALUES (?, ?, ?, ?, 1, 0, ?)
 	`, uii, action, antennaID, sentAt, sentAt.UTC().Format(sqliteTimestamp))
 	return err
+}
+
+// RecordSyncedConfirmationWithID is RecordSyncedConfirmation keeping the
+// idempotency id and confirm instant that were sent; occurredAt is also the
+// send time.
+func (s *LocalStore) RecordSyncedConfirmationWithID(uii, action, antennaID, confirmationID string, occurredAt time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO pending_confirmations (uii, action, antenna_id, timestamp, synced, retry_count, synced_at, confirmation_id, occurred_at)
+		VALUES (?, ?, ?, ?, 1, 0, ?, ?, ?)
+	`, uii, action, antennaID, occurredAt, occurredAt.UTC().Format(sqliteTimestamp), nullIfEmpty(confirmationID), formatOccurredAt(occurredAt))
+	return err
+}
+
+// nullIfEmpty stores an empty string as NULL, keeping the unique index on
+// confirmation_id free of empty ids.
+func nullIfEmpty(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
+// formatOccurredAt stores the confirm instant as RFC3339Nano UTC, or NULL.
+func formatOccurredAt(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 // GetStuckConfirmationsCount counts pending confirmations that reached

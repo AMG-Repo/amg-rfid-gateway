@@ -61,6 +61,13 @@ type VPSClient interface {
 	SendConfirmationV2(companyID, uii, action, antennaID string) error
 }
 
+// IdempotentConfirmationSender is optionally implemented by VPS clients that
+// send a confirmation's idempotency id and confirm instant (issue #146), so the
+// VPS dedupes replays of a confirmation it already applied.
+type IdempotentConfirmationSender interface {
+	SendIdempotentConfirmation(companyID, uii, action, antennaID, confirmationID string, occurredAt time.Time) error
+}
+
 // LocalStore defines the interface for local storage operations
 type LocalStore interface {
 	UpsertToolsFromSync(rows []localstore.SyncDataItem) error
@@ -465,7 +472,7 @@ func (t *ToolsSync) performFlush() {
 		}
 
 		// Send confirmation with antenna_id using new gateway endpoint
-		err := t.vpsClient.SendConfirmationV2(t.companyID, conf.UII, conf.Action, conf.AntennaID)
+		err := t.sendConfirmation(conf)
 		if err != nil && isPermanentRejection(err) {
 			// The VPS answered: resending cannot help. Park it for the operator.
 			log.Printf("[ToolsSync] VPS rejected confirmation %d, parked until requeued: %v", conf.ID, err)
@@ -505,4 +512,16 @@ func (t *ToolsSync) performFlush() {
 
 	// The VPS is online unless a send failed without an answer from it
 	t.setVPSOnline(vpsReachable)
+}
+
+// sendConfirmation sends a queued confirmation with the id and confirm instant
+// it was queued with, identical on every retry. Rows queued before occurred_at
+// was recorded omit it (zero), so the VPS stamps the movement as before: their
+// timestamp could be out of the VPS range and be rejected on every resend.
+func (t *ToolsSync) sendConfirmation(conf localstore.PendingConfirmation) error {
+	sender, ok := t.vpsClient.(IdempotentConfirmationSender)
+	if !ok {
+		return t.vpsClient.SendConfirmationV2(t.companyID, conf.UII, conf.Action, conf.AntennaID)
+	}
+	return sender.SendIdempotentConfirmation(t.companyID, conf.UII, conf.Action, conf.AntennaID, conf.ConfirmationID, conf.OccurredAt)
 }

@@ -618,7 +618,9 @@ func TestHandleConfirm_VPSOffline(t *testing.T) {
 			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			confirmation_id TEXT,
+			occurred_at TEXT
 		)
 	`)
 	if err != nil {
@@ -682,7 +684,9 @@ func TestHandleConfirm_VPSOffline_SavesToLocalStore(t *testing.T) {
 			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			confirmation_id TEXT,
+			occurred_at TEXT
 		)
 	`)
 	if err != nil {
@@ -830,7 +834,9 @@ func TestHandleTags_ReturnsCorrectJSON(t *testing.T) {
 			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			confirmation_id TEXT,
+			occurred_at TEXT
 		);
 	`)
 	if err != nil {
@@ -949,7 +955,9 @@ func TestHandleTags_EmptyStore(t *testing.T) {
 			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			confirmation_id TEXT,
+			occurred_at TEXT
 		);
 	`)
 	if err != nil {
@@ -1040,7 +1048,9 @@ func TestHandleStatus_VPSOnline(t *testing.T) {
 			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			confirmation_id TEXT,
+			occurred_at TEXT
 		);
 		CREATE TABLE tools (
 			id INTEGER PRIMARY KEY,
@@ -1176,7 +1186,9 @@ func TestHandleStatus_PendingWarning(t *testing.T) {
 			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			confirmation_id TEXT,
+			occurred_at TEXT
 		);
 		CREATE TABLE tools (
 			id INTEGER PRIMARY KEY,
@@ -1264,7 +1276,9 @@ func TestHandleConfirm_WithAntennaID(t *testing.T) {
 			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			confirmation_id TEXT,
+			occurred_at TEXT
 		)
 	`)
 	if err != nil {

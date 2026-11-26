@@ -25,6 +25,11 @@ type GatewayConfirmRequest struct {
 	UII       string  `json:"uii"`
 	Action    string  `json:"action"`
 	AntennaID *string `json:"antenna_id,omitempty"`
+	// ConfirmationID is the idempotency key: the VPS answers a replay of the
+	// same id with the original result instead of recording it twice.
+	ConfirmationID string `json:"confirmation_id,omitempty"`
+	// OccurredAt is when the operator confirmed, RFC3339Nano UTC.
+	OccurredAt string `json:"occurred_at,omitempty"`
 }
 
 // VPSClient provides HTTP client for VPS REST API.
@@ -195,13 +200,21 @@ func (c *VPSClient) SendConfirmation(companyID, uii, action string) error {
 // Calls POST /api/v1/gateway/confirm (new gateway-specific endpoint)
 // This endpoint requires GatewayAuth (JWT token).
 func (c *VPSClient) SendConfirmationV2(companyID, uii, action, antennaID string) error {
-	_, err := c.sendGatewayConfirmation(companyID, uii, action, antennaID)
+	_, err := c.sendGatewayConfirmation(companyID, uii, action, antennaID, "", time.Time{})
+	return err
+}
+
+// SendIdempotentConfirmation is SendConfirmationV2 carrying the confirmation's
+// idempotency id and confirm instant. Pass the same values on every resend so
+// the VPS dedupes replays; an empty id or zero occurredAt is omitted.
+func (c *VPSClient) SendIdempotentConfirmation(companyID, uii, action, antennaID, confirmationID string, occurredAt time.Time) error {
+	_, err := c.sendGatewayConfirmation(companyID, uii, action, antennaID, confirmationID, occurredAt)
 	return err
 }
 
 // sendGatewayConfirmation is the internal implementation for gateway confirm.
 // It performs the HTTP request and returns the response body for parsing.
-func (c *VPSClient) sendGatewayConfirmation(companyID, uii, action, antennaID string) ([]byte, error) {
+func (c *VPSClient) sendGatewayConfirmation(companyID, uii, action, antennaID, confirmationID string, occurredAt time.Time) ([]byte, error) {
 	url := fmt.Sprintf("%s/api/v1/gateway/confirm", c.baseURL)
 
 	payload := GatewayConfirmRequest{
@@ -211,6 +224,10 @@ func (c *VPSClient) sendGatewayConfirmation(companyID, uii, action, antennaID st
 	}
 	if antennaID != "" {
 		payload.AntennaID = &antennaID
+	}
+	payload.ConfirmationID = confirmationID
+	if !occurredAt.IsZero() {
+		payload.OccurredAt = occurredAt.UTC().Format(time.RFC3339Nano)
 	}
 
 	jsonBody, err := json.Marshal(payload)
@@ -444,7 +461,7 @@ type GatewayConfirmResponse struct {
 // This endpoint requires GatewayAuth (JWT token).
 // Deprecated: Use SendConfirmationV2 instead. This method is kept for backward compatibility.
 func (c *VPSClient) SendGatewayConfirmation(companyID, uii, action, antennaID string) error {
-	body, err := c.sendGatewayConfirmation(companyID, uii, action, antennaID)
+	body, err := c.sendGatewayConfirmation(companyID, uii, action, antennaID, "", time.Time{})
 	if err != nil {
 		return err
 	}

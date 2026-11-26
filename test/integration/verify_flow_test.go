@@ -129,7 +129,9 @@ func TestVerifyFlow_EndToEnd(t *testing.T) {
 			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			confirmation_id TEXT,
+			occurred_at TEXT
 		);
 	`)
 	if err != nil {
@@ -296,7 +298,9 @@ func TestVerifyFlow_OfflineMode(t *testing.T) {
 			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
 			synced BOOLEAN DEFAULT 0,
 			retry_count INTEGER DEFAULT 0,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			confirmation_id TEXT,
+			occurred_at TEXT
 		);
 	`)
 	if err != nil {
