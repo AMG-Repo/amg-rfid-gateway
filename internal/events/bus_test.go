@@ -281,3 +281,41 @@ func TestConcurrentPublishSubscribe(t *testing.T) {
 		// Timeout is OK as long as we don't panic or deadlock
 	}
 }
+
+func TestEventBus_AutoConfirmedReachesSubscribersOnly(t *testing.T) {
+	bus := NewEventBus(10)
+	autoCh := bus.SubscribeAutoConfirmed()
+	tagCh := bus.Subscribe()
+
+	bus.PublishAutoConfirmed(AutoConfirmed{UII: "E1", Action: "salida", ConfirmationID: "id-1"})
+
+	select {
+	case ev := <-autoCh:
+		if ev.UII != "E1" || ev.Action != "salida" || ev.ConfirmationID != "id-1" {
+			t.Errorf("received %+v", ev)
+		}
+	default:
+		t.Fatal("auto-confirmed event not delivered")
+	}
+	select {
+	case ev := <-tagCh:
+		t.Errorf("tag subscriber received %+v", ev)
+	default:
+	}
+
+	bus.UnsubscribeAutoConfirmed(autoCh)
+	if _, ok := <-autoCh; ok {
+		t.Error("channel still open after unsubscribe")
+	}
+	bus.UnsubscribeAutoConfirmed(autoCh) // no-op on a removed channel
+	bus.PublishAutoConfirmed(AutoConfirmed{UII: "E2"})
+}
+
+func TestEventBus_CloseClosesAutoConfirmedSubscribers(t *testing.T) {
+	bus := NewEventBus(10)
+	ch := bus.SubscribeAutoConfirmed()
+	bus.Close()
+	if _, ok := <-ch; ok {
+		t.Error("auto-confirmed channel still open after Close")
+	}
+}

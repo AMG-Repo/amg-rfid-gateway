@@ -18,6 +18,8 @@ type HistoryItem struct {
 	AntennaID   string    `json:"antenna_id"`
 	Time        time.Time `json:"time"`
 	Synced      bool      `json:"synced"`
+	// Auto is true when the gateway confirmed the movement by itself.
+	Auto bool `json:"auto"`
 }
 
 // handleHistory returns today's confirmed movements (gateway local day), newest first.
@@ -54,6 +56,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 			AntennaID:   e.AntennaID,
 			Time:        e.Timestamp,
 			Synced:      e.Synced,
+			Auto:        e.Auto,
 		})
 	}
 	s.jsonResponse(w, items)

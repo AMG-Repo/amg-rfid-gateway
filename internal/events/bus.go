@@ -14,10 +14,19 @@ type TagDetected struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// AutoConfirmed is published when the gateway confirmed a tag pass by itself
+// (sent to the VPS or queued locally).
+type AutoConfirmed struct {
+	UII            string `json:"uii"`
+	Action         string `json:"action"`
+	ConfirmationID string `json:"confirmation_id"`
+}
+
 // EventBus provides pub/sub for tag detection events.
 // Uses buffered channels to prevent slow subscribers from blocking publishers.
 type EventBus struct {
 	subscribers []chan TagDetected
+	autoSubs    []chan AutoConfirmed
 	mu          sync.RWMutex
 	buffer      int
 }
@@ -95,4 +104,47 @@ func (b *EventBus) Close() {
 		close(ch)
 	}
 	b.subscribers = make([]chan TagDetected, 0)
+	for _, ch := range b.autoSubs {
+		close(ch)
+	}
+	b.autoSubs = nil
+}
+
+// SubscribeAutoConfirmed creates a buffered channel receiving AutoConfirmed events.
+func (b *EventBus) SubscribeAutoConfirmed() chan AutoConfirmed {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	ch := make(chan AutoConfirmed, b.buffer)
+	b.autoSubs = append(b.autoSubs, ch)
+	return ch
+}
+
+// UnsubscribeAutoConfirmed removes and closes an AutoConfirmed channel; a
+// channel already removed is ignored.
+func (b *EventBus) UnsubscribeAutoConfirmed(ch chan AutoConfirmed) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for i, subscriber := range b.autoSubs {
+		if subscriber == ch {
+			b.autoSubs = append(b.autoSubs[:i], b.autoSubs[i+1:]...)
+			close(ch)
+			return
+		}
+	}
+}
+
+// PublishAutoConfirmed sends an AutoConfirmed event to its subscribers,
+// dropping it for subscribers whose buffer is full.
+func (b *EventBus) PublishAutoConfirmed(event AutoConfirmed) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	for _, ch := range b.autoSubs {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
 }

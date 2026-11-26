@@ -818,3 +818,23 @@ func TestSuggestAction_NormalizedSchemaFields(t *testing.T) {
 		t.Errorf("expected DefaultDestination 'Almacén Central', got %v", result.ToolInfo.DefaultDestination)
 	}
 }
+
+func TestKnownLocationAction(t *testing.T) {
+	tests := []struct {
+		tool   *Tool
+		want   Action
+		wantOK bool
+	}{
+		{nil, "", false},
+		{&Tool{Location: ""}, "", false},
+		{&Tool{Location: "  "}, "", false},
+		{&Tool{Location: "Almacén General"}, ActionSalida, true},
+		{&Tool{Location: "Línea 3"}, ActionEntrada, true},
+	}
+	for _, tc := range tests {
+		got, ok := KnownLocationAction(tc.tool)
+		if got != tc.want || ok != tc.wantOK {
+			t.Errorf("KnownLocationAction(%+v) = %q, %v; want %q, %v", tc.tool, got, ok, tc.want, tc.wantOK)
+		}
+	}
+}

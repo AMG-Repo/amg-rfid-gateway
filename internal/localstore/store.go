@@ -455,6 +455,12 @@ func (s *LocalStore) CreateConfirmation(uii, action, antennaID string, timestamp
 // the VPS, so every resend carries them unchanged. occurredAt is also the row
 // timestamp. The queue cap applies as in CreateConfirmation.
 func (s *LocalStore) CreateConfirmationWithID(uii, action, antennaID, confirmationID string, occurredAt time.Time, maxPending int) (*PendingConfirmation, error) {
+	return s.CreateConfirmationWithIDAuto(uii, action, antennaID, confirmationID, occurredAt, maxPending, false)
+}
+
+// CreateConfirmationWithIDAuto is CreateConfirmationWithID marking whether the
+// gateway confirmed the movement by itself (auto) instead of an operator.
+func (s *LocalStore) CreateConfirmationWithIDAuto(uii, action, antennaID, confirmationID string, occurredAt time.Time, maxPending int, auto bool) (*PendingConfirmation, error) {
 	timestamp := occurredAt
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -474,10 +480,11 @@ func (s *LocalStore) CreateConfirmationWithID(uii, action, antennaID, confirmati
 		}
 	}
 
+	cols, marks, args := autoColumn(auto)
 	result, err := tx.Exec(`
-		INSERT INTO pending_confirmations (uii, action, antenna_id, timestamp, synced, retry_count, confirmation_id, occurred_at)
-		VALUES (?, ?, ?, ?, 0, 0, ?, ?)
-	`, uii, action, antennaID, timestamp, nullIfEmpty(confirmationID), formatOccurredAt(occurredAt))
+		INSERT INTO pending_confirmations (uii, action, antenna_id, timestamp, synced, retry_count, confirmation_id, occurred_at`+cols+`)
+		VALUES (?, ?, ?, ?, 0, 0, ?, ?`+marks+`)
+	`, append([]any{uii, action, antennaID, timestamp, nullIfEmpty(confirmationID), formatOccurredAt(occurredAt)}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -589,11 +596,28 @@ func (s *LocalStore) RecordSyncedConfirmation(uii, action, antennaID string, sen
 // idempotency id and confirm instant that were sent; occurredAt is also the
 // send time.
 func (s *LocalStore) RecordSyncedConfirmationWithID(uii, action, antennaID, confirmationID string, occurredAt time.Time) error {
+	return s.RecordSyncedConfirmationWithIDAuto(uii, action, antennaID, confirmationID, occurredAt, false)
+}
+
+// RecordSyncedConfirmationWithIDAuto is RecordSyncedConfirmationWithID marking
+// whether the gateway confirmed the movement by itself (auto).
+func (s *LocalStore) RecordSyncedConfirmationWithIDAuto(uii, action, antennaID, confirmationID string, occurredAt time.Time, auto bool) error {
+	cols, marks, args := autoColumn(auto)
 	_, err := s.db.Exec(`
-		INSERT INTO pending_confirmations (uii, action, antenna_id, timestamp, synced, retry_count, synced_at, confirmation_id, occurred_at)
-		VALUES (?, ?, ?, ?, 1, 0, ?, ?, ?)
-	`, uii, action, antennaID, occurredAt, occurredAt.UTC().Format(sqliteTimestamp), nullIfEmpty(confirmationID), formatOccurredAt(occurredAt))
+		INSERT INTO pending_confirmations (uii, action, antenna_id, timestamp, synced, retry_count, synced_at, confirmation_id, occurred_at`+cols+`)
+		VALUES (?, ?, ?, ?, 1, 0, ?, ?, ?`+marks+`)
+	`, append([]any{uii, action, antennaID, occurredAt, occurredAt.UTC().Format(sqliteTimestamp), nullIfEmpty(confirmationID), formatOccurredAt(occurredAt)}, args...)...)
 	return err
+}
+
+// autoColumn returns the extra INSERT column, placeholder and value marking an
+// automatic confirmation. Operator confirmations rely on the column default
+// (0), so their insert is unchanged.
+func autoColumn(auto bool) (cols, marks string, args []any) {
+	if !auto {
+		return "", "", nil
+	}
+	return ", auto", ", ?", []any{1}
 }
 
 // nullIfEmpty stores an empty string as NULL, keeping the unique index on
@@ -798,6 +822,72 @@ func (s *LocalStore) GetPendingConfirmationsCount() (int, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM pending_confirmations WHERE synced = 0`).Scan(&count)
 	return count, err
+}
+
+// HasPendingConfirmation reports whether uii has a confirmation not yet synced
+// to the VPS.
+func (s *LocalStore) HasPendingConfirmation(uii string) (bool, error) {
+	var pending bool
+	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pending_confirmations WHERE uii = ? AND synced = 0)`, uii).Scan(&pending)
+	return pending, err
+}
+
+// HasConfirmationSince reports whether uii has a confirmation (manual or
+// automatic, synced or not) that occurred at or after since: its occurred_at
+// when set, else its timestamp.
+func (s *LocalStore) HasConfirmationSince(uii string, since time.Time) (bool, error) {
+	rows, err := s.db.Query(`SELECT timestamp, occurred_at FROM pending_confirmations WHERE uii = ?`, uii)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var timestamp time.Time
+		var occurredAt sql.NullString
+		if err := rows.Scan(&timestamp, &occurredAt); err != nil {
+			return false, err
+		}
+		at := timestamp
+		if occurredAt.Valid {
+			if t, err := time.Parse(time.RFC3339Nano, occurredAt.String); err == nil {
+				at = t
+			}
+		}
+		if !at.Before(since) {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// LastConfirmationAction returns the action of uii's most recent confirmation
+// (manual or automatic, synced or not) by occurred time: its occurred_at when
+// set, else its timestamp. ok is false when uii has none.
+func (s *LocalStore) LastConfirmationAction(uii string) (action string, ok bool, err error) {
+	rows, err := s.db.Query(`SELECT action, timestamp, occurred_at FROM pending_confirmations WHERE uii = ? ORDER BY id`, uii)
+	if err != nil {
+		return "", false, err
+	}
+	defer rows.Close()
+	var last time.Time
+	for rows.Next() {
+		var a string
+		var timestamp time.Time
+		var occurredAt sql.NullString
+		if err := rows.Scan(&a, &timestamp, &occurredAt); err != nil {
+			return "", false, err
+		}
+		at := timestamp
+		if occurredAt.Valid {
+			if t, err := time.Parse(time.RFC3339Nano, occurredAt.String); err == nil {
+				at = t
+			}
+		}
+		if !ok || !at.Before(last) {
+			action, last, ok = a, at, true
+		}
+	}
+	return action, ok, rows.Err()
 }
 
 // GetOldestPendingAt returns when the oldest unsynced confirmation was queued,

@@ -274,6 +274,8 @@ sync_interval: 30s
 batch_size: 100
 reading_session_idle: 5s   # queue a tag session after 5s without reading it
 reading_session_max: 60s   # queue it after 60s even if the tag is still read
+auto_confirm_idle: 1m      # automatic mode: a tag pass ends after 1m without reads
+auto_confirm_min_reads: 3  # automatic mode: confirm only passes with at least 3 reads
 max_retries: 5
 
 # Health check endpoint port
@@ -362,6 +364,8 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 | `batch_size` | int | 100 | Readings per sync request |
 | `reading_session_idle` | duration | 5s | A tag session is closed and queued after this long without reading the tag |
 | `reading_session_max` | duration | 60s | A tag session still being read is closed and queued after this long (must be >= `reading_session_idle`) |
+| `auto_confirm_idle` | duration | 1m | Automatic confirmation: a tag pass ends after this long without reads (at least `30s` when set; `0` or unset = default) |
+| `auto_confirm_min_reads` | int | 3 | Automatic confirmation: minimum reads in a pass to confirm it (must be positive; `0` or unset = default) |
 | `max_retries` | int | 5 | Max retry attempts for failed syncs |
 | `health_port` | int | 8080 | HTTP port for health/metrics |
 | `data_path` | string | ./data | SQLite database location |
@@ -520,6 +524,12 @@ Features:
 - Real-time reading display
 - Tool verification status
 
+The header has a **Manual / Automático** switch (needs the web token in LAN mode) that calls
+`POST /api/auto-confirm` and survives restarts. In automatic mode a banner shows the rule
+("Automático: confirma solo tras 1 min sin lectura y 3+ lecturas", from `auto_confirm_idle` and
+`auto_confirm_min_reads`), auto-confirmed tags drop their pending card, and today's history marks
+those movements with a small "auto" tag. Manual mode looks and works as before.
+
 ## Testing
 
 ```bash
@@ -580,12 +590,13 @@ the bearer token when `web_access_mode: lan`.
 | `/api/unassigned-tags` | GET | none | `[{epc, antenna_id, first_seen, last_seen, read_count}]`, most recent first |
 | `/api/kanbans` | GET | none | Cached kanban catalog (picker source), ordered by `code` |
 | `/api/antennas` | GET | none | `[{id, zone, state, last_read_at}]` per configured antenna; `state` is `reading`, `reconnecting` or `stopped` (disabled); `zone` is `entrada`, `salida` or `""`; `last_read_at` is `null` until the first tag read |
-| `/api/status` | GET | none | `{vps_online, pending_count, tools_count, pending_warning, oldest_pending_at, pending_warning_threshold, last_sync_at, max_pending_confirmations, stuck_count}`; `max_pending_confirmations` is the enforced queue cap (`0` = unlimited), `stuck_count` counts pending confirmations that reached the sync worker's max retries (kept queued, no longer sent); `oldest_pending_at` is when the oldest pending confirmation was queued (`null` when none), `pending_warning_threshold` is the configured threshold (default 1000, `0` = never warn), `last_sync_at` is the last time a confirmation reached the VPS (online confirm or worker flush; `null` when none is recorded) |
-| `/api/history` | GET | none | Today's confirmations (gateway local day), newest first: `[{uii, kanban_code, description, quantity, unit, action, antenna_id, time, synced}]`. `quantity` is the kanban `standard_pack`; the four kanban fields are `null` when the tag has no active kanban link; `synced` is `false` while the confirmation is still queued for the VPS |
+| `/api/status` | GET | none | `{vps_online, pending_count, tools_count, pending_warning, oldest_pending_at, pending_warning_threshold, last_sync_at, max_pending_confirmations, stuck_count, auto_confirm, auto_confirm_idle_seconds, auto_confirm_min_reads}`; `auto_confirm` is `true` in automatic confirmation mode, `auto_confirm_idle_seconds`/`auto_confirm_min_reads` are the configured pass thresholds; `max_pending_confirmations` is the enforced queue cap (`0` = unlimited), `stuck_count` counts pending confirmations that reached the sync worker's max retries (kept queued, no longer sent); `oldest_pending_at` is when the oldest pending confirmation was queued (`null` when none), `pending_warning_threshold` is the configured threshold (default 1000, `0` = never warn), `last_sync_at` is the last time a confirmation reached the VPS (online confirm or worker flush; `null` when none is recorded) |
+| `/api/history` | GET | none | Today's confirmations (gateway local day), newest first: `[{uii, kanban_code, description, quantity, unit, action, antenna_id, time, synced, auto}]`. `auto` is `true` for movements the gateway confirmed by itself (automatic mode). `quantity` is the kanban `standard_pack`; the four kanban fields are `null` when the tag has no active kanban link; `synced` is `false` while the confirmation is still queued for the VPS |
 | `/api/tags/assign` | POST | write auth | Assign a tag to a kanban (online only) |
-| `/api/confirm` | POST | write auth | Confirm entrada/salida (assigned tags only) |
+| `/api/confirm` | POST | write auth | Confirm entrada/salida (assigned tags only); `409` while an automatic confirm of the same tag is in progress, and `409 {"error": "Este movimiento ya se confirmó automáticamente."}` after one until the tag is read again |
 | `/api/confirmations/requeue` | POST | write auth | Resets the retry count and backoff of every pending confirmation stuck after a VPS rejection so the sync worker sends them again; answers `200 {"requeued": N}` (`0` when none are stuck), `405` for other methods |
-| `/events` | GET (SSE) | none | `tag_detected` events, see below |
+| `/api/auto-confirm` | POST | write auth | Switches the confirmation mode: body `{"enabled": true}` (automatic) or `{"enabled": false}` (manual); the mode is saved in the gateway database (survives restarts) and applied at once; answers `200 {"auto_confirm": bool}`, `400` for an invalid body, `405` for other methods |
+| `/events` | GET (SSE) | none | `tag_detected` and `auto_confirmed` events, see below |
 
 **`POST /api/tags/assign`** body `{"uii": "...", "kanban_code": "...", "antenna_id": "..."}`
 (`antenna_id` optional, used for audit; defaults to the antenna that read the tag, else `manual`).
@@ -634,6 +645,61 @@ opposite movement even offline; a sync does not roll it back while the confirmat
 When the offline queue is at `max_pending_confirmations` it answers
 `507 {"success": false, "message": "La cola del gateway está llena: no se guardó el movimiento. Revisá la conexión con el VPS.", "mode": "offline", "code": "queue_full"}`
 and nothing queued is discarded.
+
+**Automatic confirmation (experimental).** The default mode is manual (no stored setting means
+manual): nothing changes and every movement is confirmed with the panel button. Use automatic mode
+only when a single gateway reads a given set of tags: with several gateways sharing tags, a movement
+recorded by another gateway is only seen here after the next tools sync (hourly by default), so an
+automatic confirm in that window can repeat its direction. In automatic mode (`POST /api/auto-confirm`) the gateway tracks
+each tag's pass (reads, last read, last antenna); a pass ends once the tag goes unread for
+`auto_confirm_idle` (default 1 min) plus a 2 s margin for reads delayed on their way in; a read
+timestamped before the start of the tag's current pass does not count toward it (nor reopens an
+older pass). An ended pass is confirmed by the gateway when it had at least
+`auto_confirm_min_reads` reads (default 3), the tag is linked to a kanban and it is not a user
+badge; otherwise it stays for a manual confirm. The pass is claimed first and every check below uses
+the values read after the claim. A tag with any confirmation still pending sync in the local queue
+is never auto-confirmed (its cached location is only trusted when nothing is pending). Cooldown: a
+tag with any local confirmation (manual or automatic, synced or not) whose movement time is within
+the last 10 minutes is not auto-confirmed either; the pass is dropped and nothing is written (a sync
+may still carry a location older than that movement). Direction: two sources must agree. The tag's
+most recent retained local confirmation (manual or automatic, synced or not, by movement time) implies
+the opposite movement (last `entrada` → `salida`, last `salida` → `entrada`); its known, non-blank
+cached location implies one too (in the warehouse → `salida`, anywhere else → `entrada`). When both
+exist and disagree (for example a movement made elsewhere, seen through the tools sync) the pass is
+dropped and nothing is written; when only one exists it decides. A tag with no retained local
+confirmation whose location is unknown or blank (no tool row, empty/NULL location) is not
+auto-confirmed, and any failed lookup skips the pass; it stays for a manual confirm. `occurred_at` is the last read and `antenna_id` the last antenna. It uses the same path as
+`POST /api/confirm` (confirmation id, online send, offline queue with retries, location update); the
+movement shows `auto: true` in `/api/history` and an SSE `auto_confirmed` event
+(`{"uii", "action", "confirmation_id"}`) is sent. At most one automatic confirm per pass: every
+confirm (manual from the panel or automatic) claims the tag's current pass before anything is sent or
+queued, so an automatic confirm never follows a manual or automatic one in the same pass; reads right before the automatic confirm keep the pass open, a failed automatic
+confirm is not retried in the same pass, and a new pass starts only after the tag goes unread for a
+full `auto_confirm_idle`. While an automatic confirm of a tag is in progress, a manual
+`POST /api/confirm` of the same tag answers
+`409 {"error": "Este movimiento ya se está confirmando automáticamente."}` and writes nothing; after
+an automatic confirm, a manual `POST /api/confirm` of that tag before it is read again answers
+`409 {"error": "Este movimiento ya se confirmó automáticamente."}` and writes nothing (a new read
+makes manual confirms normal again). While a manual confirm of a tag is being sent or queued, no pass
+of that tag is auto-confirmed; a pass that ends meanwhile is kept and reconsidered once the manual
+confirm finishes (success or failure), when the cooldown normally drops it. Switching to Manual stops every pass not yet being confirmed; a
+confirm already in progress completes. Passes in progress are kept in memory only; on start, every
+tag with a confirmation (manual or automatic) in the last 10 minutes has its first pass after the
+restart consumed (not auto-confirmed), and later passes after a full idle gap behave normally.
+Start warm-up: a pass whose first read arrives within `auto_confirm_idle` after the gateway starts
+is consumed too (it may continue a pass from before the restart), even when reading the recent
+confirmations fails.
+
+Manual confirms behave exactly as before automatic mode existed (same path, responses and records),
+except for the two `409` answers above.
+
+Known residual cases (exceptions to one movement per pass): movements made outside this gateway
+(another gateway or the VPS) are only seen through the hourly tools sync; until then a tag moved
+elsewhere can be confirmed in the wrong direction; a read that reaches the gateway after the automatic confirm claimed
+its pass does not stop that confirm; two manual confirms of the same pass are allowed (as in manual
+mode today); a confirm already claimed completes after a switch to Manual; an automatic confirm that
+is skipped (cooldown, warm-up, pending queue, unknown location, failed send) is not retried and falls
+back to a manual confirm.
 
 **SSE `tag_detected`** keeps its fields (`epc`, `rssi`, `antenna_id`, `timestamp`,
 `suggested_action`, `suggested_reason`) and adds, additively: a `kanban` object for assigned

@@ -18,8 +18,10 @@ import (
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/antenna"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/auth"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/autoconfirm"
 	cachepkg "github.com/amg-rfid/amg-rfid-gateway/internal/cache"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/confirm"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/health"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/httpclient"
@@ -135,6 +137,41 @@ func main() {
 	// Initialize antenna provider (bridge server and web panel)
 	antennaProvider := antenna.NewAntennaManagerProvider()
 
+	// Automatic confirmation: the persisted mode (manual when never set) is
+	// shared by the auto-confirmer and the panel switch.
+	autoMode := &autoconfirm.Mode{}
+	if enabled, err := localStore.AutoConfirmEnabled(); err != nil {
+		log.Printf("Warning: Failed to load auto-confirm mode, using manual: %v", err)
+	} else {
+		autoMode.Set(enabled)
+	}
+	maxPending := 0
+	if cfg.MaxPendingConfirmations != nil {
+		maxPending = *cfg.MaxPendingConfirmations
+	}
+	// The tracker sees every read synchronously before the reading sessions
+	// and arbitrates every confirm (manual or automatic) of a tag pass.
+	tracker := autoconfirm.NewTracker(
+		autoconfirm.Config{Idle: cfg.AutoConfirmIdle, MinReads: cfg.AutoConfirmMinReads},
+		sessions,
+		autoMode,
+	)
+	// Tags confirmed just before a restart: their first pass is not
+	// confirmed again. The warm-up (passes starting within the idle time)
+	// applies even when the seed fails.
+	startedAt := time.Now()
+	tracker.Start(startedAt)
+	if err := tracker.SeedRecent(localStore, startedAt); err != nil {
+		log.Printf("Warning: Failed to seed recent confirmations (start warm-up still applies): %v", err)
+	}
+	autoConfirmer := autoconfirm.New(
+		tracker,
+		eventBus,
+		localStore,
+		toolStoreAdapter,
+		&confirm.Service{Store: localStore, VPS: vpsClient, CompanyID: cfg.CompanyID, MaxPending: maxPending, Claimer: tracker},
+	)
+
 	// Initialize web server (if enabled)
 	var webServer *web.Server
 	if cfg.WebEnabled {
@@ -151,6 +188,8 @@ func main() {
 		// A successful tag assignment refreshes tools/kanbans right away
 		webServer.SetSyncTrigger(toolsSync)
 		webServer.SetAntennaProvider(antennaProvider)
+		webServer.SetAutoConfirmMode(autoMode)
+		webServer.SetConfirmClaimer(tracker)
 		log.Printf("Web server initialized on %s:%d", cfg.WebListenAddr, cfg.WebPort)
 	}
 
@@ -196,7 +235,7 @@ func main() {
 		antennaWg.Add(1)
 		go func(antenna config.AntennaConfig) {
 			defer antennaWg.Done()
-			runAntennaWithReconnect(antennaCtx, antenna, sessions, healthMonitor, cfg, antennaProvider, eventBus)
+			runAntennaWithReconnect(antennaCtx, antenna, tracker, healthMonitor, cfg, antennaProvider, eventBus)
 		}(ant)
 	}
 
@@ -216,6 +255,16 @@ func main() {
 	} else {
 		log.Println("Tools sync started")
 	}
+
+	// Start the auto-confirmer (independent of the web server)
+	autoConfirmCtx, autoConfirmCancel := context.WithCancel(context.Background())
+	defer autoConfirmCancel()
+	autoConfirmDone := make(chan struct{})
+	go func() {
+		defer close(autoConfirmDone)
+		autoConfirmer.Run(autoConfirmCtx)
+	}()
+	log.Printf("Auto-confirmer started (automatic: %v, idle %v, min reads %d)", autoMode.Enabled(), cfg.AutoConfirmIdle, cfg.AutoConfirmMinReads)
 
 	// Start web server (if enabled)
 	if webServer != nil {
@@ -248,6 +297,11 @@ func main() {
 	// Stop components
 	syncEngine.Stop()
 	healthMonitor.Stop()
+
+	// Stop the auto-confirmer before tools sync
+	autoConfirmCancel()
+	<-autoConfirmDone
+	log.Println("Auto-confirmer stopped")
 
 	// Stop tools sync
 	toolsSync.Stop()

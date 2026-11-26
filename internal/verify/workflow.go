@@ -66,6 +66,7 @@ func NewVerifier(store ToolStore, antennas []config.AntennaConfig) *Verifier {
 // 2. If no zone, load local joined tag/tool snapshot
 //   - If tag location is "Almacén General" → suggest "salida" (exit)
 //   - If tag location is outside warehouse or empty → suggest "entrada" (entry)
+//
 // 3. If no local metadata → fallback to antenna mapping or default to "entrada" with warning
 //
 // Domain rules:
@@ -210,4 +211,17 @@ func IsEntryToWarehouse(action Action) bool {
 // Per spec: EXIT action resolves destination from kanban_zone or tool default.
 func IsExitFromWarehouse(action Action) bool {
 	return action == ActionSalida
+}
+
+// KnownLocationAction is the direction of a tag from its known location only:
+// salida in a warehouse, entrada elsewhere. ok is false for a missing tool or
+// a blank location, which leaves the movement to a manual confirm.
+func KnownLocationAction(tool *Tool) (action Action, ok bool) {
+	if tool == nil || strings.TrimSpace(tool.Location) == "" {
+		return "", false
+	}
+	if isWarehouseLocation(normalizeLocation(strings.TrimSpace(tool.Location))) {
+		return ActionSalida, true
+	}
+	return ActionEntrada, true
 }

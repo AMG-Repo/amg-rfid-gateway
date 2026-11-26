@@ -24,6 +24,10 @@ const (
 
 	// DefaultSocketPath is the historical Unix socket path shared by the gateway bridge and TUI client.
 	DefaultSocketPath = "/tmp/amg-gateway.sock"
+
+	// MinAutoConfirmIdle is the shortest auto_confirm_idle accepted: a manual
+	// confirm still being sent to the VPS must not let a new pass end.
+	MinAutoConfirmIdle = 30 * time.Second
 )
 
 // AntennaProtocol identifies the packet protocol used by an antenna.
@@ -97,6 +101,11 @@ type GatewayConfig struct {
 	// the tag goes unread for ReadingSessionIdle, or after ReadingSessionMax.
 	ReadingSessionIdle time.Duration `yaml:"reading_session_idle"`
 	ReadingSessionMax  time.Duration `yaml:"reading_session_max"`
+
+	// Automatic confirmation: in automatic mode a tag pass that goes unread for
+	// AutoConfirmIdle is confirmed when it had at least AutoConfirmMinReads reads.
+	AutoConfirmIdle     time.Duration `yaml:"auto_confirm_idle"`
+	AutoConfirmMinReads int           `yaml:"auto_confirm_min_reads"`
 
 	// Queue cap configuration (REQ-S004)
 	// Use pointers to distinguish between "not set" (nil) and "set to 0" (unlimited)
@@ -257,6 +266,15 @@ func (c *GatewayConfig) Validate() error {
 	}
 	if c.ReadingSessionIdle > 0 && c.ReadingSessionMax > 0 && c.ReadingSessionMax < c.ReadingSessionIdle {
 		return errors.New("reading_session_max must be at least reading_session_idle")
+	}
+
+	// NEGATIVE: automatic confirmation thresholds must be positive; a set idle
+	// time must cover a manual confirm still being sent (0 = default)
+	if c.AutoConfirmIdle < 0 || (c.AutoConfirmIdle > 0 && c.AutoConfirmIdle < MinAutoConfirmIdle) {
+		return fmt.Errorf("auto_confirm_idle must be at least %v", MinAutoConfirmIdle)
+	}
+	if c.AutoConfirmMinReads < 0 {
+		return errors.New("auto_confirm_min_reads must be positive")
 	}
 
 	// HAPPY PATH: All validations passed
@@ -754,6 +772,12 @@ func (c *GatewayConfig) ApplyDefaults() {
 	}
 	if c.ReadingSessionMax == 0 {
 		c.ReadingSessionMax = 60 * time.Second
+	}
+	if c.AutoConfirmIdle == 0 {
+		c.AutoConfirmIdle = time.Minute
+	}
+	if c.AutoConfirmMinReads == 0 {
+		c.AutoConfirmMinReads = 3
 	}
 
 	// Queue cap defaults (REQ-S004)
