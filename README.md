@@ -489,6 +489,8 @@ curl http://localhost:8080/health
 the VPS; the status is `syncing` while that backlog is non-empty. Readings already synced are kept
 locally for 7 days and then purged by the sync engine (checked hourly), so the SQLite cache does not
 grow without bound.
+Readings the VPS rejects terminally are kept locally as rejected (`synced = 2`): they are not counted
+as pending, are never resent, and the retention purge never deletes them.
 
 ### Prometheus Metrics
 
