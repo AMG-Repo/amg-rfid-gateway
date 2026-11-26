@@ -256,6 +256,11 @@ h2 small {
   background: var(--fill-err);
   color: var(--on-err);
 }
+.banner.auto {
+  background: var(--bg-secondary);
+  border: 1px solid var(--accent-primary);
+  color: var(--text-primary);
+}
 .banner .ic {
   font-size: 1.2rem;
 }
@@ -1347,4 +1352,19 @@ dialog.picker[open] {
 }
 .lane-list.grid .row-act button {
   flex: 1;
+}
+
+/* Automatic confirmation: header switch and history marker */
+.seg.mode button[data-m="auto"][aria-pressed="true"] {
+  color: var(--accent-primary);
+}
+.auto-tag {
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: lowercase;
+  color: var(--accent-primary);
+  border: 1px solid var(--accent-primary);
+  border-radius: 4px;
 }

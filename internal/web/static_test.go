@@ -48,6 +48,8 @@ func TestPanelServesLanesDesign(t *testing.T) {
 		"Estado del sistema",
 		"Tema de color",
 		"Historial de hoy",
+		"Modo de confirmación",
+		"Automático",
 		`dataset.theme`,
 		`amg-theme`,
 	} {
@@ -92,6 +94,9 @@ func TestPanelServesLanesDesign(t *testing.T) {
 		"/api/tags/assign",
 		"/api/confirmations/requeue",
 		"Reintentar",
+		"/api/auto-confirm",
+		"auto_confirmed",
+		"confirmada automáticamente",
 		syncPendingText,
 	} {
 		if !strings.Contains(js, want) {

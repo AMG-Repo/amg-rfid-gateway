@@ -524,6 +524,12 @@ Features:
 - Real-time reading display
 - Tool verification status
 
+The header has a **Manual / Automático** switch (needs the web token in LAN mode) that calls
+`POST /api/auto-confirm` and survives restarts. In automatic mode a banner shows the rule
+("Automático: confirma solo tras 1 min sin lectura y 3+ lecturas", from `auto_confirm_idle` and
+`auto_confirm_min_reads`), auto-confirmed tags drop their pending card, and today's history marks
+those movements with a small "auto" tag. Manual mode looks and works as before.
+
 ## Testing
 
 ```bash

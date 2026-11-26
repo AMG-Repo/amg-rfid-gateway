@@ -45,6 +45,7 @@
   var history = null; // last /api/history
   var kanbans = null; // cached /api/kanbans (picker source)
   var lastIssue = "";
+  var modeBusy = false; // a mode switch request is in flight
   var toastTimer;
   var narrow = window.matchMedia("(max-width: 899px)");
 
@@ -1352,6 +1353,79 @@
     if (issue && issue !== lastIssue) $("sys").open = true;
     lastIssue = issue;
     $("b-vps").hidden = !(st && !st.vps_online);
+    renderMode();
+  }
+
+  // ── confirmation mode ──────────────────────────────────────
+  function autoRuleText(st) {
+    var secs = Math.round(Number(st.auto_confirm_idle_seconds) || 60);
+    var reads = Number(st.auto_confirm_min_reads) || 3;
+    var idle =
+      secs % 60 === 0 && secs >= 60 ? secs / 60 + " min" : secs + " s";
+    return (
+      "Automático: confirma solo tras " +
+      idle +
+      " sin lectura y " +
+      reads +
+      "+ lecturas"
+    );
+  }
+  function renderMode() {
+    var on = Boolean(status && status.auto_confirm);
+    document.querySelectorAll("#mode-hdr [data-m]").forEach((b) => {
+      b.setAttribute("aria-pressed", String((b.dataset.m === "auto") === on));
+      b.disabled = modeBusy;
+    });
+    $("b-auto").hidden = !on;
+    $("b-auto-msg").textContent = on ? autoRuleText(status) : "";
+  }
+  async function setMode(on) {
+    if (modeBusy || !status || Boolean(status.auto_confirm) === on) return;
+    if (!(await ensureAuth())) return;
+    var prev = Boolean(status.auto_confirm);
+    status.auto_confirm = on; // optimistic; reverted on failure
+    modeBusy = true;
+    renderMode();
+    var r = null;
+    try {
+      r = await post("/api/auto-confirm", { enabled: on });
+    } catch (e) {}
+    modeBusy = false;
+    if (r && r.ok) {
+      status.auto_confirm = Boolean(r.data.auto_confirm);
+      renderMode();
+      say(
+        status.auto_confirm
+          ? "Modo automático activado. " + autoRuleText(status) + "."
+          : "Modo manual activado.",
+      );
+      return;
+    }
+    status.auto_confirm = prev;
+    renderMode();
+    if (r && r.status === 401) {
+      onUnauthorized();
+      return;
+    }
+    say("No se pudo cambiar el modo. Revisa la conexión e intenta de nuevo.");
+  }
+  // The gateway confirmed a pass by itself: close the card like a manual confirm.
+  function onAutoConfirmed(d) {
+    if (!d || !d.uii) return;
+    var mov = d.action === "salida" ? "salida" : "entrada";
+    var c = cards.get(d.uii);
+    var name = (c && c.kanban && c.kanban.code) || d.uii;
+    if (c) {
+      c.mov = mov;
+      c.status = "done";
+      c.doneAt = Date.now();
+      c.offline = false;
+      c.failMsg = "";
+      render();
+    }
+    say(MOV[mov].noun + " confirmada automáticamente: " + name);
+    loadHistory();
+    loadStatus();
   }
 
   // ── history ────────────────────────────────────────────────
@@ -1386,6 +1460,15 @@
           d.synced ? "t-ok" : "t-warn",
           "✓ " + mov.noun + " confirmada",
         ),
+      );
+      if (d.auto)
+        r.append(
+          h("span", "auto-tag", "auto", {
+            title: "Confirmada automáticamente",
+            "aria-label": "confirmada automáticamente",
+          }),
+        );
+      r.append(
         h(
           "span",
           "chip" + (d.synced ? "" : " warn"),
@@ -1663,6 +1746,15 @@
       sseUp = true;
       if (onTag(d)) render();
     });
+    es.addEventListener("auto_confirmed", (ev) => {
+      var d;
+      try {
+        d = JSON.parse(ev.data);
+      } catch (e) {
+        return;
+      }
+      onAutoConfirmed(d);
+    });
     es.onerror = () => {
       sseUp = false;
       updateNote();
@@ -1680,6 +1772,11 @@
   document.querySelectorAll("#theme-hdr [data-t]").forEach((b) => {
     b.addEventListener("click", () => {
       setTheme(b.dataset.t, true);
+    });
+  });
+  document.querySelectorAll("#mode-hdr [data-m]").forEach((b) => {
+    b.addEventListener("click", () => {
+      setMode(b.dataset.m === "auto");
     });
   });
   $("token").addEventListener("submit", (e) => {

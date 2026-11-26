@@ -29,6 +29,19 @@
       </div>
       <div class="hdr-r">
         <div
+          class="seg mode"
+          role="group"
+          aria-label="Modo de confirmación"
+          id="mode-hdr"
+        >
+          <button type="button" data-m="manual" aria-pressed="true">
+            <span class="lbl">Manual</span>
+          </button>
+          <button type="button" data-m="auto" aria-pressed="false">
+            <span class="lbl">Automático</span>
+          </button>
+        </div>
+        <div
           class="seg theme"
           role="group"
           aria-label="Tema de color"
@@ -118,6 +131,9 @@
           >Sin conexión con el VPS. Las confirmaciones se guardan en este
           gateway y se envían al reconectar.</span
         >
+      </div>
+      <div class="banner auto" role="status" id="b-auto" hidden>
+        <span class="ic" aria-hidden="true">⟳</span><span id="b-auto-msg"></span>
       </div>
       <form class="token" id="token" hidden aria-label="Token de acceso LAN">
         <label for="tok"
