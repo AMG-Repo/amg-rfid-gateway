@@ -452,9 +452,12 @@ type connGetter interface {
 	GetConn() net.Conn
 }
 
-// runAntenna runs a single antenna client using AntennaManager
-func runAntenna(ctx context.Context, antennaCfg config.AntennaConfig, store antenna.Cache, monitor *health.Monitor, gwCfg *config.GatewayConfig, antennaProvider *antenna.AntennaManagerProvider, eventBus *events.EventBus) {
-	log.Printf("Starting antenna %s at %s:%d", antennaCfg.ID, antennaCfg.IP, antennaCfg.Port)
+// runAntenna runs a single antenna client using AntennaManager. It reports
+// whether the reader connected; logAttempt false keeps a failed connect quiet.
+func runAntenna(ctx context.Context, antennaCfg config.AntennaConfig, store antenna.Cache, monitor *health.Monitor, gwCfg *config.GatewayConfig, antennaProvider *antenna.AntennaManagerProvider, eventBus *events.EventBus, logAttempt bool) bool {
+	if logAttempt {
+		log.Printf("Starting antenna %s at %s:%d", antennaCfg.ID, antennaCfg.IP, antennaCfg.Port)
+	}
 
 	// Update health status as connecting
 	monitor.UpdateAntennaStatus(antennaCfg.ID, false)
@@ -463,8 +466,10 @@ func runAntenna(ctx context.Context, antennaCfg config.AntennaConfig, store ante
 
 	// Connect to antenna
 	if err := client.Connect(); err != nil {
-		log.Printf("Antenna %s failed to connect: %v", antennaCfg.ID, err)
-		return
+		if logAttempt {
+			log.Printf("Antenna %s failed to connect: %v", antennaCfg.ID, err)
+		}
+		return false
 	}
 
 	// Get the underlying connection for the manager
@@ -495,7 +500,7 @@ func runAntenna(ctx context.Context, antennaCfg config.AntennaConfig, store ante
 	if err := manager.Start(ctx); err != nil {
 		log.Printf("Antenna %s manager failed to start: %v", antennaCfg.ID, err)
 		client.Disconnect()
-		return
+		return false
 	}
 
 	// Wait for manager to stop
@@ -506,23 +511,53 @@ func runAntenna(ctx context.Context, antennaCfg config.AntennaConfig, store ante
 	// Update health status as disconnected
 	monitor.UpdateAntennaStatus(antennaCfg.ID, false)
 	log.Printf("Antenna %s stopped", antennaCfg.ID)
+	return true
 }
+
+// reconnectLogEvery is how often an attempt is logged once the backoff is at
+// its max: a reader down for a day would otherwise log every attempt.
+const reconnectLogEvery = 20
 
 // runAntennaWithReconnect wraps runAntenna with exponential backoff reconnection.
 // Reconnects on connection loss with backoff: 1s → 2s → 4s → 8s → 16s → 30s (max)
 func runAntennaWithReconnect(ctx context.Context, antennaCfg config.AntennaConfig, store antenna.Cache, monitor *health.Monitor, gwCfg *config.GatewayConfig, antennaProvider *antenna.AntennaManagerProvider, eventBus *events.EventBus) {
+	run := func(ctx context.Context, logAttempt bool) bool {
+		return runAntenna(ctx, antennaCfg, store, monitor, gwCfg, antennaProvider, eventBus, logAttempt)
+	}
+	wait := func(ctx context.Context, d time.Duration) bool {
+		select {
+		case <-time.After(d):
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	reconnectLoop(ctx, antennaCfg.ID, gwCfg.ReconnectInitialBackoff, gwCfg.ReconnectMaxBackoff, run, wait)
+}
+
+// reconnectLoop runs the antenna until ctx is cancelled. run reports whether
+// it connected; a connect resets the backoff. While the backoff grows every
+// attempt is logged; at the max only one in reconnectLogEvery is.
+func reconnectLoop(ctx context.Context, antennaID string, initialBackoff, maxBackoff time.Duration,
+	run func(ctx context.Context, logAttempt bool) bool, wait func(ctx context.Context, d time.Duration) bool) {
 	attempt := 0
+	logAttempt := true
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("Antenna %s: reconnection loop cancelled", antennaCfg.ID)
+			log.Printf("Antenna %s: reconnection loop cancelled", antennaID)
 			return
 		default:
 		}
 
 		// Run the antenna (this blocks until connection drops or context cancelled)
-		runAntenna(ctx, antennaCfg, store, monitor, gwCfg, antennaProvider, eventBus)
+		if run(ctx, logAttempt) {
+			if attempt > 0 {
+				log.Printf("Antenna %s: reconnected after %d attempts", antennaID, attempt)
+			}
+			attempt = 0
+		}
 
 		// Check if context was cancelled
 		select {
@@ -532,32 +567,31 @@ func runAntennaWithReconnect(ctx context.Context, antennaCfg config.AntennaConfi
 		}
 
 		// Connection dropped, calculate backoff
-		backoff := calculateBackoff(attempt, gwCfg.ReconnectInitialBackoff, gwCfg.ReconnectMaxBackoff)
+		backoff := calculateBackoff(attempt, initialBackoff, maxBackoff)
 		attempt++
+		logAttempt = backoff < maxBackoff || attempt%reconnectLogEvery == 0
 
-		log.Printf("Antenna %s: connection lost, reconnecting in %v (attempt %d)",
-			antennaCfg.ID, backoff, attempt)
+		if logAttempt {
+			log.Printf("Antenna %s: connection lost, reconnecting in %v (attempt %d)",
+				antennaID, backoff, attempt)
+		}
 
 		// Wait for backoff duration or context cancellation
-		select {
-		case <-time.After(backoff):
-			// Continue to reconnect
-		case <-ctx.Done():
-			log.Printf("Antenna %s: reconnection cancelled during backoff", antennaCfg.ID)
+		if !wait(ctx, backoff) {
+			log.Printf("Antenna %s: reconnection cancelled during backoff", antennaID)
 			return
 		}
 	}
 }
 
 // calculateBackoff calculates exponential backoff duration.
-// Sequence: initial → initial×2 → initial×4 → ... → max
+// Sequence: initial → initial×2 → initial×4 → ... → max. It doubles step by
+// step and stops at max, so a large attempt count cannot overflow the shift.
 func calculateBackoff(attempt int, initialBackoff, maxBackoff time.Duration) time.Duration {
-	if attempt < 0 {
-		attempt = 0
+	backoff := initialBackoff
+	for i := 0; i < attempt && backoff < maxBackoff; i++ {
+		backoff *= 2
 	}
-
-	// Calculate backoff: initial * 2^attempt
-	backoff := initialBackoff * time.Duration(1<<attempt)
 
 	// Cap at max backoff
 	if backoff > maxBackoff {
