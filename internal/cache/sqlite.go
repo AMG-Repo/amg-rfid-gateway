@@ -868,17 +868,19 @@ func migrateKanbanTables(db *sql.DB) error {
 // Store adds a reading to the cache.
 // Uses NEGATIVE PROGRAMMING: check what should NOT be, early returns.
 func (c *SQLite) Store(r models.Reading) error {
-	// NEGATIVE: Check if cache is closed
-	c.mu.RLock()
-	if c.closed {
-		c.mu.RUnlock()
-		return errors.New("cache is closed")
-	}
-	c.mu.RUnlock()
-
 	// NEGATIVE: Validate reading
 	if err := r.Validate(); err != nil {
 		return fmt.Errorf("invalid reading: %w", err)
+	}
+
+	// Hold the read lock through the send: Close takes the write lock, so it
+	// waits for in-flight Stores and no reading is sent after the writer's
+	// final drain (lost) or after the channel is closed (panic).
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	// NEGATIVE: Check if cache is closed
+	if c.closed {
+		return errors.New("cache is closed")
 	}
 
 	// HAPPY PATH: Send to buffered channel (non-blocking if space available)
@@ -974,7 +976,11 @@ func (c *SQLite) writer() {
 			// Take readings still buffered so they are written or counted.
 			for drained := false; !drained; {
 				select {
-				case r := <-c.readings:
+				case r, ok := <-c.readings:
+					if !ok {
+						drained = true
+						break
+					}
 					add(r)
 				default:
 					drained = true

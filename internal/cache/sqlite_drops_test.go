@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,5 +165,53 @@ func TestSQLite_CloseCountsUnwrittenReadings(t *testing.T) {
 	c.Close()
 	if got := c.DroppedReadings(); got != 5 {
 		t.Errorf("DroppedReadings after failed close = %d, want 5", got)
+	}
+}
+
+// Stores racing with Close never panic, and every Store that returned nil is
+// either written to the database or counted as dropped.
+func TestCloseDuringStores_AcceptedReadingsAreWrittenOrCounted(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		path := filepath.Join(t.TempDir(), "race.db")
+		c, err := NewSQLite(path)
+		if err != nil {
+			t.Fatalf("NewSQLite: %v", err)
+		}
+		var accepted atomic.Int64
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for g := 0; g < 8; g++ {
+			wg.Add(1)
+			go func(g int) {
+				defer wg.Done()
+				<-start
+				for i := 0; i < 200; i++ {
+					r := models.Reading{AntennaID: "ant-1", GatewayID: "gw", EPC: fmt.Sprintf("E%d-%d", g, i), RSSI: -50, Timestamp: time.Now()}
+					if c.Store(r) == nil {
+						accepted.Add(1)
+					}
+				}
+			}(g)
+		}
+		close(start)
+		time.Sleep(time.Duration(round%5) * time.Millisecond)
+		if err := c.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		wg.Wait()
+		dropped := c.DroppedReadings()
+
+		reopened, err := NewSQLite(path)
+		if err != nil {
+			t.Fatalf("reopen: %v", err)
+		}
+		n, err := reopened.Count()
+		reopened.Close()
+		if err != nil {
+			t.Fatalf("Count: %v", err)
+		}
+		if int64(n)+dropped != accepted.Load() {
+			t.Fatalf("round %d: accepted %d, written %d + dropped %d", round, accepted.Load(), n, dropped)
+		}
 	}
 }
