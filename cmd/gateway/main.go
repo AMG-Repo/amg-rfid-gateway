@@ -26,6 +26,7 @@ import (
 	"github.com/amg-rfid/amg-rfid-gateway/internal/health"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/httpclient"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/localstore"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/logx"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/monitoring"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/rawtcp"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/readingsession"
@@ -72,6 +73,10 @@ func main() {
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	if err := logx.SetLevel(cfg.LogLevel); err != nil {
+		log.Printf("[WARN] %v", err)
 	}
 
 	log.Printf("Gateway ID: %s", cfg.GatewayID)

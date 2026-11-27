@@ -382,7 +382,7 @@ logged at startup as `WARNING: config ignores unknown root keys: ...`.
 | `confirmation_retry_interval` | duration | 30s | Base wait before resending a failed confirmation; it doubles after each failure (`interval × 2^(failures-1)`, capped at 30 min). After 10 failed sends the confirmation is stuck until requeued |
 | `max_pending_confirmations` | int | 10000 | Queue size limit (0=unlimited); at the limit new confirmations are rejected with `queue_full`, nothing queued is discarded |
 | `pending_warning_threshold` | int | 1000 | Warning threshold (0=never) |
-| `log_level` | string | info | Logging verbosity |
+| `log_level` | string | info | Logging verbosity: `debug` also logs every raw read and reader frame; `info` logs one line per closed reading session; `warn`/`error` keep only warnings and errors |
 
 ### Antenna Protocols
 

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/amg-rfid/amg-rfid-gateway/internal/logx"
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
 )
 
@@ -170,7 +171,9 @@ func (a *Aggregator) flush(final bool, closed func(*session) bool) error {
 		if err := a.next.Store(s); err != nil {
 			errs = append(errs, err)
 			failed = append(failed, s)
+			continue
 		}
+		logx.Infof("[Sessions] closed EPC=%s antenna=%s reads=%d RSSI=%d", s.EPC, s.AntennaID, s.ReadCount, s.RSSI)
 	}
 	if len(failed) > 0 {
 		a.mu.Lock()

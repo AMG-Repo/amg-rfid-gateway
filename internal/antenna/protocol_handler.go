@@ -10,6 +10,7 @@ import (
 	"github.com/amg-rfid/amg-rfid-gateway/internal/chainway"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/config"
 	"github.com/amg-rfid/amg-rfid-gateway/internal/events"
+	"github.com/amg-rfid/amg-rfid-gateway/internal/logx"
 	"github.com/amg-rfid/amg-rfid-shared-go/models"
 	"github.com/amg-rfid/amg-rfid-shared-go/protocol"
 )
@@ -98,7 +99,7 @@ func (GenericProtocolHandler) HandleFrame(ctx PacketContext, frame []byte) error
 
 	switch rtnCode {
 	case protocol.RTNACK:
-		log.Printf("[DEBUG] ACK received from antenna %s", ctx.AntennaID)
+		logx.Debugf("ACK received from antenna %s", ctx.AntennaID)
 		return nil
 	case protocol.RTNUIIRead:
 		if cid1 != protocol.CID1ReadTypeCUII {
@@ -106,7 +107,7 @@ func (GenericProtocolHandler) HandleFrame(ctx PacketContext, frame []byte) error
 		}
 		return handleGenericUIIData(ctx, frame)
 	case protocol.RTNTagData:
-		log.Printf("[INFO] Tag Data received from antenna %s (not a UII scan)", ctx.AntennaID)
+		logx.Debugf("Tag Data received from antenna %s (not a UII scan)", ctx.AntennaID)
 		return nil
 	case protocol.RTNError:
 		log.Printf("[ERROR] Antenna %s error: %X", ctx.AntennaID, frame)
@@ -115,7 +116,7 @@ func (GenericProtocolHandler) HandleFrame(ctx PacketContext, frame []byte) error
 		}
 		return nil
 	case protocol.RTNHeartbeat:
-		log.Printf("[DEBUG] Heartbeat response received from antenna %s", ctx.AntennaID)
+		logx.Debugf("Heartbeat response received from antenna %s", ctx.AntennaID)
 		return nil
 	default:
 		return handleUnknownGenericRTN(ctx, frame, rtnCode)
@@ -152,7 +153,7 @@ func (ChainwayProtocolHandler) HandleFrame(ctx PacketContext, frame []byte) erro
 		return err
 	}
 	if f.Cmd != chainway.CmdTagNotification {
-		log.Printf("[DEBUG] Chainway frame 0x%02X from antenna %s ignored", f.Cmd, ctx.AntennaID)
+		logx.Debugf("Chainway frame 0x%02X from antenna %s ignored", f.Cmd, ctx.AntennaID)
 		return nil
 	}
 	tag, err := chainway.ParseTag(f.Data)
@@ -194,7 +195,7 @@ func (ChainwayProtocolHandler) HandleFrame(ctx PacketContext, frame []byte) erro
 	if ctx.Stats != nil {
 		ctx.Stats.RecordReading(reading.EPC, reading.RSSI)
 	}
-	log.Printf("[INFO] Chainway tag from antenna %s port %d (%s): EPC=%s RSSI=%d",
+	logx.Debugf("Chainway tag from antenna %s port %d (%s): EPC=%s RSSI=%d",
 		ctx.AntennaID, tag.Antenna, reading.AntennaID, reading.EPC, reading.RSSI)
 	return nil
 }
@@ -233,7 +234,7 @@ func handleGenericUIIData(ctx PacketContext, frame []byte) error {
 		ctx.Stats.RecordReading(reading.EPC, reading.RSSI)
 	}
 
-	log.Printf("[INFO] UII detected from antenna %s: EPC=%s RSSI=%d", ctx.AntennaID, reading.EPC, reading.RSSI)
+	logx.Debugf("UII detected from antenna %s: EPC=%s RSSI=%d", ctx.AntennaID, reading.EPC, reading.RSSI)
 	return nil
 }
 
