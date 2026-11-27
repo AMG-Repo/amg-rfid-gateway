@@ -242,3 +242,27 @@ func TestMonitor_StatusString(t *testing.T) {
 		}
 	}
 }
+
+type lossCountingCache struct {
+	mockCache
+}
+
+func (lossCountingCache) DroppedReadings() int64      { return 3 }
+func (lossCountingCache) BufferFullRejections() int64 { return 7 }
+
+func TestHealthHandler_IncludesLossCounters(t *testing.T) {
+	monitor := NewMonitor("gw-001", "comp-123", "v1.0.0", &lossCountingCache{}, &mockSyncEngine{})
+	rr := httptest.NewRecorder()
+	HealthHandler(monitor).ServeHTTP(rr, httptest.NewRequest("GET", "/health", nil))
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if body["dropped_readings"] != float64(3) || body["buffer_full_rejections"] != float64(7) {
+		t.Errorf("unexpected counters: dropped=%v rejected=%v", body["dropped_readings"], body["buffer_full_rejections"])
+	}
+	if _, ok := body["gateway_id"]; !ok {
+		t.Errorf("existing fields missing: %v", body)
+	}
+}

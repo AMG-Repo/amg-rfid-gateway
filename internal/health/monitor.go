@@ -15,6 +15,21 @@ type Cache interface {
 	Count() (int, error)
 }
 
+// CacheLossCounter is optionally implemented by caches that count readings
+// they could not keep.
+type CacheLossCounter interface {
+	DroppedReadings() int64
+	BufferFullRejections() int64
+}
+
+// StatusResponse is the /health body: the shared status plus optional
+// gateway-local counters.
+type StatusResponse struct {
+	models.GatewayHealthStatus
+	DroppedReadings      *int64 `json:"dropped_readings,omitempty"`
+	BufferFullRejections *int64 `json:"buffer_full_rejections,omitempty"`
+}
+
 // SyncEngine interface for sync status
 type SyncEngine interface {
 	GetStats() syncengine.Stats
@@ -179,7 +194,12 @@ func HealthHandler(monitor *Monitor) http.Handler {
 		}
 
 		// Get status
-		status := monitor.GetStatus()
+		status := StatusResponse{GatewayHealthStatus: monitor.GetStatus()}
+		if lc, ok := monitor.cache.(CacheLossCounter); ok {
+			dropped, rejected := lc.DroppedReadings(), lc.BufferFullRejections()
+			status.DroppedReadings = &dropped
+			status.BufferFullRejections = &rejected
+		}
 
 		// Write response
 		w.Header().Set("Content-Type", "application/json")

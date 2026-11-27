@@ -4,10 +4,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/amg-rfid/amg-rfid-gateway/internal/uuidutil"
@@ -41,6 +43,38 @@ type SQLite struct {
 	flushCh  chan chan struct{}
 	wg       sync.WaitGroup
 	mu       sync.RWMutex
+
+	// maxCarried bounds the readings the writer keeps after failed writes.
+	maxCarried int
+	// dropped counts readings lost in the writer; rejected counts Store
+	// calls that timed out on a full buffer.
+	dropped    atomic.Int64
+	dropEvents atomic.Int64
+	rejected   atomic.Int64
+}
+
+// MaxCarriedReadings is how many unwritten readings the writer keeps while
+// SQLite writes fail; beyond it the oldest are dropped and counted.
+const MaxCarriedReadings = 10 * BufferSize
+
+// dropLogEvery rate-limits loss logs: the first event, then every Nth.
+const dropLogEvery = 100
+
+// DroppedReadings returns how many readings the writer lost.
+func (c *SQLite) DroppedReadings() int64 { return c.dropped.Load() }
+
+// BufferFullRejections returns how many Store calls failed on a full buffer.
+func (c *SQLite) BufferFullRejections() int64 { return c.rejected.Load() }
+
+// countDropped records lost readings and logs rate-limited.
+func (c *SQLite) countDropped(n int, reason string) {
+	if n <= 0 {
+		return
+	}
+	total := c.dropped.Add(int64(n))
+	if ev := c.dropEvents.Add(1); ev == 1 || ev%dropLogEvery == 0 {
+		log.Printf("[cache] dropped %d reading(s): %s (total dropped: %d)", n, reason, total)
+	}
 }
 
 // sqliteBusyTimeoutMs is how long a connection waits for a locked database.
@@ -137,6 +171,8 @@ func NewSQLite(dbPath string) (*SQLite, error) {
 		readings: make(chan models.Reading, BufferSize),
 		closeCh:  make(chan struct{}),
 		flushCh:  make(chan chan struct{}),
+
+		maxCarried: MaxCarriedReadings,
 	}
 
 	// Start background writer goroutine
@@ -850,12 +886,18 @@ func (c *SQLite) Store(r models.Reading) error {
 	case c.readings <- r:
 		return nil
 	case <-time.After(100 * time.Millisecond):
+		// Callers such as the session aggregator may retry, so this is a
+		// rejection, not necessarily a loss.
+		if n := c.rejected.Add(1); n == 1 || n%dropLogEvery == 0 {
+			log.Printf("[cache] buffer full, rejected reading (total rejections: %d)", n)
+		}
 		return errors.New("cache buffer full, dropping reading")
 	}
 }
 
 // writer is the single goroutine that writes to SQLite.
-// This ensures thread-safety without complex locking.
+// This ensures thread-safety without complex locking. A batch that fails to
+// write is kept and retried on the next tick or flush, bounded by maxCarried.
 func (c *SQLite) writer() {
 	defer c.wg.Done()
 
@@ -863,31 +905,49 @@ func (c *SQLite) writer() {
 	defer ticker.Stop()
 
 	batch := make([]models.Reading, 0, 100)
+	// failing pauses size-triggered flushes while writes fail, so the
+	// backoff runs once per tick instead of once per reading.
+	failing := false
+
+	add := func(r models.Reading) {
+		batch = append(batch, r)
+		if over := len(batch) - c.maxCarried; over > 0 {
+			c.countDropped(over, "write retry buffer full, oldest discarded")
+			batch = append(batch[:0], batch[over:]...)
+		}
+	}
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		if c.flush(batch) {
+			batch = batch[:0]
+			failing = false
+			return
+		}
+		failing = true
+	}
+	final := func() {
+		flush()
+		c.countDropped(len(batch), "write failed at shutdown")
+	}
 
 	for {
 		select {
 		case r, ok := <-c.readings:
 			if !ok {
-				// Channel closed, flush remaining batch
-				if len(batch) > 0 {
-					c.flush(batch)
-				}
+				final()
 				return
 			}
-			batch = append(batch, r)
+			add(r)
 
 			// Flush when batch is full
-			if len(batch) >= 100 {
-				c.flush(batch)
-				batch = batch[:0]
+			if !failing && len(batch) >= 100 {
+				flush()
 			}
 
 		case <-ticker.C:
-			// Periodic flush
-			if len(batch) > 0 {
-				c.flush(batch)
-				batch = batch[:0]
-			}
+			flush()
 
 		case done := <-c.flushCh:
 			// Explicit flush requested, drain channel and flush all pending readings
@@ -899,53 +959,54 @@ func (c *SQLite) writer() {
 						drained = true
 						break
 					}
-					batch = append(batch, r)
-					if len(batch) >= 100 {
-						c.flush(batch)
-						batch = batch[:0]
+					add(r)
+					if !failing && len(batch) >= 100 {
+						flush()
 					}
 				default:
 					drained = true
 				}
 			}
-			if len(batch) > 0 {
-				c.flush(batch)
-				batch = batch[:0]
-			}
+			flush()
 			close(done)
 
 		case <-c.closeCh:
-			// Close requested, flush and exit
-			if len(batch) > 0 {
-				c.flush(batch)
+			// Take readings still buffered so they are written or counted.
+			for drained := false; !drained; {
+				select {
+				case r := <-c.readings:
+					add(r)
+				default:
+					drained = true
+				}
 			}
+			final()
 			return
 		}
 	}
 }
 
-// flush writes a batch of readings to SQLite.
-// Uses retry mechanism with exponential backoff for transient errors.
-func (c *SQLite) flush(readings []models.Reading) {
+// flush writes a batch of readings to SQLite and reports whether it was
+// written. Retries with exponential backoff for transient errors; on failure
+// the caller keeps the batch.
+func (c *SQLite) flush(readings []models.Reading) bool {
 	const maxRetries = 3
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
-			// Exponential backoff: 100ms, 200ms, 400ms
+			// Exponential backoff: 200ms, 400ms
 			time.Sleep(time.Duration(100*(1<<attempt)) * time.Millisecond)
 		}
 
 		lastErr = c.flushOnce(readings)
 		if lastErr == nil {
-			return // Success
+			return true
 		}
-
-		// Log error but retry
 	}
 
-	// All retries failed - readings will be retried in next batch
-	_ = lastErr // Log this error
+	log.Printf("[cache] failed to write %d reading(s), keeping them for retry: %v", len(readings), lastErr)
+	return false
 }
 
 // flushOnce performs a single flush attempt.
@@ -966,7 +1027,8 @@ func (c *SQLite) flushOnce(readings []models.Reading) error {
 	}
 	defer stmt.Close()
 
-	failedCount := 0
+	// All-or-nothing: a failed row aborts the transaction so a retry does not
+	// duplicate the rows that did insert.
 	for _, r := range readings {
 		_, err := stmt.Exec(
 			r.AntennaID,
@@ -980,17 +1042,12 @@ func (c *SQLite) flushOnce(readings []models.Reading) error {
 			r.ReadCount,
 		)
 		if err != nil {
-			failedCount++
-			continue
+			return fmt.Errorf("failed to insert reading %s: %w", r.EPC, err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
-	}
-
-	if failedCount > 0 {
-		return fmt.Errorf("failed to insert %d of %d readings", failedCount, len(readings))
 	}
 
 	return nil
