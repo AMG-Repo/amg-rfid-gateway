@@ -93,6 +93,9 @@ type Engine struct {
 	mu         sync.RWMutex
 	stats      Stats
 	retryCount int
+	// batchLimit caps the next batch after the VPS rejected one whole; 0 means
+	// no cap. It halves on each whole-batch rejection and clears on delivery.
+	batchLimit int
 	ctx        context.Context
 	cancel     context.CancelFunc
 }
@@ -277,6 +280,11 @@ func (e *Engine) syncOnce(ctx context.Context) error {
 	if batchSize > MaxReadingsPerRequest {
 		batchSize = MaxReadingsPerRequest
 	}
+	e.mu.RLock()
+	if e.batchLimit > 0 && e.batchLimit < batchSize {
+		batchSize = e.batchLimit
+	}
+	e.mu.RUnlock()
 	readings, err := e.cache.GetUnsynced(batchSize)
 	if err != nil {
 		return fmt.Errorf("failed to get unsynced: %w", err)
@@ -316,6 +324,9 @@ func (e *Engine) syncOnce(ctx context.Context) error {
 	e.mu.Unlock()
 	if err != nil {
 		e.handleFailure(len(readings))
+		if isBatchRejection(err) {
+			e.splitRejectedBatch(ids)
+		}
 		return fmt.Errorf("sync request failed: %w", err)
 	}
 
@@ -349,8 +360,42 @@ func (e *Engine) syncOnce(ctx context.Context) error {
 	e.handlePartialFailure(delivered, rejected)
 	e.mu.Lock()
 	e.retryCount = 0
+	e.batchLimit = 0
 	e.mu.Unlock()
 	return nil
+}
+
+// isBatchRejection reports whether the VPS rejected the whole batch for its
+// size or body (400, 413). Other statuses (token, identity, rate limit, 5xx)
+// and network errors say nothing about the readings and are retried as is.
+func isBatchRejection(err error) bool {
+	var sc statusCoder
+	if !errors.As(err, &sc) {
+		return false
+	}
+	code := sc.StatusCode()
+	return code == 400 || code == 413
+}
+
+// splitRejectedBatch halves the next batch so the readings behind the one the
+// VPS cannot take keep flowing. A single rejected reading is set aside as
+// rejected: resending it alone would be rejected again forever.
+func (e *Engine) splitRejectedBatch(ids []int64) {
+	if len(ids) > 1 {
+		e.mu.Lock()
+		e.batchLimit = len(ids) / 2
+		e.mu.Unlock()
+		log.Printf("[Sync] VPS rejected a batch of %d readings whole; retrying with %d", len(ids), len(ids)/2)
+		return
+	}
+	if err := e.markDelivered(ids, map[int]bool{0: true}); err != nil {
+		log.Printf("[Sync] failed to set aside reading %d the VPS rejected: %v", ids[0], err)
+		return
+	}
+	e.mu.Lock()
+	e.batchLimit = 0
+	e.mu.Unlock()
+	log.Printf("[Sync] VPS rejected reading %d alone; set aside as rejected", ids[0])
 }
 
 // markDelivered marks the rejected indexes rejected and the rest synced. When
