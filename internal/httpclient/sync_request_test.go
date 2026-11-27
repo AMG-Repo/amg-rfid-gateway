@@ -2,6 +2,7 @@ package httpclient
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -140,5 +141,21 @@ func TestSendSyncRequest_AlwaysSendsRSSIEvenWhenZero(t *testing.T) {
 	reading := raw["readings"].([]any)[0].(map[string]any)
 	if rssi, ok := reading["rssi"]; !ok || rssi != float64(0) {
 		t.Errorf("reading rssi = %v (present %v); want 0 serialized", rssi, ok)
+	}
+}
+
+// The sync engine tells a whole-batch rejection from a transient failure by
+// the HTTP status, so a non-2xx error must expose it.
+func TestSendSyncRequest_NonSuccessErrorCarriesStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"Invalid request body"}`))
+	}))
+	defer server.Close()
+
+	_, err := NewVPSClient(server.URL, 5*time.Second, StaticToken("tok")).SendSyncRequest(syncRequestFixture())
+	var sc interface{ StatusCode() int }
+	if !errors.As(err, &sc) || sc.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("error %v does not carry status 400", err)
 	}
 }

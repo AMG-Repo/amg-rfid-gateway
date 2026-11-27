@@ -11,8 +11,9 @@ import (
 )
 
 // SendSyncRequest uploads a batch of raw readings to the VPS.
-// Calls POST /api/v1/gateway/sync (GatewayAuth). Any non-2xx status is an
-// error and returns no response, so the caller keeps the readings pending.
+// Calls POST /api/v1/gateway/sync (GatewayAuth). Any non-2xx status is a
+// *StatusError and returns no response, so the caller keeps the readings
+// pending or, by the status, splits the batch.
 func (c *VPSClient) SendSyncRequest(syncReq models.SyncRequest) (*models.SyncResponse, error) {
 	url := fmt.Sprintf("%s/api/v1/gateway/sync", c.baseURL)
 
@@ -40,7 +41,7 @@ func (c *VPSClient) SendSyncRequest(syncReq models.SyncRequest) (*models.SyncRes
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("unexpected status code: %d %s, body: %s", resp.StatusCode, http.StatusText(resp.StatusCode), string(body))
+		return nil, fmt.Errorf("%s: %w", http.StatusText(resp.StatusCode), &StatusError{Code: resp.StatusCode, Body: string(body)})
 	}
 
 	var syncResp models.SyncResponse
